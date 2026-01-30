@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>欢迎 | 创意简洁页面</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        }
+        
+        body {
+            background: linear-gradient(-45deg, #1a1a2e, #16213e, #0f3460, #1a1a2e);
+            background-size: 400% 400%;
+            animation: gradientBG 15s ease infinite;
+            color: #f0f0f0;
+            min-height: 100vh;
+            overflow-x: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        @keyframes gradientBG {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        
+        .container {
+            max-width: 900px;
+            width: 100%;
+            text-align: center;
+            padding: 40px 20px;
+            z-index: 1;
+        }
+        
+        .logo {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            animation: float 6s ease-in-out infinite;
+        }
+        
+        .logo i {
+            font-size: 50px;
+            color: #4cc9f0;
+        }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-15px); }
+        }
+        
+        h1 {
+            font-size: 3.8rem;
+            font-weight: 300;
+            margin-bottom: 20px;
+            letter-spacing: 1px;
+            text-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+        
+        h1 span {
+            font-weight: 700;
+            color: #4cc9f0;
+            position: relative;
+        }
+        
+        h1 span::after {
+            content: '';
+            position: absolute;
+            width: 100%;
+            height: 3px;
+            background: #4cc9f0;
+            bottom: -5px;
+            left: 0;
+            transform: scaleX(0);
+            transform-origin: right;
+            animation: lineGrow 2s 1s ease forwards;
+        }
+        
+        @keyframes lineGrow {
+            to { transform: scaleX(1); transform-origin: left; }
+        }
+        
+        .subtitle {
+            font-size: 1.4rem;
+            max-width: 700px;
+            margin: 0 auto 40px;
+            line-height: 1.6;
+            color: #ccccdd;
+            opacity: 0;
+            animation: fadeInUp 1s 0.8s ease forwards;
+        }
+        
+        .cta-button {
+            display: inline-block;
+            padding: 16px 40px;
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #16213e;
+            background: linear-gradient(90deg, #4cc9f0, #4361ee);
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 8px 20px rgba(76, 201, 240, 0.3);
+            text-decoration: none;
+            margin-top: 20px;
+            opacity: 0;
+            animation: fadeInUp 1s 1.2s ease forwards;
+        }
+        
+        .cta-button:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 25px rgba(76, 201, 240, 0.4);
+            background: linear-gradient(90deg, #4361ee, #4cc9f0);
+        }
+        
+        .features {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 30px;
+            margin-top: 60px;
+            opacity: 0;
+            animation: fadeInUp 1s 1.6s ease forwards;
+        }
+        
+        .feature {
+            width: 180px;
+            padding: 25px 15px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            backdrop-filter: blur(5px);
+            transition: all 0.3s ease;
+        }
+        
+        .feature:hover {
+            transform: translateY(-10px);
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        .feature i {
+            font-size: 32px;
+            color: #4cc9f0;
+            margin-bottom: 15px;
+        }
+        
+        .feature h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        
+        .feature p {
+            font-size: 0.9rem;
+            color: #a0a0c0;
+        }
+        
+        .floating-elements {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            top: 0;
+            left: 0;
+            overflow: hidden;
+            z-index: 0;
+        }
+        
+        .floating-element {
+            position: absolute;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.03);
+            animation: floatAround 20s infinite linear;
+        }
+        
+        .floating-element:nth-child(1) {
+            width: 80px;
+            height: 80px;
+            top: 10%;
+            left: 10%;
+            animation-duration: 25s;
+        }
+        
+        .floating-element:nth-child(2) {
+            width: 120px;
+            height: 120px;
+            top: 60%;
+            right: 10%;
+            animation-duration: 30s;
+        }
+        
+        .floating-element:nth-child(3) {
+            width: 60px;
+            height: 60px;
+            bottom: 20%;
+            left: 20%;
+            animation-duration: 20s;
+        }
+        
+        .floating-element:nth-child(4) {
+            width: 100px;
+            height: 100px;
+            top: 20%;
+            right: 20%;
+            animation-duration: 35s;
+        }
+        
+        @keyframes floatAround {
+            0% { transform: translate(0, 0) rotate(0deg); }
+            25% { transform: translate(20px, 50px) rotate(90deg); }
+            50% { transform: translate(40px, 0) rotate(180deg); }
+            75% { transform: translate(20px, -50px) rotate(270deg); }
+            100% { transform: translate(0, 0) rotate(360deg); }
+        }
+        
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        footer {
+            margin-top: 60px;
+            font-size: 0.9rem;
+            color: #8888aa;
+            opacity: 0;
+            animation: fadeInUp 1s 2s ease forwards;
+        }
+        
+        footer a {
+            color: #4cc9f0;
+            text-decoration: none;
+        }
+        
+        @media (max-width: 768px) {
+            h1 { font-size: 2.8rem; }
+            .subtitle { font-size: 1.2rem; }
+            .features { gap: 20px; }
+            .feature { width: 160px; }
+        }
+        
+        @media (max-width: 480px) {
+            h1 { font-size: 2.2rem; }
+            .subtitle { font-size: 1rem; }
+            .features { flex-direction: column; align-items: center; }
+            .feature { width: 100%; max-width: 250px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="floating-elements">
+        <div class="floating-element"></div>
+        <div class="floating-element"></div>
+        <div class="floating-element"></div>
+        <div class="floating-element"></div>
+    </div>
+    
+    <div class="container">
+        <div class="logo">
+            <i class="fas fa-hand-peace"></i>
+        </div>
+        
+        <h1>欢迎来到<span>创意空间</span></h1>
+        
+        <p class="subtitle">
+            在这里，简单与创意相遇，设计灵感与用户体验完美结合。我们相信，最好的设计源自对细节的关注和对创新的不断追求。
+        </p>
+        
+        <a href="#" class="cta-button">开始探索 <i class="fas fa-arrow-right"></i></a>
+        
+        <div class="features">
+            <div class="feature">
+                <i class="fas fa-lightbulb"></i>
+                <h3>创意无限</h3>
+                <p>激发灵感，探索无限可能</p>
+            </div>
+            
+            <div class="feature">
+                <i class="fas fa-bolt"></i>
+                <h3>简洁设计</h3>
+                <p>化繁为简，专注本质</p>
+            </div>
+            
+            <div class="feature">
+                <i class="fas fa-heart"></i>
+                <h3>用心体验</h3>
+                <p>每个细节都经过精心设计</p>
+            </div>
+        </div>
+        
+        <footer>
+            <p>© 2023 创意简洁欢迎页面 | 设计灵感来自未来美学</p>
+        </footer>
+    </div>
+
+    <script>
+        // 欢迎消息数组
+        const welcomeMessages = [
+            "欢迎来到创意空间",
+            "探索无限可能",
+            "简洁而不简单",
+            "让创意自由流动"
+        ];
+        
+        // 页面加载后随机显示一条欢迎消息
+        document.addEventListener('DOMContentLoaded', function() {
+            const titleElement = document.querySelector('h1 span');
+            const randomIndex = Math.floor(Math.random() * welcomeMessages.length);
+            
+            // 初始标题淡出
+            titleElement.style.opacity = '0';
+            
+            // 1秒后淡入新标题
+            setTimeout(() => {
+                titleElement.textContent = welcomeMessages[randomIndex];
+                titleElement.style.transition = 'opacity 0.8s ease';
+                titleElement.style.opacity = '1';
+            }, 1000);
+            
+            // 按钮点击事件
+            const ctaButton = document.querySelector('.cta-button');
+            ctaButton.addEventListener('click', function(e) {
+                e.preventDefault();
+                
+                // 按钮动画
+                this.style.transform = 'scale(0.95)';
+                setTimeout(() => {
+                    this.style.transform = 'scale(1)';
+                }, 150);
+                
+                // 显示欢迎消息
+                alert("🎉 欢迎！感谢您的访问，希望您喜欢这个创意简洁的设计！");
+            });
+            
+            // 鼠标移动效果
+            document.addEventListener('mousemove', function(e) {
+                const floatingElements = document.querySelectorAll('.floating-element');
+                
+                floatingElements.forEach(element => {
+                    const speed = parseFloat(element.style.width) / 100;
+                    const x = (window.innerWidth - e.pageX * speed) / 100;
+                    const y = (window.innerHeight - e.pageY * speed) / 100;
+                    
+                    element.style.transform = `translate(${x}px, ${y}px)`;
+                });
+            });
+        });
+    </script>
+</body>
+</html>

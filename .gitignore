@@ -1,0 +1,13 @@
+/.vscode
+/.idea
+/halo_hupipay_service.iml
+/server.log
+
+**/__pycache__/
+**/__pycache__/**
+/flask_server/__pycache__/
+
+
+ /webui/node_modules
+
+
