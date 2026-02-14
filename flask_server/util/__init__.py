@@ -3,7 +3,7 @@ from .grace_result import GraceResult
 from .random_generator import RandomGenerator
 from .key_generator import KeyGenerator
 from .date_time_util import DateTimeUtil
-from .async_task_util import AsyncTaskUtil
+from .async_task_util import AsyncTaskUtil, SubprocessTask, SubprocessTaskInterface
 from .data_encrypt_util import DataEncryptUtil
 from .common import CommonUtil
 
@@ -19,4 +19,6 @@ __all__ = [
     'AsyncTaskUtil',
     'CommonUtil',
     'DataEncryptUtil',
+    'SubprocessTask',
+    'SubprocessTaskInterface'
 ]
