@@ -1,5 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
+import multiprocessing
+from threading import Thread
+
 from ..config import config
 
 
@@ -140,3 +143,40 @@ class AsyncTaskUtil:
 # AsyncTaskUtil.submit_cmd_task_plain(
 #     'node --version',
 #     'hello,task', lambda a,b: print(a,b), lambda a,b: print(a,b))
+
+
+class SubprocessTaskInterface:
+
+    def __init__(self):
+        self.is_stop = False
+
+    def thread_func(self, in_queue, out_queue):
+        raise NotImplementedError
+    
+    def subprocess_func(self, in_queue, out_queue):
+        raise NotImplementedError
+
+class SubprocessTask:
+
+    def __init__(self, instance):
+        self.instance = instance
+        self.thread_queue = multiprocessing.Queue()
+        self.subprocess_queue = multiprocessing.Queue()
+        self.thread_handler = None
+        self.subprocess_handler = None
+
+    def start(self):
+        self.thread_handler = Thread(target=self.instance.thread_func, args=(self.thread_queue, self.subprocess_queue))
+        self.thread_handler.start()
+        self.subprocess_handler = multiprocessing.Process(target=self.instance.subprocess_func, args=(self.subprocess_queue, self.thread_queue))
+        self.subprocess_handler.start()
+
+    def stop(self):
+        self.instance.is_stop = True
+        if self.thread_handler is not None and self.thread_handler.is_alive():
+            self.thread_handler.join()
+        if self.subprocess_handler is not None and self.subprocess_handler.is_alive():
+            self.subprocess_handler.terminate()
+            self.subprocess_handler.join()
+
+
