@@ -2,6 +2,10 @@ from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import multiprocessing
 from threading import Thread
+import threading
+import traceback
+import sys
+import time
 
 from ..config import config
 
@@ -145,6 +149,22 @@ class AsyncTaskUtil:
 #     'hello,task', lambda a,b: print(a,b), lambda a,b: print(a,b))
 
 
+class SafeThread(threading.Thread):
+    def __init__(self, *args, on_crash=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_crash = on_crash
+        self.exception = None  # 保存异常供外部查询
+
+    def run(self):
+        try:
+            super().run()
+        except Exception as e:
+            self.exception = e
+            traceback.print_exc()
+            if self._on_crash:
+                self._on_crash(self, e)  # 触发回调
+
+
 class SubprocessTaskInterface:
 
     def __init__(self):
@@ -155,6 +175,14 @@ class SubprocessTaskInterface:
     
     def subprocess_func(self, in_queue, out_queue):
         raise NotImplementedError
+    
+    def on_thread_func_error(self, e, handler, task):
+        print(e, file=sys.stderr)
+        task.stop()
+
+    def on_subprocess_func_error(self, e, handler, task):
+        print(e, file=sys.stderr)
+        task.stop()
 
 class SubprocessTask:
 
@@ -166,17 +194,41 @@ class SubprocessTask:
         self.subprocess_handler = None
 
     def start(self):
-        self.thread_handler = Thread(target=self.instance.thread_func, args=(self.thread_queue, self.subprocess_queue))
+        self.thread_handler = SafeThread(
+            target=self.instance.thread_func, 
+            args=(self.thread_queue, self.subprocess_queue),
+            on_crash=lambda st, e: self.instance.on_thread_func_error(e, st, self))  # 注意这里如果异常，则self.stop是在子线程中调用
         self.thread_handler.start()
+
         self.subprocess_handler = multiprocessing.Process(target=self.instance.subprocess_func, args=(self.subprocess_queue, self.thread_queue))
         self.subprocess_handler.start()
 
+        self.subprocess_watcher = SafeThread(target=self.watch_process, args=(self.subprocess_handler, self.instance.on_subprocess_func_error))
+        self.subprocess_watcher.daemon = True
+        self.subprocess_watcher.start()
+
     def stop(self):
         self.instance.is_stop = True
-        if self.thread_handler is not None and self.thread_handler.is_alive():
-            self.thread_handler.join()
-        if self.subprocess_handler is not None and self.subprocess_handler.is_alive():
-            self.subprocess_handler.terminate()
-            self.subprocess_handler.join()
+        try:
+            if self.thread_handler is not None and self.thread_handler.is_alive():
+                if threading.current_thread() is not self.thread_handler:
+                    self.thread_handler.join()
+        except Exception as e:
+            print(f'SubprocessTask Stop Thread Error: {e}', file=sys.stderr)
+        try:
+            if self.subprocess_handler is not None and self.subprocess_handler.is_alive():
+                self.subprocess_handler.terminate()
+                self.subprocess_handler.join()
+        except Exception as e:
+            print(f'SubprocessTask Stop Subprocess Error: {e}', file=sys.stderr)
 
+    def watch_process(self, p, callback):
+        # print('!!!!!!!!!!!!!watch_process')
+        """独立监控线程"""
+        # p.join()
+        while p is not None and p.is_alive():
+            time.sleep(1)
+        # print(f'!!!!!!!!!!!!!!!!p.exitcode: {p.exitcode}')
+        if p.exitcode != 0:
+            callback(p.exitcode, p, self)
 
