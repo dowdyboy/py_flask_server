@@ -1,3 +1,7 @@
+# app.py 顶部，必须是第一行
+import eventlet
+eventlet.monkey_patch()
+
 from functools import wraps
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
@@ -11,7 +15,15 @@ from .util import Logger, GraceResult, CommonUtil
 
 app = Flask(__name__)
 CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(
+    app, 
+    async_mode='eventlet',
+    ping_timeout=120,      # 默认20s，适当延长
+    ping_interval=30,     # 默认25s
+    max_http_buffer_size=5e8,   # 100M
+    cors_allowed_origins="*", 
+    )
+
 
 # Initialize
 
@@ -72,4 +84,5 @@ def param_exception_handler(e):
 def all_exception_handler(e):
     Logger.error(f'all_exception_handler : {e}')
     return GraceResult.error(data=str(e))
+
 
