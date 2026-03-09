@@ -192,12 +192,15 @@ class SubprocessTask:
         self.subprocess_queue = multiprocessing.Queue()
         self.thread_handler = None
         self.subprocess_handler = None
+        self.subprocess_watcher = None
 
     def start(self):
+        # 注意这里如果异常，则self.stop是在子线程中调用
         self.thread_handler = SafeThread(
             target=self.instance.thread_func, 
             args=(self.thread_queue, self.subprocess_queue),
-            on_crash=lambda st, e: self.instance.on_thread_func_error(e, st, self))  # 注意这里如果异常，则self.stop是在子线程中调用
+            on_crash=lambda st, e: self.instance.on_thread_func_error(e, st, self))
+        # self.thread_handler = Thread(target=self.instance.thread_func, args=(self.thread_queue, self.subprocess_queue), )
         self.thread_handler.start()
 
         self.subprocess_handler = multiprocessing.Process(target=self.instance.subprocess_func, args=(self.subprocess_queue, self.thread_queue))
