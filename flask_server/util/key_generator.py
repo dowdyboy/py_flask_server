@@ -47,13 +47,16 @@ class SnowflakeIdWorker:
         # 上次生成ID的时间戳
         self.last_timestamp = -1
 
+        # 线程锁：实例属性，确保同一实例的多线程调用互斥
+        self._lock = threading.Lock()
+
     def _gen_timestamp(self):
         """生成当前时间戳"""
         return int(time.time() * 1000)
 
     def next_id(self):
         """生成下一个ID"""
-        with threading.Lock():
+        with self._lock:
             timestamp = self._gen_timestamp()
             # 如果当前时间小于上一次ID生成的时间戳，说明系统时钟回退过，此时应抛出异常
             if timestamp < self.last_timestamp:

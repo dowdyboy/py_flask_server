@@ -1,4 +1,5 @@
-from .app import app, json_response, socketio
+from .app import app, json_response, api
+from .app import socketio
 from .config import config
 
 # 1、优先加载util
@@ -14,6 +15,7 @@ from .service import *
 
 __all__ = [
     'app',
+    'api',
     'socketio',
     'json_response',
     'config',

@@ -43,14 +43,15 @@ class CommonUtil:
         return new_obj
 
     @staticmethod
-    def obj_to_dict(obj):
+    def obj_to_dict(obj, _seen=None):
         """
         将自定义对象及其嵌套对象递归转换为字典。
+        包含循环引用检测，防止自引用对象导致 RecursionError。
 
         :param obj: 要转换的自定义对象
+        :param _seen: 内部使用的已访问对象集合，防止循环引用
         :return: 转换后的字典
         """
-        
         # 如果是None，直接返回None
         if obj is None:
             return None
@@ -61,19 +62,42 @@ class CommonUtil:
 
         # 如果是列表，递归转换列表中的每个元素
         if isinstance(obj, list):
-            return [CommonUtil.obj_to_dict(item) for item in obj]
+            if _seen is None:
+                _seen = set()
+            obj_id = id(obj)
+            if obj_id in _seen:
+                return None
+            _seen.add(obj_id)
+            result = [CommonUtil.obj_to_dict(item, _seen) for item in obj]
+            _seen.discard(obj_id)
+            return result
 
         # 如果是字典，递归转换字典中的每个值
         if isinstance(obj, dict):
-            return {key: CommonUtil.obj_to_dict(value) for key, value in obj.items()}
+            if _seen is None:
+                _seen = set()
+            obj_id = id(obj)
+            if obj_id in _seen:
+                return None
+            _seen.add(obj_id)
+            result = {key: CommonUtil.obj_to_dict(value, _seen) for key, value in obj.items()}
+            _seen.discard(obj_id)
+            return result
 
         # 如果是自定义对象，获取对象的所有属性，递归转换
         if hasattr(obj, '__dict__'):
+            if _seen is None:
+                _seen = set()
+            obj_id = id(obj)
+            if obj_id in _seen:
+                return None
+            _seen.add(obj_id)
             result = {}
             for key, value in obj.__dict__.items():
                 if key.startswith('_'):
                     continue  # 忽略私有属性
-                result[key] = CommonUtil.obj_to_dict(value)
+                result[key] = CommonUtil.obj_to_dict(value, _seen)
+            _seen.discard(obj_id)
             return result
 
         # 如果是其他类型，无法处理，返回其字符串表示

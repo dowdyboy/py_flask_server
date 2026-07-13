@@ -1,9 +1,12 @@
 from flask_server.app import app, json_response
 from flask_server.util import Logger, GraceResult, CommonUtil
-from flask_server.service import ArticleService
-from flask import request, send_file
+from flask import request
 
 # 样例Controller，展示了通过MySQL进行增删改查
+# 注意：接入工程前需在 flask_server/service/__init__.py 中导出 ArticleService
+#       并在 flask_server/model/po/__init__.py 中导出 ArticlePO 和 BuyRecordPO
+
+from flask_server.service import ArticleService
 
 
 Logger.info("article_controller.py loaded")

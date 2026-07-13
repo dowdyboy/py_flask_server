@@ -4,10 +4,12 @@ import multiprocessing
 from threading import Thread
 import threading
 import traceback
-import sys
 import time
+import atexit
+import shlex
 
 from ..config import config
+from .logger import Logger
 
 
 # 异步任务工具类，用于执行异步任务
@@ -16,13 +18,14 @@ from ..config import config
 async def async_run_func(func, **kwargs):
     """
     异步执行指定函数
-    
+
+    注意：此函数仅包装同步函数为异步调用签名，不会改变函数的执行方式。
+    若在 eventlet 模式下使用，asyncio.run 可能与 eventlet 事件循环冲突，
+    建议在 threading 模式下使用。
+
     Args:
         func (callable): 需要异步执行的函数对象
         **kwargs: 传递给func的关键字参数
-    
-    Note:
-        此函数仅包装同步函数为异步调用，不会改变函数的执行方式
     """
     func(**kwargs)
 
@@ -113,18 +116,15 @@ class AsyncTaskUtil:
     def submit_cmd_task_plain(cmd, extra_param=None, on_success=None, on_error=None):
         """
         提交命令行任务到异步任务队列（简化版）
-        
+
         Args:
-            cmd (str): 要执行的命令字符串，会自动按空格分割并去除空项
+            cmd (str): 要执行的命令字符串，使用 shlex.split 智能分割（支持带空格的引号参数）
             extra_param (Any, optional): 传递给任务的额外参数
-            on_success (Callable, optional): 任务成功时的回调函数，签名为 (result, extra_param)
-            on_error (Callable, optional): 任务失败时的回调函数，签名为 (exception, extra_param)
+            on_success (Callable, optional): 任务成功时的回调函数
+            on_error (Callable, optional): 任务失败时的回调函数
         """
         AsyncTaskUtil.submit_cmd_task(
-            list(filter(
-                lambda x: x != '',
-                map(lambda x: x.strip(), str(cmd).split(' '))
-            )),
+            shlex.split(cmd),
             extra_param,
             on_success,
             on_error
@@ -147,6 +147,9 @@ class AsyncTaskUtil:
 # AsyncTaskUtil.submit_cmd_task_plain(
 #     'node --version',
 #     'hello,task', lambda a,b: print(a,b), lambda a,b: print(a,b))
+
+# 进程退出时关闭线程池（wait=False 不等待任务完成直接关闭）
+atexit.register(lambda: AsyncTaskUtil.executor.shutdown(wait=False))
 
 
 class SafeThread(threading.Thread):
@@ -177,11 +180,11 @@ class SubprocessTaskInterface:
         raise NotImplementedError
     
     def on_thread_func_error(self, e, handler, task):
-        print(e, file=sys.stderr)
+        Logger.error(f'SubprocessTask thread_func error: {e}')
         task.stop()
 
     def on_subprocess_func_error(self, e, handler, task):
-        print(e, file=sys.stderr)
+        Logger.error(f'SubprocessTask subprocess_func error: {e}')
         task.stop()
 
 class SubprocessTask:
@@ -217,13 +220,13 @@ class SubprocessTask:
                 if threading.current_thread() is not self.thread_handler:
                     self.thread_handler.join()
         except Exception as e:
-            print(f'SubprocessTask Stop Thread Error: {e}', file=sys.stderr)
+            Logger.error(f'SubprocessTask Stop Thread Error: {e}')
         try:
             if self.subprocess_handler is not None and self.subprocess_handler.is_alive():
                 self.subprocess_handler.terminate()
                 self.subprocess_handler.join()
         except Exception as e:
-            print(f'SubprocessTask Stop Subprocess Error: {e}', file=sys.stderr)
+            Logger.error(f'SubprocessTask Stop Subprocess Error: {e}')
 
     def watch_process(self, p, callback):
         # print('!!!!!!!!!!!!!watch_process')

@@ -2,6 +2,8 @@ import datetime
 import time
 
 # 日期时间处理工具类
+# 注意：所有方法依赖服务器本地时区（time.localtime），跨时区部署请同步调整服务器时区配置
+
 
 class DateTimeUtil:
 

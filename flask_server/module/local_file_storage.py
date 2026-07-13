@@ -11,9 +11,13 @@ class LocalFileStorage:
         super().__init__()
         self.root_path = root_path
 
-    # 基于配置的根目录，生成最终的路径
+    # 基于配置的根目录，生成最终的路径，并校验防止路径穿越
     def _gen_final_path(self, path):
-        final_path = os.path.join(self.root_path, path)
+        final_path = os.path.realpath(os.path.join(self.root_path, path))
+        root_real = os.path.realpath(self.root_path)
+        # 校验最终路径在 root_path 内，防止 .. 路径穿越
+        if not final_path.startswith(root_real + os.sep) and final_path != root_real:
+            raise ValueError(f'Path traversal detected: {path} escapes root {self.root_path}')
         if not os.path.isdir(os.path.dirname(final_path)):
             os.makedirs(
                 os.path.dirname(final_path),
@@ -31,6 +35,8 @@ class LocalFileStorage:
             file.write(obj)
 
     # 可以存储到任意路径
+    # ⚠️ 安全警告：此方法绕过路径校验，可读写任意路径。
+    # 切勿将用户输入直接传递给此方法，否则会导致任意文件读写漏洞。
     def save_raw_path(self, path, obj):
         if isinstance(obj, FileStorage):
             obj.save(str(path))
@@ -45,6 +51,8 @@ class LocalFileStorage:
             return file.read()
 
     # 可以从任意路径读取
+    # ⚠️ 安全警告：此方法绕过路径校验，可读取任意路径文件。
+    # 切勿将用户输入直接传递给此方法，否则会导致敏感信息泄露。
     def load_raw_path(self, path):
         with open(path, 'rb') as file:
             return file.read()
@@ -84,5 +92,5 @@ class LocalFileStorage:
         return os.path.exists(path)
 
 
-local_file_storage = LocalFileStorage(os.path.join(config.project_dir, config.file_saved_path))
+local_file_storage = LocalFileStorage(config.file_saved_path)
 

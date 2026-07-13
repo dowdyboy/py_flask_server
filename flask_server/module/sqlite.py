@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from ..config import config
 from ..util import Logger
 
@@ -6,6 +7,9 @@ from ..util import Logger
 
 
 class SQLite:
+
+    # 线程锁：sqlite3 连接对象本身非线程安全，check_same_thread=False 仅绕过 Python 层检查
+    _lock = threading.Lock()
 
     # 判断是否使用sqlite3数据库，如果使用，则初始化连接，否则为None
     if config.db_file_path is not None:
@@ -54,26 +58,28 @@ class SQLite:
     # SQLite.execute("INSERT INTO table (column1, column2) VALUES (?, ?)", [1, 2])
     @staticmethod
     def execute(sql, params=None, ret_row_id=False):
-        c = SQLite.conn.cursor()
-        if config.debug:
-            Logger.info(sql)
-        c.execute(sql, params or [])
-        if ret_row_id:
-            row_id = c.lastrowid
-        else:
-            row_id = None
-        SQLite.conn.commit()
-        return row_id
+        with SQLite._lock:
+            c = SQLite.conn.cursor()
+            if config.debug:
+                Logger.info(sql)
+            c.execute(sql, params or [])
+            if ret_row_id:
+                row_id = c.lastrowid
+            else:
+                row_id = None
+            SQLite.conn.commit()
+            return row_id
 
     # 执行sql语句，返回结果，多用于select语句，用法示例：
     # SQLite.fetch("SELECT * FROM table WHERE id = ?", [1])
     @staticmethod
     def fetch(sql, params=None, ):
-        c = SQLite.conn.cursor()
-        if config.debug:
-            Logger.info(sql)
-        c.execute(sql, params or [])
-        return c.fetchall()
+        with SQLite._lock:
+            c = SQLite.conn.cursor()
+            if config.debug:
+                Logger.info(sql)
+            c.execute(sql, params or [])
+            return c.fetchall()
 
     # 插入数据，用法示例：
     # SQLite.insert("table", ["column1", "column2"], [1, 2])
@@ -85,15 +91,15 @@ class SQLite:
         return SQLite.execute(sql, params=values, ret_row_id=ret_row_id)
 
     # 查询数据，用法示例：
-    # SQLite.select("table", ["column1", "column2"], "column1 = ?", [1])
+    # SQLite.select("table", ["column1", "column2"], "column1 = ?", params=[1])
     @staticmethod
-    def select(table, columns=None, conditions=None, order_by=None, limit=None, ):
+    def select(table, columns=None, conditions=None, params=None, order_by=None, limit=None, ):
         sql = (f"SELECT {SQLite._parse_columns(columns)} "
                f"FROM {SQLite._parse_table_name(table)} "
                f"{'WHERE ' + conditions if conditions else ''} "
                f"{'ORDER BY ' + order_by if order_by else ''} "
                f"{'LIMIT ' + str(limit) if limit else ''}")
-        return SQLite.fetch(sql)
+        return SQLite.fetch(sql, params=params)
 
     # 查询所有数据，用法示例：
     # SQLite.select_all("table")
@@ -103,21 +109,21 @@ class SQLite:
         return SQLite.fetch(sql)
 
     # 更新数据，用法示例：
-    # SQLite.update("table", ["column1", "column2"], [1, 2], "column1 = ?")
+    # SQLite.update("table", ["column1", "column2"], [1, 2], "column1 = ?", condition_params=[3])
     @staticmethod
-    def update(table, columns, values, conditions=None):
+    def update(table, columns, values, conditions=None, condition_params=None):
         sql = f"UPDATE {SQLite._parse_table_name(table)} SET " \
               f"{','.join([f'{SQLite._parse_column(columns[i])}=?' for i in range(len(columns))])} " \
               f"{'WHERE ' + conditions if conditions else ''}"
-        SQLite.execute(sql, params=values)
+        SQLite.execute(sql, params=list(values) + (condition_params or []))
 
     # 删除数据，用法示例：
-    # SQLite.delete("table", "column1 = ?")
+    # SQLite.delete("table", "column1 = ?", params=[1])
     @staticmethod
-    def delete(table, conditions=None):
+    def delete(table, conditions=None, params=None):
         sql = (f"DELETE FROM {SQLite._parse_table_name(table)} "
                f"{'WHERE ' + conditions if conditions else ''}")
-        SQLite.execute(sql)
+        SQLite.execute(sql, params=params)
 
 # 初始化sqlite数据库，用于创建表和插入初始数据
 def init_sqlite_db():
@@ -130,45 +136,3 @@ def init_sqlite_db():
 
 
 init_sqlite_db()
-
-
-# def init_sqlite_db():
-#     c = SQLite.conn.cursor()
-#     c.execute('''
-#             CREATE TABLE IF NOT EXISTS `stu` (
-#                 `sid` INTEGER PRIMARY KEY AUTOINCREMENT,
-#                 `name` TEXT NOT NULL,
-#                 `score` REAL NOT NULL
-#             )
-#         ''')
-#     c.execute('''
-#         CREATE TABLE IF NOT EXISTS `book` (
-#                     `bid` TEXT PRIMARY KEY,
-#                     `uid` TEXT NOT NULL,
-#                     `name` TEXT NOT NULL,
-#                     `desc` TEXT NOT NULL DEFAULT '',
-#                     `face_img` TEXT NOT NULL,
-#                     `es_index` TEXT DEFAULT NULL,
-#                     `status` INTEGER NOT NULL DEFAULT 0,
-#                     `create_time` INTEGER NOT NULL
-#                 )
-#     ''')
-#     c.execute('''
-#         CREATE TABLE IF NOT EXISTS `user` (
-#                     `uid` TEXT PRIMARY KEY,
-#                     `username` TEXT UNIQUE NOT NULL,
-#                     `passwd` TEXT NOT NULL,
-#                     `create_time` INTEGER NOT NULL
-#                 )
-#     ''')
-#     c.execute('''
-#         CREATE TABLE IF NOT EXISTS `session` (
-#                     `sid` TEXT PRIMARY KEY,
-#                     `uid` TEXT NOT NULL,
-#                     `chat` TEXT NOT NULL,
-#                     `md` TEXT NOT NULL,
-#                     `create_time` INTEGER NOT NULL
-#                 )
-#     ''')
-#
-#     SQLite.conn.commit()

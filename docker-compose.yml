@@ -1,0 +1,57 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${SERVER_PORT:-5000}:5000"
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 5000
+      SQLALCHEMY_URI: mysql+pymysql://app:apppass@mysql:3306/appdb
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./storage:/app/storage
+      - ./webui:/app/webui
+    restart: unless-stopped
+    stop_grace_period: 10s
+
+  mysql:
+    image: mysql:8.0
+    # 注意：以下密码为模板示例，生产环境请通过 .env 或 Docker secrets 注入，勿硬编码
+    environment:
+      MYSQL_DATABASE: appdb
+      MYSQL_USER: app
+      MYSQL_PASSWORD: apppass
+      MYSQL_ROOT_PASSWORD: rootpass
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:

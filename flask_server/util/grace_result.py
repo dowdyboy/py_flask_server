@@ -26,4 +26,7 @@ class GraceResult:
     def error(data=None):
         return GraceResult(GraceResult.INNER_ERROR, '接口发生错误', data)
 
-    
+    @staticmethod
+    def business_error(code, msg, data=None):
+        """自定义业务错误码"""
+        return GraceResult(code, msg, data)
