@@ -131,3 +131,56 @@ def test_expire():
     c.set('k', 'v')
     c.expire('k', 60)
     assert c.exists('k')
+
+
+def test_recovery_ping_success():
+    """冷却结束后首次操作先 ping 探测：成功即恢复（_check 恢复分支）"""
+    client = _FakeClient()
+    c = _make_cache(client)
+    c._need_recovery = True
+    c._unavailable_until = 0.0
+    assert c.get('k') is None        # 触发恢复探测
+    assert client.ping_count == 1
+    assert c._need_recovery is False
+    assert c.set('k2', 'v') is True  # 恢复后直通
+
+
+def test_recovery_ping_failure_stays_degraded():
+    """恢复探测失败时继续冷却降级"""
+    client = _FakeClient(fail=True)
+    c = _make_cache(client, cooldown=0.05)
+    c._need_recovery = True
+    c._unavailable_until = 0.0
+    assert c.get('k') is None
+    assert client.ping_count == 1
+    assert c._unavailable_until > 0
+
+
+def test_get_parse_failure_deletes_key():
+    """get 解析失败（脏数据）时删除该键并返回 None"""
+    client = _FakeClient()
+    c = _make_cache(client)
+    client.store['bad'] = 'not-json{{{'
+    assert c.get('bad') is None
+    assert 'bad' not in client.store
+
+
+def test_delete_failure_enters_cooldown():
+    client = _FakeClient(fail=True)
+    c = _make_cache(client)
+    c.delete('k')                    # 不抛异常
+    assert c._unavailable_until > 0
+
+
+def test_exists_failure_enters_cooldown():
+    client = _FakeClient(fail=True)
+    c = _make_cache(client)
+    assert c.exists('k') is False
+    assert c._unavailable_until > 0
+
+
+def test_expire_failure_enters_cooldown():
+    client = _FakeClient(fail=True)
+    c = _make_cache(client)
+    c.expire('k', 60)                # 不抛异常
+    assert c._unavailable_until > 0

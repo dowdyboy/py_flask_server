@@ -63,3 +63,13 @@ def test_metrics_disabled_returns_503(client, monkeypatch):
     resp = client.get('/metrics')
     assert resp.status_code == 503
     assert 'metrics disabled' in resp.get_data(as_text=True)
+
+
+def test_metrics_record_without_timer(client):
+    """metrics_record 无计时起点（未走 before_request）时不记录时长（46->63 分支）"""
+    from flask_server.component.metrics import metrics_record
+    from werkzeug.wrappers import Response
+
+    with client.application.test_request_context('/x'):
+        resp = metrics_record(Response())
+        assert resp.status_code == 200

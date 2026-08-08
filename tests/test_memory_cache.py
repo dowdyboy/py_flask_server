@@ -67,3 +67,11 @@ def test_cleanup_thread_running():
     """模块级缓存应有后台 daemon 清理线程（防 TTL 键内存泄漏）"""
     names = [t.name for t in threading.enumerate()]
     assert 'memory-cache-cleanup' in names
+
+
+def test_corrupted_value_self_heals():
+    """pickle 损坏的值：get 返回 None 并自愈删除该键"""
+    c = SimpleMemoryCache()
+    c.cache['bad'] = b'\x80\x05not-a-valid-pickle'
+    assert c.get('bad') is None
+    assert 'bad' not in c.cache

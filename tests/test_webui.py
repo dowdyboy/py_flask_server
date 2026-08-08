@@ -82,3 +82,42 @@ def test_api_prefix_not_swallowed(client):
     """未匹配的 /api/ 路径不落入 SPA 回退"""
     resp = client.get('/api/some/unknown/path')
     assert resp.status_code == 404
+
+
+def test_path_traversal_returns_404(client):
+    """路径穿越请求被拦截返回 404（_is_path_safe 分支）"""
+    resp = client.get('/../etc/passwd')
+    assert resp.status_code == 404
+    resp = client.get('/..%2f..%2fetc%2fpasswd')
+    assert resp.status_code == 404
+
+
+def test_cache_hit_false_falls_back_to_index(client, monkeypatch, tmp_path):
+    """缓存命中 False（文件不存在）时回退 index.html（缓存 False 分支）"""
+    fake_dir = tmp_path / 'webui_fb'
+    fake_dir.mkdir()
+    (fake_dir / 'index.html').write_text('<html>idx</html>', encoding='utf-8')
+    monkeypatch.setattr(config, 'webui_dir', str(fake_dir))
+    cache = OrderedDict()
+    monkeypatch.setattr(wc, 'path_exist_cache', cache)
+
+    # 预填缓存：某路径不存在（False），随后请求命中缓存走 SPA 回退
+    missing = os.path.join(str(fake_dir), 'ghost')
+    wc._cache_set(missing, False)
+    resp = client.get('/ghost')
+    assert resp.status_code == 200
+    assert resp.get_data(as_text=True) == '<html>idx</html>'
+
+
+def test_cache_hit_false_without_index_returns_404(client, monkeypatch, tmp_path):
+    """缓存命中 False 且 index.html 也不存在时返回 404（缓存 False 分支）"""
+    fake_dir = tmp_path / 'webui_fb_empty'
+    fake_dir.mkdir()
+    monkeypatch.setattr(config, 'webui_dir', str(fake_dir))
+    cache = OrderedDict()
+    monkeypatch.setattr(wc, 'path_exist_cache', cache)
+
+    missing = os.path.join(str(fake_dir), 'ghost')
+    wc._cache_set(missing, False)
+    resp = client.get('/ghost')
+    assert resp.status_code == 404

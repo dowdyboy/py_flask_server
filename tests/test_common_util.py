@@ -48,14 +48,34 @@ def test_obj_to_dict_nested_circular():
     """间接循环引用"""
     class A:
         pass
+
     class B:
         pass
+
     a = A()
     b = B()
     a.b = b
     b.a = a   # a -> b -> a 循环
     d = CommonUtil.obj_to_dict(a)
     assert d['b']['a'] is None   # 回到 a 时被截断
+
+
+def test_obj_to_dict_list_self_reference():
+    """列表自引用不应导致 RecursionError（_seen 截断为 None）"""
+    lst = [1]
+    lst.append(lst)
+    d = CommonUtil.obj_to_dict(lst)
+    assert d[0] == 1
+    assert d[1] is None
+
+
+def test_obj_to_dict_dict_cycle():
+    """字典循环引用（dict _seen 分支）"""
+    d = {'k': 1}
+    d['self'] = d
+    out = CommonUtil.obj_to_dict(d)
+    assert out['k'] == 1
+    assert out['self'] is None
 
 
 def test_dict_map_no_mapper():

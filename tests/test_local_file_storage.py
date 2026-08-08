@@ -88,3 +88,38 @@ def test_load_raw_path(storage, tmp_path):
     outside = tmp_path / 'outside.txt'
     outside.write_bytes(b'raw-data')
     assert storage.load_raw_path(str(outside)) == b'raw-data'
+
+
+def test_save_file_storage_object(storage):
+    """save 接受 werkzeug FileStorage（multipart 上传对象）"""
+    from io import BytesIO
+    from werkzeug.datastructures import FileStorage
+
+    fs = FileStorage(stream=BytesIO(b'upload-content'), filename='a.txt')
+    storage.save('upload.txt', fs)
+    assert storage.load('upload.txt') == b'upload-content'
+
+
+def test_save_raw_path_file_storage(storage, tmp_path):
+    from io import BytesIO
+    from werkzeug.datastructures import FileStorage
+
+    fs = FileStorage(stream=BytesIO(b'raw-upload'), filename='b.txt')
+    outside = tmp_path / 'outside_upload.txt'
+    storage.save_raw_path(str(outside), fs)
+    assert outside.read_bytes() == b'raw-upload'
+
+
+def test_move_directory(storage):
+    """move 目录（isdir 分支）"""
+    storage.save('src/a.txt', b'x')
+    storage.move('src', 'dst')
+    assert not storage.exists('src/a.txt')
+    assert storage.load('dst/a.txt') == b'x'
+
+
+def test_delete_directory(storage):
+    """delete 目录（rmtree 分支）"""
+    storage.save('dir/a.txt', b'x')
+    storage.delete('dir')
+    assert not storage.exists('dir')

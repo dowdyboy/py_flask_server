@@ -92,3 +92,36 @@ def test_real_select_limit(real_conn):
     assert len(rows) == 2
     rows0 = SQLite.select('users', limit=0)
     assert len(rows0) == 0
+
+
+def test_debug_sql_printing_path(monkeypatch):
+    """DEBUG_SQL 开启时执行路径不抛异常（打印分支覆盖）"""
+    from flask_server import config
+    monkeypatch.setattr(config, 'debug', True)
+    monkeypatch.setattr(config, 'debug_sql', True)
+    captured = _capture(monkeypatch)
+    SQLite.select('tbl', limit=10)
+    assert 'LIMIT 10' in captured['sql']
+
+
+def test_init_sqlite_db_executes_init_sql(monkeypatch):
+    """init_sqlite_db 执行配置的初始化 SQL 列表"""
+    from flask_server import config
+    from flask_server.module.sqlite import init_sqlite_db
+
+    executed = []
+
+    class _FakeConn:
+        def cursor(self):
+            return self
+
+        def execute(self, sql):
+            executed.append(sql)
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(config, 'db_init_sql_list', ['CREATE TABLE t(x INT)'])
+    monkeypatch.setattr(SQLite, 'conn', _FakeConn())
+    init_sqlite_db()
+    assert executed == ['CREATE TABLE t(x INT)']

@@ -336,3 +336,152 @@ def test_readyz_redis_failure_returns_503(client, monkeypatch):
     resp = client.get('/api/v1/readyz')
     assert resp.status_code == 503
     assert resp.get_json()['data']['redis'] == 'error'
+
+
+# ------------------------- 健康检查故障/成功分支补测 -------------------------
+
+
+class _FakeDbOk:
+    """engine.connect 正常的假 db"""
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, *args, **kwargs):
+            return None
+
+    class _Engine:
+        @staticmethod
+        def connect():
+            return _FakeDbOk._Conn()
+
+    engine = _Engine()
+
+    @staticmethod
+    def text(s):
+        return s
+
+
+class _FakeRedisOk:
+    class _Client:
+        @staticmethod
+        def ping():
+            return True
+
+    client = _Client()
+
+
+def _patch_db(monkeypatch, fake):
+    """注入假 db（替换 sqlalchemy 子模块的 db 变量，sqlalchemy() 返回它）"""
+    from importlib import import_module
+    sa_mod = import_module('flask_server.module.sqlalchemy')
+    monkeypatch.setattr(sa_mod, 'db', fake)
+
+
+def test_health_db_failure(client, monkeypatch):
+    """health 的 DB 检查故障分支：data.db 含 error"""
+    from importlib import import_module
+    sa_mod = import_module('flask_server.module.sqlalchemy')
+
+    class _BrokenEngine:
+        @staticmethod
+        def connect():
+            raise RuntimeError('mock db down')
+
+    class _BrokenDb:
+        engine = _BrokenEngine()
+
+        @staticmethod
+        def text(s):
+            return s
+
+    monkeypatch.setattr(sa_mod, 'db', _BrokenDb())
+    resp = client.get('/api/v1/health')
+    body = resp.get_json()['data']
+    assert body['db'].startswith('error'), body
+
+
+def test_health_all_ok(client, monkeypatch):
+    """health 的 DB/Redis 检查成功分支：db=ok、redis=ok"""
+    _patch_db(monkeypatch, _FakeDbOk())
+    monkeypatch.setattr('flask_server.module.redis_cache', _FakeRedisOk())
+    resp = client.get('/api/v1/health')
+    body = resp.get_json()['data']
+    assert body['db'] == 'ok', body
+    assert body['redis'] == 'ok', body
+
+
+def test_health_redis_failure(client, monkeypatch):
+    """health 的 Redis 检查故障分支：data.redis 含 error"""
+    _patch_db(monkeypatch, _FakeDbOk())
+
+    class _BrokenClient:
+        @staticmethod
+        def ping():
+            raise ConnectionError('mock redis down')
+
+    class _BrokenCache:
+        client = _BrokenClient()
+
+    monkeypatch.setattr('flask_server.module.redis_cache', _BrokenCache())
+    resp = client.get('/api/v1/health')
+    body = resp.get_json()['data']
+    assert body['redis'].startswith('error'), body
+
+
+def test_readyz_db_ok(client, monkeypatch):
+    """readyz 的 DB 检查成功路径：200 + db=ok"""
+    _patch_db(monkeypatch, _FakeDbOk())
+    resp = client.get('/api/v1/readyz')
+    assert resp.status_code == 200
+    assert resp.get_json()['data']['db'] == 'ok'
+
+
+def test_readyz_redis_ok(client, monkeypatch):
+    """readyz 的 Redis 检查成功路径：200 + redis=ok"""
+    _patch_db(monkeypatch, _FakeDbOk())
+    monkeypatch.setattr('flask_server.module.redis_cache', _FakeRedisOk())
+    resp = client.get('/api/v1/readyz')
+    assert resp.status_code == 200
+    assert resp.get_json()['data']['redis'] == 'ok'
+
+
+# ------------------------- 防御分支直接调用补测 -------------------------
+
+
+def test_init_request_info_preserves_existing(client):
+    """request.info 已存在时不覆盖（hasattr 分支）"""
+    from flask import request
+    from flask_server.app import init_request_info
+
+    with client.application.test_request_context('/x'):
+        request.info = {'existing': True}
+        init_request_info()
+        assert request.info['existing'] is True
+        assert 'request_id' in request.info
+
+
+def test_set_request_id_header_without_rid(client):
+    """无 request_id 时不回写 X-Request-Id（else 分支）"""
+    from flask_server.app import set_request_id_header
+    from werkzeug.wrappers import Response
+
+    with client.application.test_request_context('/x'):
+        resp = set_request_id_header(Response())
+        assert 'X-Request-Id' not in resp.headers
+
+
+def test_all_exception_handler_http_exception_fallback(client):
+    """HTTPException 落入兜底 handler 时保留原状态码（209-210 分支）"""
+    from flask_server.app import all_exception_handler
+    from flask_server.util import GraceResult
+    from werkzeug.exceptions import NotFound
+
+    with client.application.test_request_context('/x'):
+        obj, status = all_exception_handler(NotFound())
+        assert status == 404
+        assert obj['code'] == GraceResult.INNER_ERROR

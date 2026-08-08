@@ -37,3 +37,33 @@ def test_init_sqlalchemy_no_uri_keeps_none(monkeypatch):
     app = Flask(__name__)
     sa_module.init_SQLAlchemy(app)
     assert sa_module.sqlalchemy() is None
+
+
+def test_sqlalchemy_trans_raises_when_db_none(monkeypatch):
+    """db 未初始化时 sqlalchemy_trans 给出明确报错"""
+    import pytest
+    monkeypatch.setattr(sa_module, 'db', None)
+
+    @sa_module.sqlalchemy_trans
+    def op():
+        pass
+
+    with pytest.raises(RuntimeError, match='未初始化'):
+        op()
+
+
+def test_get_migrate_returns_none_when_disabled(monkeypatch):
+    """未启用 Flask-Migrate 时 get_migrate 返回 None"""
+    monkeypatch.setattr(sa_module, 'migrate', None)
+    assert sa_module.get_migrate() is None
+
+
+def test_in_app_context_creates_context_when_missing(monkeypatch, tmp_path):
+    """无 app context 时 in_app_context 自动创建（_app.app_context 包裹）"""
+    db_file = tmp_path / 'ctx.db'
+    monkeypatch.setattr(config, 'sqlalchemy_uri', f'sqlite:///{db_file.as_posix()}')
+    monkeypatch.setattr(sa_module, 'db', None)
+
+    app = Flask(__name__)
+    sa_module.init_SQLAlchemy(app)
+    assert sa_module.in_app_context(lambda: 'ok') == 'ok'

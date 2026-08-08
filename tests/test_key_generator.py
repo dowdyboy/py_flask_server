@@ -65,6 +65,18 @@ def test_snowflake_clock_moved_backwards():
         worker.next_id()
 
 
+def test_snowflake_sequence_overflow_waits_next_millis():
+    """同一毫秒内序列溢出时阻塞到下一毫秒（_til_next_millis）"""
+    worker = SnowflakeIdWorker(worker_id=1, datacenter_id=1)
+    worker.last_timestamp = 1000
+    worker.sequence = 4095            # 序列已到最大值 → 下次溢出
+    timestamps = iter([1000, 1000, 1001])
+    worker._gen_timestamp = lambda: next(timestamps)
+    worker.next_id()
+    assert worker.sequence == 0       # 溢出后序列归零
+    assert worker.last_timestamp == 1001   # 阻塞到了下一毫秒
+
+
 def test_worker_id_derived_from_pid(monkeypatch):
     """未配置 SNOWFLAKE_WORKER_ID 时按 PID 派生 worker_id（多进程隔离）"""
     from flask_server.util.key_generator import KeyGenerator

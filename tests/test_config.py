@@ -144,3 +144,12 @@ def test_socketio_buffer_default(monkeypatch):
 def test_socketio_buffer_custom(monkeypatch):
     monkeypatch.setenv('SOCKETIO_MAX_HTTP_BUFFER_SIZE', '1048576')
     assert config_module._parse_int('SOCKETIO_MAX_HTTP_BUFFER_SIZE', 1_000_000) == 1048576
+
+
+def test_init_sql_path_loaded(tmp_path, monkeypatch):
+    """INIT_SQL_PATH 指向的 SQL 文件被解析为 db_init_sql_list（新 Config 实例，不动单例）"""
+    sql = tmp_path / 'init.sql'
+    sql.write_text('CREATE TABLE t(id INT); INSERT INTO t VALUES (1);', encoding='utf-8')
+    monkeypatch.setenv('INIT_SQL_PATH', str(sql))
+    cfg = config_module.Config()
+    assert cfg.db_init_sql_list == ['CREATE TABLE t(id INT)', 'INSERT INTO t VALUES (1)']
