@@ -35,3 +35,7 @@ Thumbs.db
 
 # 前端依赖
 /webui/node_modules
+
+# 覆盖率报告
+.coverage
+htmlcov/

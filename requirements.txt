@@ -11,6 +11,11 @@ waitress>=3.0.2,<4.0
 MarkupSafe>=3.0.3,<4.0
 redis>=5.0.0,<6.0
 python-dotenv>=1.0.0,<2.0
+prometheus-client>=0.20.0,<1.0
+
+# 可选：生产多进程/WebSocket 部署（Linux，Windows 不支持 gunicorn）
+# gunicorn>=23.0.0,<24.0
+# eventlet>=0.36.0,<1.0  # WebSocket 支持（SOCKETIO_ASYNC_MODE=eventlet）
 
 # 可选：WebSocket 支持（设环境变量 SOCKETIO_ENABLED=true 启用）
 # Flask-SocketIO>=5.6.0,<6.0
