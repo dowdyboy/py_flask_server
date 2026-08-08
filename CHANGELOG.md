@@ -1,0 +1,62 @@
+# Changelog
+
+本模板项目的变更记录。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
+版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
+
+## [0.2.0] - 2026-08-08
+
+### 新增
+
+- **认证模块**（默认关闭）：注册/登录/登出 + Token 签发（缓存 TTL 可配）、`@login_required` 装饰器、`AUTH_ENABLED=true` 全局保护（豁免 auth/文档/健康检查）、`AUTH_STORE=memory`（零配置）或 `sqlalchemy`（UserPO 持久化）
+- **Prometheus 指标**：`/metrics` 端点（请求计数 + 延迟直方图，路由规则聚合防高基数），`METRICS_ENABLED` 可配，缺库优雅降级
+- **gunicorn 生产入口**：`wsgi_gunicorn.py`（多 worker；`SOCKETIO_ENABLED=true` 自动 eventlet worker 支持 WebSocket；Windows 守卫明确报错）
+- **覆盖率门槛**：pytest-cov（分支覆盖率阈值 80%）接入本地与 CI
+- **pre-commit hooks**：ruff + 空白/文件结尾/合并冲突检查
+- **Docker 多阶段构建**：builder 层安装依赖，最终层仅运行时文件（镜像体积显著减小）
+- **CI security job**：pip-audit 依赖漏洞扫描（当前零漏洞）
+
+### 测试
+
+- 认证 9 例（注册/重复注册/登录/错误密码/登出/me/全局拦截/装饰器）
+- 指标 3 例、gunicorn 配置 3 例
+- 用例总数 160 → **175**，行覆盖率 ~85%
+
+### 文档
+
+- README：认证模块、指标、gunicorn 选型表、质量工具命令、配置表
+- .env.example：AUTH_*/METRICS_ENABLED
+
+## [0.1.0] - 2026-08-08
+
+### 新增
+
+- **分层架构脚手架**：Controller-Service-Model-Module 四层 + 统一响应（GraceResult）
+- **参数校验与 API 文档**：flask-smorest + marshmallow，`/docs` Swagger UI 自动生成
+- **基础设施模块**：SQLAlchemy（连接池/事务装饰器/启动反射容错）、SQLite、内存缓存（TTL+后台清理）、Redis 缓存（socket 超时 + 冷却式自动恢复）、本地文件存储（路径穿越防护）
+- **工具库**：日志（request_id 链路 + JSON 格式 + 轮转）、加密（PBKDF2 `salt$iterations$hash`）、雪花 ID、随机数、日期时间（含 UTC）、异步任务（有界线程池 + 命令执行 + SafeThread + SubprocessTask 哨兵停止协议）
+- **安全加固**：URI 密码脱敏、可信代理 IP（TRUSTED_PROXIES）、安全响应头、限流组件（可配）、请求体/WebSocket 消息大小上限、默认 SECRET_KEY 生产告警
+- **可观测性**：request_id 请求头透传 + 响应回写 + JSON 日志字段
+- **健康检查**：`/api/v1/health`（详情）、`/healthz`（存活）、`/readyz`（就绪，依赖故障 503）
+- **部署**：Dockerfile + docker-compose（dev/prod，app healthcheck 用 readyz）、waitress 生产入口（SIGTERM/SIGINT 优雅关闭）、MySQL charset=utf8mb4
+- **工程化**：GitHub Actions CI（Python 3.10/3.12 + 真实 MySQL 集成测试 + ruff lint）、pyproject.toml（支持 `pip install -e .`）、.env 自动加载、CHANGELOG
+- **测试**：156 个用例（HTTP 集成、事务提交/回滚、缓存降级恢复、限流、安全回归等）
+
+### 修复
+
+- flask-smorest 版本范围（PyPI 无 1.x，修正为 `>=0.42.0,<1.0`）
+- 422 校验错误统一为 GraceResult 格式（保留字段级错误）
+- `sqlalchemy_trans` 自动管理 app context（原在 context 外调用崩溃）
+- `SubprocessTask.stop()` 永久挂死（哨兵解除阻塞 + join 超时）
+- Windows 下 `shlex` 命令拆分吞反斜杠路径
+- `LocalFileStorage.exists()` 副作用（不再创建目录）
+- SQLite `LIMIT 0` 语义、`_parse_value(None)`
+- Redis 每次操作 ping 的多余 RTT（改为零探测直通）
+- webui 静态缓存无界增长（OrderedDict LRU + 上限）
+- 异步线程池无界队列（BoundedExecutor）
+- `import *` 命名空间污染、雪花算法锁、PBKDF2 迭代次数硬编码等历史问题
+
+### 文档
+
+- README（958 行）：快速开始、完整教程、配置表、部署、FAQ、分页/ETag 用法
+- PROJECT_EVALUATION.md：四轮评估与修复归档
+- examples/：可运行的完整教学样例（用户 CRUD / 文章 / 鉴权拦截器）

@@ -21,7 +21,7 @@
 
 ### 前置条件
 
-- 已安装 Python >= 3.8（推荐 3.12）
+- 已安装 Python >= 3.10（推荐 3.12）
 - 已安装 pip
 
 ### 步骤
@@ -74,7 +74,7 @@
 
 ## 📋 环境要求
 
-- Python >= 3.8
+- Python >= 3.10（flask-smorest 0.45+ 要求 3.9+，0.47 要求 3.10+）
 - pip
 
 ## 🚀 快速开始
@@ -582,6 +582,16 @@ api.register_blueprint(your_blp)
 
 **简单接口**仍可用 `@app.route` + `@json_response`（无校验无文档）。
 
+> **内网/离线环境部署 Swagger**：默认 `/docs` 从 jsdelivr CDN 加载资源，无外网时页面空白。
+> 将 swagger-ui-dist 静态资源托管到内网（如 Nginx），并设置环境变量指向：
+> ```bash
+> SWAGGER_UI_URL=http://internal-docs.example.com/swagger-ui-dist/
+> ```
+> Nginx 托管示例（`swagger-ui-dist/` 目录放置 `swagger-ui.css`/`swagger-ui-bundle.js` 等）：
+> ```nginx
+> location /swagger-ui-dist/ { alias /srv/www/swagger-ui-dist/; }
+> ```
+
 ### 10. 数据库迁移（Flask-Migrate）
 
 配置 `SQLALCHEMY_URI` 后，使用 Flask-Migrate 管理建表迁移：
@@ -662,6 +672,78 @@ class ArticleView(MethodView):
 
 > ETag 与 `@blp.arguments` 同时使用时需把 `@blp.etag` 放在最外层（先校验再验参）。
 
+### 14. 健康检查与探针
+
+框架提供三个健康端点，用途不同（供容器编排/负载均衡/K8s 使用）：
+
+| 端点 | 语义 | 行为 |
+|---|---|---|
+| `GET /api/v1/healthz` | **存活探针（liveness）** | 仅表示进程存活，不检查依赖，恒返回 200 |
+| `GET /api/v1/readyz` | **就绪探针（readiness）** | 检查 DB/Redis 连通性，任一依赖故障返回 **503** + 统一格式 |
+| `GET /api/v1/health` | 详情诊断（人工排查用） | 返回 status/version/uptime + 各依赖状态（不改变 HTTP 状态码） |
+
+**推荐用法**：
+- 容器 healthcheck / K8s `livenessProbe` 用 `/api/v1/healthz`
+- K8s `readinessProbe` / 负载均衡健康检查用 `/api/v1/readyz`（依赖故障时实例被摘除流量）
+- 本模板的 docker-compose healthcheck 已默认使用 `/api/v1/readyz`（MySQL/Redis 未就绪时 app 容器不健康）
+
+### 15. 认证模块（可选）
+
+内置注册/登录/Token 骨架，默认关闭、零配置可跑：
+
+```bash
+# 启用全局认证保护（/api/ 下除 auth/文档/健康检查外的路径需要 X-AUTH-TOKEN）
+export AUTH_ENABLED=true
+# 用户存储：memory（进程内，重启丢失）或 sqlalchemy（持久化）
+export AUTH_STORE=memory
+```
+
+**接口**（`/api/v1/auth/*`，flask-smorest 风格带校验与文档）：
+
+| 接口 | 说明 |
+|---|---|
+| `POST /api/v1/auth/register` | 注册（username 3-64 / password 6-128，PBKDF2 加密存储） |
+| `POST /api/v1/auth/login` | 登录，返回 token（有效期 `AUTH_TOKEN_TTL`） |
+| `POST /api/v1/auth/logout` | 登出（使 token 失效） |
+| `GET /api/v1/auth/me` | 当前用户信息（需 `X-AUTH-TOKEN` 头） |
+
+**保护业务接口**：
+
+```python
+from flask_server.component.auth import login_required
+
+@blp.route('/profile')
+class ProfileView(MethodView):
+    @blp.response(200, GraceResultSchema)
+    @login_required          # 校验 X-AUTH-TOKEN，通过后 request.info['uid'] 可用
+    def get(self):
+        uid = request.info['uid']
+        return GraceResult.ok({'uid': uid})
+```
+
+**持久化存储**（`AUTH_STORE=sqlalchemy`）：配置 `SQLALCHEMY_URI` 后执行
+`flask db migrate -m "create user table" && flask db upgrade` 建表（模型：`flask_server/model/po/user.py`）。
+
+> 安全提示：响应绝不含密码哈希；生产环境务必修改 SECRET_KEY 并配置 HTTPS。
+
+### 16. Prometheus 指标（可选）
+
+`METRICS_ENABLED=true`（默认开）时暴露 `GET /metrics`（Prometheus 文本格式）：
+
+- `http_requests_total{method,status,route}` — 请求计数（**route 用路由规则聚合，防高基数**）
+- `http_request_duration_seconds{method,route}` — 请求延迟直方图
+
+未安装 `prometheus-client` 时 `/metrics` 返回 503 并告警（应用不受影响）。K8s/监控采集示例：
+
+```yaml
+# Prometheus 抓取配置
+scrape_configs:
+  - job_name: flask-server
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:5000"]
+```
+
 ## 🐳 Docker 部署
 
 ### 一键启动（app + MySQL + Redis）
@@ -688,24 +770,29 @@ docker run -p 5000:5000 --env-file .env flask-server
 
 ## 🚢 生产部署
 
-生产环境使用 waitress（已集成）：
+提供三种生产入口，按需选择：
+
+| 入口 | 特点 | 适用 |
+|---|---|---|
+| `python wsgi.py` | waitress，零额外依赖、单进程多线程 | 默认推荐，中小流量 |
+| `python wsgi_gunicorn.py` | gunicorn 多 worker 高并发；`SOCKETIO_ENABLED=true` 时自动用 eventlet worker（支持 WebSocket） | 高并发 / 需要 WebSocket 的 Linux 生产 |
 
 ```bash
+# waitress（默认，零依赖）
 python wsgi.py
+
+# gunicorn（Linux 专用，需 pip install gunicorn；WebSocket 场景另需 eventlet）
+WORKER_NUM=4 python wsgi_gunicorn.py
 ```
+
+> ⚠️ gunicorn 不支持 Windows，Windows 生产请使用 wsgi.py（waitress）。
+> 生产环境请确保 `APP_ENV=production`、`DEBUG=false`、设置强 `SECRET_KEY`、收紧 `CORS_ORIGINS`、配置 HTTPS。
 
 **容器化生产部署**（waitress 入口 + 不暴露 DB/Redis 端口 + SECRET_KEY 必填校验 + 日志卷）：
 
 ```bash
 docker-compose -f docker-compose.prod.yml up -d --build
 ```
-
-或临时在开发编排中使用生产入口：
-```bash
-docker-compose exec app python wsgi.py
-```
-
-> 生产环境请确保 `APP_ENV=production`、`DEBUG=false`、设置强 `SECRET_KEY`、收紧 `CORS_ORIGINS`、配置 HTTPS。
 
 ## 🛠️ 配置说明
 
@@ -745,6 +832,16 @@ docker-compose exec app python wsgi.py
 | `TRUSTED_PROXIES` | `127.0.0.1,::1` | 可信代理 IP 列表；`get_real_ip` 仅信任来自这些地址的 `X-Forwarded-For` |
 | `SECURITY_HEADERS_ENABLED` | `true` | 是否注入安全响应头（X-Frame-Options/CSP 等） |
 | `ASYNC_TASK_QUEUE_MAX` | `500` | 异步任务排队上限，超限拒绝新任务并告警 |
+| `AUTH_ENABLED` | `false` | 是否启用全局认证保护（开启后 /api/ 下未豁免路径需 X-AUTH-TOKEN） |
+| `AUTH_TOKEN_TTL` | `604800` | 登录 token 有效期（秒，默认 7 天） |
+| `AUTH_STORE` | `memory` | 认证用户存储：`memory`（进程内，默认）/ `sqlalchemy`（需配置 DB 并迁移建表） |
+| `METRICS_ENABLED` | `true` | 是否启用 Prometheus 指标（`/metrics`） |
+| `WORKER_NUM` | `4` | gunicorn worker 数（仅 wsgi_gunicorn.py 生效） |
+| `AUTH_ENABLED` | `false` | 是否启用全局认证保护（开启后 /api/ 下未豁免路径需 X-AUTH-TOKEN） |
+| `AUTH_TOKEN_TTL` | `604800` | 登录 token 有效期（秒，默认 7 天） |
+| `AUTH_STORE` | `memory` | 认证用户存储：`memory`（进程内，默认）/ `sqlalchemy`（需配置 DB 并迁移建表） |
+| `METRICS_ENABLED` | `true` | 是否启用 Prometheus 指标（`/metrics`） |
+| `WORKER_NUM` | `4` | gunicorn worker 数（仅 wsgi_gunicorn.py 生效） |
 
 > 日志写入 `server.log`（追加模式，按 `LOG_MAX_BYTES` 轮转，保留 `LOG_BACKUP_COUNT` 个历史文件）；文件存储于 `storage/` 目录。
 > `DateTimeUtil` 等时间工具依赖服务器本地时区，跨时区部署请同步调整服务器时区。
@@ -873,11 +970,21 @@ redis>=5.0.0,<6.0
 # 安装开发依赖
 pip install -r requirements-dev.txt
 
-# 运行测试
-pytest tests/ -v
+# 运行测试（含覆盖率检查，阈值 80%）
+pytest tests/ --cov=flask_server --cov-report=term
+
+# 代码风格检查（ruff）
+pip install ruff
+ruff check flask_server/ tests/ examples/ server.py wsgi.py wsgi_gunicorn.py
+
+# 依赖安全审计（pip-audit）
+pip install pip-audit
+pip-audit -r requirements.txt
 ```
 
-测试覆盖核心工具类与模块：`GraceResult`、`CommonUtil`（含 URI 脱敏/循环引用/可信代理 IP）、`SimpleMemoryCache`（TTL/后台清理）、`DateTimeUtil`（含 UTC）、`RandomGenerator`、`DataEncryptUtil`、`KeyGenerator`（雪花 ID 并发）、`LocalFileStorage`（路径穿越防护/无副作用）、`RedisCache`（降级与自动恢复）、`SQLite`（真实 CRUD/LIMIT）、`SQLAlchemy`（事务提交/回滚集成测试）、`BoundedExecutor`（队列上限）、`rate_limit`（限流 429），以及 HTTP 层集成测试（统一响应/422 校验格式/404/request_id 头/安全响应头/health/docs）。当前共 **108 个用例**。
+测试覆盖核心工具类与模块：`GraceResult`、`CommonUtil`（含 URI 脱敏/循环引用/可信代理 IP）、`SimpleMemoryCache`（TTL/后台清理）、`DateTimeUtil`（含 UTC）、`RandomGenerator`、`DataEncryptUtil`、`KeyGenerator`（雪花 ID 并发/时钟回退）、`LocalFileStorage`（路径穿越防护/无副作用）、`RedisCache`（降级与自动恢复）、`SQLite`（真实 CRUD/LIMIT）、`SQLAlchemy`（事务提交/回滚集成测试，CI 含真实 MySQL）、`BoundedExecutor`（队列上限）、`SubprocessTask`（哨兵停止）、`rate_limit`（限流 429）、认证模块（注册/登录/登出/全局拦截）、Prometheus 指标、gunicorn 配置，以及 HTTP 层集成测试（统一响应/422 校验格式/404/request_id 头/安全响应头/healthz/readyz 探针/docs）。当前共 **175 个用例**，行覆盖率约 85%。
+
+CI 流水线（`.github/workflows/ci.yml`）：Python 3.10/3.12 矩阵测试（覆盖率门槛 80%）+ 真实 MySQL 集成测试 + ruff 代码风格检查 + pip-audit 依赖安全审计。
 
 ## ❓ 常见问题
 
