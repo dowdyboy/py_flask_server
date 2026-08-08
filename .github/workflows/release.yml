@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          VERSION="${{ github.ref_name }}"
+          # 从 CHANGELOG.md 提取对应版本段落
+          python - "$VERSION" <<'EOF'
+          import re, sys
+          version = sys.argv[1].lstrip('v')
+          with open('CHANGELOG.md', encoding='utf-8') as f:
+              content = f.read()
+          match = re.search(
+              rf'^## \[{re.escape(version)}\] - .*?$(.*?)(?=^## |\Z)',
+              content, re.MULTILINE | re.DOTALL)
+          body = match.group(1).strip() if match else ''
+          with open('release_body.md', 'w', encoding='utf-8') as f:
+              f.write(body)
+          EOF
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_body.md
+          generate_release_notes: false

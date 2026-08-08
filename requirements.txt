@@ -1,17 +1,32 @@
+# 运行时依赖（按用途分组）
+# Web 框架
 Flask>=3.1.2,<4.0
-flask-cors>=6.0.2,<7.0
-Flask-SQLAlchemy>=3.1.1,<4.0
-flask-migrate>=4.0.0,<5.0
+Werkzeug>=3.1.5,<4.0
+MarkupSafe>=3.0.3,<4.0
+# 参数校验与 API 文档
 flask-smorest>=0.42.0,<1.0
 marshmallow>=3.21.0,<4.0
-requests>=2.32.5,<3.0
-Werkzeug>=3.1.5,<4.0
+# 跨域
+flask-cors>=6.0.2,<7.0
+# 数据库（SQLAlchemy ORM + 迁移 + MySQL 驱动）
+Flask-SQLAlchemy>=3.1.1,<4.0
+flask-migrate>=4.0.0,<5.0
 PyMySQL>=1.1.2,<2.0
-waitress>=3.0.2,<4.0
-MarkupSafe>=3.0.3,<4.0
+# 缓存（未配置 REDIS_URL 时自动降级为内存缓存）
 redis>=5.0.0,<6.0
+# 配置加载（自动读取项目根 .env）
 python-dotenv>=1.0.0,<2.0
+# 监控指标（/metrics，缺失时自动降级）
 prometheus-client>=0.20.0,<1.0
+# 生产 WSGI 服务器（waitress，单进程多线程）
+waitress>=3.0.2,<4.0
+# HTTP 客户端（工具类/示例使用）
+requests>=2.32.5,<3.0
+
+# 可选：WebSocket 支持（设环境变量 SOCKETIO_ENABLED=true 启用）
+# Flask-SocketIO>=5.6.0,<6.0
+# simple-websocket>=1.0.0,<2.0
+# eventlet>=0.36.0,<1.0  # 高并发 WebSocket 时启用（设 SOCKETIO_ASYNC_MODE=eventlet）
 
 # 可选：生产多进程/WebSocket 部署（Linux，Windows 不支持 gunicorn）
 # gunicorn>=23.0.0,<24.0
