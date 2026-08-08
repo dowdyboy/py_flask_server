@@ -75,22 +75,24 @@ class Config:
         self.log_max_bytes = _parse_int('LOG_MAX_BYTES', 10 * 1024 * 1024)
         self.log_backup_count = _parse_int('LOG_BACKUP_COUNT', 5)
         _log_to_console_env = os.environ.get('LOG_TO_CONSOLE')
-        self.log_to_console = (_log_to_console_env.lower() in ('1', 'true', 'yes')) if _log_to_console_env is not None else _preset['log_to_console']
+        # 空字符串视为未设置（.env.example 中留空时不应覆盖 APP_ENV 预设档）
+        self.log_to_console = (_log_to_console_env.strip().lower() in ('1', 'true', 'yes')) \
+            if (_log_to_console_env is not None and _log_to_console_env.strip()) else _preset['log_to_console']
         self.log_format = os.environ.get('LOG_FORMAT', 'text')   # text / json
         # 是否打印 SQL 语句（开发调试用，默认关闭）
         self.debug_sql = os.environ.get('DEBUG_SQL', 'false').lower() in ('1', 'true', 'yes')
 
-        # sqlite相关配置（默认不启用）
-        self.db_file_path = os.environ.get('SQLITE_DB_PATH')
+        # sqlite相关配置（默认不启用；空值视为未配置）
+        self.db_file_path = os.environ.get('SQLITE_DB_PATH') or None
         self.db_init_sql_list = []
         # S4: 支持从外部 SQL 文件加载初始化脚本
-        _init_sql_path = os.environ.get('INIT_SQL_PATH')
+        _init_sql_path = os.environ.get('INIT_SQL_PATH') or None
         if _init_sql_path and os.path.isfile(_init_sql_path):
             with open(_init_sql_path, 'r', encoding='utf-8') as f:
                 self.db_init_sql_list = [s.strip() for s in f.read().split(';') if s.strip()]
 
-        # sqlalchemy相关配置（默认不启用）
-        self.sqlalchemy_uri = os.environ.get('SQLALCHEMY_URI')
+        # sqlalchemy相关配置（默认不启用；空值视为未配置）
+        self.sqlalchemy_uri = os.environ.get('SQLALCHEMY_URI') or None
         self.sqlalchemy_track_modify = False
         self.db_reflect_on_start = os.environ.get('DB_REFLECT_ON_START', 'true').lower() in ('1', 'true', 'yes')
 
@@ -100,8 +102,8 @@ class Config:
         self.db_pool_pre_ping = os.environ.get('DB_POOL_PRE_PING', 'true').lower() in ('1', 'true', 'yes')
         self.db_pool_timeout = _parse_int('DB_POOL_TIMEOUT', 30)
 
-        # Redis 缓存配置（默认不启用）
-        self.redis_url = os.environ.get('REDIS_URL')
+        # Redis 缓存配置（默认不启用；空值视为未配置）
+        self.redis_url = os.environ.get('REDIS_URL') or None
 
         # 限流配置（默认关闭）
         self.rate_limit_enabled = os.environ.get('RATE_LIMIT_ENABLED', 'false').lower() in ('1', 'true', 'yes')

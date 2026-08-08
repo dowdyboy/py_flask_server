@@ -40,7 +40,7 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 80
+fail_under = 85
 exclude_lines = [
     "if TYPE_CHECKING:",
     "pragma: no cover",
@@ -48,7 +48,7 @@ exclude_lines = [
 ]
 
 [tool.ruff]
-target-version = "py38"
+target-version = "py310"
 line-length = 120
 
 [tool.ruff.lint]

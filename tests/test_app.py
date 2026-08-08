@@ -119,6 +119,22 @@ def test_security_headers_can_be_disabled(client, monkeypatch):
     assert resp.headers.get('X-Frame-Options') is None
 
 
+def test_security_headers_csp_docs_vs_others(client):
+    """P9 回归：仅 /docs 放行 CDN/内联脚本，其余路径 CSP 收紧"""
+    resp = client.get('/hello')
+    csp = resp.headers.get('Content-Security-Policy')
+    assert 'script-src' in csp
+    assert 'cdn.jsdelivr.net' not in csp
+    # 收紧：脚本不允许内联（style 的 unsafe-inline 保留，webui 内联样式常用）
+    script_part = csp.split('script-src')[1].split(';')[0]
+    assert 'unsafe-inline' not in script_part
+
+    resp = client.get('/docs')
+    assert resp.status_code == 200
+    docs_csp = resp.headers.get('Content-Security-Policy')
+    assert 'cdn.jsdelivr.net' in docs_csp
+
+
 def test_internal_error_500(client, monkeypatch):
     """未捕获异常 → 500 + 统一 GraceResult 格式"""
     from flask_server import app

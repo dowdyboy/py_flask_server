@@ -44,7 +44,11 @@ def download_file():
     path = request.params.get('path')
     if not path:
         return GraceResult.param_error('缺少 path 参数'), 400
-    file_path = os.path.join(local_file_storage.root_path, path)
+    # 经 local_file_storage 校验最终路径在存储根目录内（拦截 .. 路径穿越）
+    try:
+        file_path = local_file_storage._gen_final_path(path, create_dirs=False)
+    except ValueError:
+        return GraceResult.param_error('非法路径'), 400
     if not os.path.exists(file_path):
         return GraceResult.business_error(4004, '文件不存在'), 404
     return send_file(file_path, as_attachment=True)

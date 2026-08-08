@@ -29,10 +29,16 @@ except ImportError:
     _DURATION = None
 
 
+_UNMATCHED_ROUTE = '__unmatched__'   # 未匹配任何路由（404 等）时使用固定标签，防高基数
+
+
 def _route_label():
-    """使用路由规则而非实际路径（避免用户输入造成指标高基数）"""
+    """使用路由规则而非实际路径（避免用户输入造成指标高基数）；
+    未匹配路由（如 404）用固定标签，防止恶意路径撑爆 Prometheus 标签基数"""
     rule = getattr(request, 'url_rule', None)
-    return rule.rule if rule is not None else request.path
+    if rule is not None:
+        return rule.rule
+    return _UNMATCHED_ROUTE
 
 
 if _METRICS_AVAILABLE and config.metrics_enabled:

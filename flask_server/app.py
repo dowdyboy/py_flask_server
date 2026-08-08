@@ -149,12 +149,18 @@ def set_security_headers(resp):
     if config.security_headers_enabled:
         for k, v in _SECURITY_HEADERS.items():
             resp.headers.setdefault(k, v)
-        # CSP 宽松基础版：/docs 使用 CDN（jsdelivr）资源，放行远程脚本与内联样式
-        if request.path != config.api_docs_url:
+        if request.path == config.api_docs_url:
+            # /docs（Swagger UI）使用 jsdelivr CDN 资源：放行远程脚本与内联样式
             resp.headers.setdefault(
                 'Content-Security-Policy',
                 "default-src 'self'; style-src 'self' 'unsafe-inline'; "
                 "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+            )
+        else:
+            # 其余路径收紧：不信任内联脚本与远程脚本（webui 若含内联脚本需自行放行）
+            resp.headers.setdefault(
+                'Content-Security-Policy',
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'",
             )
     return resp
 

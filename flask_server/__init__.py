@@ -6,9 +6,11 @@ from .config import config
 from .util import *
 # 2、再加载module
 from .module import *
-# 3、再加载component
+# 3、再加载model（UserPO 等声明式模型需在 SQLAlchemy 初始化后导入，
+#    才能被 Flask-Migrate autogenerate 识别建表）
+from . import model  # noqa: F401
+# 4、再加载component
 from .component import *
-
 from .controller import *
 from .service import *
 

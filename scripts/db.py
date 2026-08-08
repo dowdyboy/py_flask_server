@@ -26,9 +26,19 @@ MIGRATE_COMMANDS = {
 
 
 def build_command(name, message=''):
-    """构造 flask db 命令参数列表（可单测）"""
-    template = MIGRATE_COMMANDS[name]
-    return ['flask', 'db'] + template.format(message=message).split()
+    """构造 flask db 命令参数列表（可单测）
+
+    使用 `python -m flask` 而非裸 `flask` 命令：
+    虚拟环境 Scripts 目录可能不在 PATH，`python -m` 方式跨平台可靠。
+    migrate 消息含空格时必须整体作为 -m 的单个参数，
+    不能按空白拆分（否则 'create user table' 会变成三个独立参数）。
+    """
+    if name == 'migrate':
+        cmd = [sys.executable, '-m', 'flask', 'db', 'migrate']
+        if message:
+            cmd += ['-m', message]
+        return cmd
+    return [sys.executable, '-m', 'flask', 'db'] + MIGRATE_COMMANDS[name].split()
 
 
 def run(name, message=''):

@@ -19,8 +19,34 @@ def test_metrics_route_label_not_raw_path(client):
     client.get('/api/v1/healthz')
     client.get('/some/spa/route')
     body = client.get('/metrics').get_data(as_text=True)
-    # /some/spa/route 无路由规则，使用实际路径作兜底标签——应可接受
     assert 'http_requests_total' in body
+
+
+def test_metrics_unmatched_route_fixed_label(client, monkeypatch):
+    """P5 回归：未匹配路由使用固定标签，原始路径不得进入指标标签"""
+    from flask_server.component import metrics as metrics_module
+    from flask_server.component.metrics import _UNMATCHED_ROUTE
+
+    class _FakeRequest:
+        def __init__(self, url_rule=None):
+            self.url_rule = url_rule
+
+    # HTTP 层：大量恶意/不存在路径请求后，原始路径不出现在 /metrics
+    for i in range(5):
+        client.get(f'/nonexistent/path/{i}')
+    body = client.get('/metrics').get_data(as_text=True)
+    assert '/nonexistent/path/3' not in body
+
+    # 无 url_rule（未匹配任何路由）→ 固定标签（独立 context，避免影响 HTTP 请求处理）
+    with monkeypatch.context() as m:
+        m.setattr(metrics_module, 'request', _FakeRequest(None))
+        assert metrics_module._route_label() == _UNMATCHED_ROUTE
+
+    # 有 url_rule → 使用路由规则
+    with monkeypatch.context() as m:
+        rule = type('_Rule', (), {'rule': '/api/v1/healthz'})()
+        m.setattr(metrics_module, 'request', _FakeRequest(rule))
+        assert metrics_module._route_label() == '/api/v1/healthz'
 
 
 def test_metrics_histogram_present(client):

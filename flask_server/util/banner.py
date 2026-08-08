@@ -49,8 +49,8 @@ def check_production_config():
     if config.host == '127.0.0.1':
         warnings.append('SERVER_HOST=127.0.0.1 仅本机可访问，请确认是否置于反向代理之后')
     if _multi_worker() and config.redis_url is None:
-        warnings.append('多 worker 部署未配置 REDIS_URL：memory_cache/限流计数为进程内，'
-                        '多实例间数据不一致，建议配置 REDIS_URL')
+        warnings.append('多 worker 部署未配置 REDIS_URL：memory_cache/限流计数/认证 token 为进程内，'
+                        '多实例间数据不一致（如登录后 token 在另一 worker 失效），建议配置 REDIS_URL')
     return warnings
 
 

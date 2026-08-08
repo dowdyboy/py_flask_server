@@ -8,10 +8,16 @@ from flask_server.component.auth import AuthService, auth_interceptor
 @pytest.fixture
 def fresh_store():
     """每个用例重置内存用户存储与认证缓存，避免用例间污染"""
+    _clear_auth_cache()
     AuthService._store = None
     yield
     AuthService._store = None
     # 清理残留 token / 失败计数 / 锁定标记
+    _clear_auth_cache()
+
+
+def _clear_auth_cache():
+    """清空内存缓存中的认证相关键（sqlalchemy 存储测试直接调用 login 会残留 token）"""
     from flask_server.module import memory_cache
     for k in list(memory_cache.cache.keys()):
         if k.startswith(('auth:token:', 'auth:refresh:', 'auth:login_fail:', 'auth:login_lock:')):
@@ -115,6 +121,33 @@ def test_login_required_decorator(fresh_store):
     with app.test_request_context('/x'):
         resp, status = protected()
         assert status == 401
+
+
+def test_login_oversized_password_rejected(client, fresh_store):
+    """P7 回归：登录密码超长（>128）返回 422，避免 PBKDF2 CPU DoS"""
+    r = client.post('/api/v1/auth/login',
+                    json={'username': 'nobody', 'password': 'x' * 10000})
+    assert r.status_code == 422
+    assert r.get_json()['code'] == 1001
+
+
+def test_auth_exempt_path_exact_match(fresh_store):
+    """P8 回归：豁免路径为整段匹配，前缀相似路径不得被误豁免"""
+    from flask_server.component.auth import _is_exempt_path
+
+    # 正常豁免
+    assert _is_exempt_path('/api/v1/auth/login')
+    assert _is_exempt_path('/api/v1/auth/refresh')
+    assert _is_exempt_path('/api/v1/healthz')
+    assert _is_exempt_path('/docs')
+    assert _is_exempt_path('/docs/')
+    assert _is_exempt_path('/openapi.json')
+    # 前缀相似但非豁免：修复前被 startswith 误豁免
+    assert not _is_exempt_path('/docsanything')
+    assert not _is_exempt_path('/api/v1/authx/login')
+    assert not _is_exempt_path('/api/v1/healthz_extra')
+    assert not _is_exempt_path('/api/v1/healthx')
+    assert not _is_exempt_path('/api/v1/health_extra')
 
 
 def test_login_locks_after_max_fails(client, fresh_store, monkeypatch):
@@ -264,3 +297,84 @@ def test_auth_sqlalchemy_duplicate_rejected(auth_db_env):
     AuthService.register('noah', 'secret123')
     with pytest.raises(ValueError, match='username already exists'):
         AuthService.register('noah', 'other456')
+
+
+# ------------------------- P3: token 存储自动降级 -------------------------
+
+
+class _FakeRedisClient:
+    """模拟 Redis 客户端（与 test_redis_cache 的假客户端同构）"""
+
+    def __init__(self):
+        self.store = {}
+
+    def ping(self):
+        return True
+
+    def set(self, key, data):
+        self.store[key] = data
+
+    def setex(self, key, ttl, data):
+        self.store[key] = data
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def delete(self, key):
+        self.store.pop(key, None)
+
+    def exists(self, key):
+        return key in self.store
+
+    def expire(self, key, ttl):
+        pass
+
+
+def _fake_redis_cache(client):
+    """绕过 __init__ 构造 RedisCache 实例（避免真实连接）"""
+    from flask_server.module.redis_cache import RedisCache
+    cache = RedisCache.__new__(RedisCache)
+    cache.client = client
+    cache._retry_cooldown = 30
+    cache._unavailable_until = 0.0
+    cache._need_recovery = False
+    return cache
+
+
+def test_tokens_in_redis_when_configured(client, fresh_store, monkeypatch):
+    """P3 回归：配置 REDIS_URL 时认证 token/防爆破计数落 Redis（多 worker 可共享）"""
+    from flask_server.component import auth as auth_module
+    from flask_server.module import memory_cache
+
+    fake = _FakeRedisClient()
+    monkeypatch.setattr(auth_module.config, 'redis_url', 'redis://fake:6379/0')
+    monkeypatch.setattr(auth_module, 'redis_cache', _fake_redis_cache(fake))
+
+    client.post('/api/v1/auth/register', json={'username': 'redisuser', 'password': 'secret123'})
+    data = client.post('/api/v1/auth/login', json={'username': 'redisuser', 'password': 'secret123'}).get_json()['data']
+    token = data['token']
+
+    assert any(k.startswith('auth:token:') for k in fake.store), 'token 应写入 Redis'
+    assert not any(k.startswith(('auth:token:', 'auth:refresh:', 'auth:login_fail:', 'auth:login_lock:'))
+                   for k in memory_cache.cache.keys()), 'token 不应写入内存缓存'
+
+    # 经 Redis 存储完成完整校验闭环
+    r = client.get('/api/v1/auth/me', headers={'X-AUTH-TOKEN': token})
+    assert r.status_code == 200
+    assert r.get_json()['data']['username'] == 'redisuser'
+
+
+def test_tokens_in_memory_when_no_redis(client, fresh_store, monkeypatch):
+    """P3 回归：未配置 REDIS_URL 时回退内存缓存（默认行为）"""
+    from flask_server.component import auth as auth_module
+    from flask_server.module import memory_cache
+
+    monkeypatch.setattr(auth_module.config, 'redis_url', None)
+    monkeypatch.setattr(auth_module, 'redis_cache', None)
+
+    client.post('/api/v1/auth/register', json={'username': 'memuser', 'password': 'secret123'})
+    data = client.post('/api/v1/auth/login', json={'username': 'memuser', 'password': 'secret123'}).get_json()['data']
+    token = data['token']
+
+    assert any(k.startswith('auth:token:') for k in memory_cache.cache.keys()), '未配置 Redis 时应写入内存'
+    assert client.get('/api/v1/auth/me', headers={'X-AUTH-TOKEN': token}).status_code == 200

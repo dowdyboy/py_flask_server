@@ -1,11 +1,79 @@
 """配置解析测试：整数解析三态、布尔解析、环境预设档（纯函数，避免 reload 单例）"""
 
 import logging
+import os
+import subprocess
+import sys
 from importlib import import_module
 
 # 注意：flask_server 包的 config 属性是 Config 实例（遮蔽了模块），
 # 必须用 importlib 获取真实模块以访问 _parse_int/_ENV_PRESETS
 config_module = import_module('flask_server.config')
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _run_in_subprocess(code):
+    """在独立子进程中执行代码（避免污染本进程的 config 单例与模块导入状态）"""
+    result = subprocess.run(
+        [sys.executable, '-c', code],
+        capture_output=True, text=True, cwd=PROJECT_ROOT,
+    )
+    return result
+
+
+def test_empty_env_values_treated_as_unset():
+    """P1 回归：.env.example 中 DB/Redis 变量为空字符串时，应用必须能正常导入启动。
+
+    修复前：SQLALCHEMY_URI='' 触发 SQLAlchemy URL 解析崩溃、REDIS_URL='' 触发
+    Redis from_url ValueError、SQLITE_DB_PATH='' 静默创建临时数据库。
+    """
+    code = (
+        "import os\n"
+        "os.environ['SQLALCHEMY_URI'] = ''\n"
+        "os.environ['REDIS_URL'] = ''\n"
+        "os.environ['SQLITE_DB_PATH'] = ''\n"
+        "os.environ['INIT_SQL_PATH'] = ''\n"
+        "import flask_server\n"
+        "from flask_server import config\n"
+        "assert config.sqlalchemy_uri is None, config.sqlalchemy_uri\n"
+        "assert config.redis_url is None, config.redis_url\n"
+        "assert config.db_file_path is None, config.db_file_path\n"
+        "print('OK')\n"
+    )
+    result = _run_in_subprocess(code)
+    assert result.returncode == 0, f'import crashed, stderr:\n{result.stderr}'
+    assert 'OK' in result.stdout
+
+
+def test_log_to_console_empty_uses_preset_dev():
+    """P2 回归：LOG_TO_CONSOLE 空字符串应视为未设置，开发环境跟随预设档（True）"""
+    code = (
+        "import os\n"
+        "os.environ['APP_ENV'] = 'development'\n"
+        "os.environ['LOG_TO_CONSOLE'] = ''\n"
+        "from flask_server.config import config\n"
+        "assert config.log_to_console is True, config.log_to_console\n"
+        "print('OK')\n"
+    )
+    result = _run_in_subprocess(code)
+    assert result.returncode == 0, f'stderr:\n{result.stderr}'
+    assert 'OK' in result.stdout
+
+
+def test_log_to_console_empty_uses_preset_prod():
+    """P2 回归：生产环境 LOG_TO_CONSOLE 空字符串跟随预设档（False），显式 true 仍可覆盖"""
+    code = (
+        "import os\n"
+        "os.environ['APP_ENV'] = 'production'\n"
+        "os.environ['LOG_TO_CONSOLE'] = ''\n"
+        "from flask_server.config import config\n"
+        "assert config.log_to_console is False, config.log_to_console\n"
+        "print('OK')\n"
+    )
+    result = _run_in_subprocess(code)
+    assert result.returncode == 0, f'stderr:\n{result.stderr}'
+    assert 'OK' in result.stdout
 
 
 def test_parse_int_valid(monkeypatch):
