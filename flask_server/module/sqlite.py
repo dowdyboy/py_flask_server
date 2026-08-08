@@ -130,7 +130,7 @@ class SQLite:
 # 初始化sqlite数据库，用于创建表和插入初始数据
 def init_sqlite_db():
     if SQLite.conn is not None:
-        Logger.info(f'init_sqlite_db doing ... ... ... ')
+        Logger.info('init_sqlite_db doing ... ... ... ')
         c = SQLite.conn.cursor()
         for sql in config.db_init_sql_list:
             c.execute(sql)

@@ -1,6 +1,6 @@
 
 
-from typing import Any, Optional
+from typing import Any
 
 
 # HTTP响应对象工具类

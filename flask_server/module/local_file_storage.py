@@ -6,7 +6,7 @@ from ..config import config
 # 本地文件存储模块，用于存储文件到本地文件系统
 
 class LocalFileStorage:
-    
+
     def __init__(self, root_path):
         super().__init__()
         self.root_path = root_path

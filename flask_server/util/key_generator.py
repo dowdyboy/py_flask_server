@@ -36,9 +36,9 @@ class SnowflakeIdWorker:
 
         # 初始化机器ID和数据中心ID
         if worker_id > self.max_worker_id or worker_id < 0:
-            raise ValueError(f"worker_id值越界")
+            raise ValueError("worker_id值越界")
         if datacenter_id > self.max_datacenter_id or datacenter_id < 0:
-            raise ValueError(f"datacenter_id值越界")
+            raise ValueError("datacenter_id值越界")
 
         self.worker_id = worker_id
         self.datacenter_id = datacenter_id

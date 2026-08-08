@@ -1,10 +1,9 @@
 from flask.views import MethodView
 from flask_smorest import Blueprint
-from flask_server.app import app, json_response, api
 from flask_server.util import GraceResult, Logger
 from flask_server.schema import GraceResultSchema
 from examples.schema.user_schema import (
-    UserCreateSchema, UserUpdateSchema, UserQuerySchema, UserResponseSchema,
+    UserCreateSchema, UserUpdateSchema, UserQuerySchema,
 )
 from examples.service.user_crud_service import UserCrudService
 

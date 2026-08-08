@@ -1,4 +1,3 @@
-from flask_server.module.sqlalchemy import sqlalchemy
 
 # 声明式 Model 基类示例（推荐，替代反射式 autoload）
 # 启用数据库后（配置 SQLALCHEMY_URI），继承 db.Model 声明字段，配合 Flask-Migrate 生成建表迁移：

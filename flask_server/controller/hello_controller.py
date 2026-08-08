@@ -60,6 +60,46 @@ class HealthView(MethodView):
         return GraceResult.ok(status)
 
 
+@blp.route('/healthz')
+class HealthzView(MethodView):
+    @blp.response(200, GraceResultSchema)
+    def get(self):
+        """存活探针（liveness）：仅表示进程存活，不检查依赖，恒 200"""
+        return GraceResult.ok({'status': 'up'})
+
+
+@blp.route('/readyz')
+class ReadyzView(MethodView):
+    @blp.response(200, GraceResultSchema)
+    def get(self):
+        """就绪探针（readiness）：依赖故障时返回 503（供容器/编排系统判定就绪）"""
+        status = {'status': 'ready'}
+
+        # 检查数据库连通性
+        from flask_server.module import sqlalchemy
+        db = sqlalchemy()
+        if db is not None:
+            try:
+                with db.engine.connect() as conn:
+                    conn.execute(db.text('SELECT 1'))
+                status['db'] = 'ok'
+            except Exception:
+                status['db'] = 'error'
+                return GraceResult.business_error(5030, 'dependency not ready', status), 503
+
+        # 检查 Redis 连通性
+        from flask_server.module import redis_cache
+        if redis_cache is not None:
+            try:
+                redis_cache.client.ping()
+                status['redis'] = 'ok'
+            except Exception:
+                status['redis'] = 'error'
+                return GraceResult.business_error(5030, 'dependency not ready', status), 503
+
+        return GraceResult.ok(status)
+
+
 @blp.route('/echo')
 class EchoView(MethodView):
     @blp.arguments(EchoSchema)

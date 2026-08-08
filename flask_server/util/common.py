@@ -1,6 +1,6 @@
 
 
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 
 # 简单通用工具类
@@ -34,17 +34,17 @@ class CommonUtil:
                  mapper: Optional[dict] = None,
                  mapper_list: Optional[list] = None,
                  only: bool = True) -> dict:
-        
-        
+
+
         """
         根据映射规则转换字典的键名
-        
+
         Args:
             obj (dict): 原始字典对象
             mapper (dict, optional): 键名映射规则字典，格式为 {原键名: 新键名}。默认为None
             mapper_list (list, optional): 需要保留的键名列表，会自动转换为 {原键名: 原键名} 的映射。默认为None
             only (bool, optional): 是否仅保留映射规则中指定的键。True时只保留映射键，False时保留所有键。默认为True
-        
+
         Returns:
             dict: 转换后的新字典对象，包含映射后的键名和原值
         """

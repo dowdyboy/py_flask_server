@@ -105,6 +105,14 @@ class Config:
         self.rate_limit_enabled = os.environ.get('RATE_LIMIT_ENABLED', 'false').lower() in ('1', 'true', 'yes')
         self.rate_limit_per_minute = _parse_int('RATE_LIMIT_PER_MINUTE', 60)
 
+        # 认证模块配置（默认关闭；AUTH_STORE=sqlalchemy 时需配置 SQLALCHEMY_URI 并迁移建表）
+        self.auth_enabled = os.environ.get('AUTH_ENABLED', 'false').lower() in ('1', 'true', 'yes')
+        self.auth_token_ttl = _parse_int('AUTH_TOKEN_TTL', 7 * 24 * 3600)   # token 有效期（秒，默认 7 天）
+        self.auth_store = os.environ.get('AUTH_STORE', 'memory')             # memory / sqlalchemy
+
+        # Prometheus 指标（/metrics，依赖 prometheus-client，未安装或关闭时自动降级）
+        self.metrics_enabled = os.environ.get('METRICS_ENABLED', 'true').lower() in ('1', 'true', 'yes')
+
         # 可信代理配置（get_real_ip 仅在来自可信代理时才信任 X-Forwarded-For）
         _trusted_raw = os.environ.get('TRUSTED_PROXIES', '127.0.0.1,::1')
         self.trusted_proxies = [t.strip() for t in _trusted_raw.split(',') if t.strip()]

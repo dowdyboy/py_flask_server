@@ -13,7 +13,7 @@ from flask import request
 # 写法参考flask，使用了flask的before_request装饰器
 # 拦截器函数返回None时，请求继续执行，返回其他值时，请求被中断，返回值作为响应返回
 
-Logger.info(f'component interceptor example loaded')
+Logger.info('component interceptor example loaded')
 
 
 need_auth_path_list = [

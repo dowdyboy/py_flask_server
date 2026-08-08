@@ -7,6 +7,10 @@ from .hello_controller import blp as hello_blp
 from flask_server.app import api
 api.register_blueprint(hello_blp)
 
+# 认证接口（默认内存存储零配置可用；AUTH_ENABLED=true 时启用全局保护）
+from .auth_controller import blp as auth_blp
+api.register_blueprint(auth_blp)
+
 # 导出所有controller
 # 所有定义的controller都需要被导出，否则不会被加载
 # 导出方法如上
