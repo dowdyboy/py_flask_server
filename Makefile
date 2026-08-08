@@ -1,7 +1,7 @@
 # Flask Server 常用命令
 # 用法：make <target>（Windows 可用 Git Bash / WSL；纯 Windows 环境请用 scripts/dev.ps1）
 
-.PHONY: install dev prod test lint audit migrate upgrade init scaffold help
+.PHONY: install dev prod test lint audit migrate upgrade init scaffold verify help
 
 install:            ## 安装依赖（运行时 + 开发）
 	pip install -r requirements.txt -r requirements-dev.txt
@@ -32,6 +32,9 @@ init:               ## 初始化迁移目录（首次）
 
 scaffold:           ## 生成新项目脚手架：make scaffold p=my_project author="Your Name"
 	python scripts/scaffold.py $(p) --author "$(author)"
+
+verify:             ## 真实环境自检（MySQL/Redis 全链路，配置 .env 后执行）
+	python scripts/verify_real_env.py
 
 help:               ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*## ' Makefile | awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'

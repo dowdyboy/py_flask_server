@@ -31,9 +31,9 @@
 | 状态码 | 场景 | 响应格式 |
 |---|---|---|
 | 422 | 参数校验失败（flask-smorest） | 统一格式，字段错误在 `data` |
-| 404 | 资源不存在 | 统一格式 |
-| 429 | 触发限流 | 统一格式 |
-| 401/403 | 认证/授权失败 | 统一格式 |
+| 404 | 资源不存在 | 统一格式（code=-1） |
+| 429 | 触发限流或登录锁定 | 统一格式（限流 code=-1，锁定 code=4003） |
+| 401 | 未登录 / Token 无效或已过期 | 统一格式（code=4001/4002） |
 
 业务自定义错误码：`GraceResult.business_error(2001, '用户不存在')`。
 
@@ -70,6 +70,13 @@
 
 **防爆破**：同一用户名连续登录失败 `AUTH_LOGIN_MAX_FAILS`（默认 5）次后锁定
 `AUTH_LOGIN_LOCK_SECONDS`（默认 300）秒，锁定期间正确密码也拒绝（code 4003，HTTP 429）。
+
+**令牌与计数存储（自动降级）**：
+- 未配置 `REDIS_URL`：access/refresh token 与防爆破计数存进程内内存（单实例可用，重启失效）
+- 配置 `REDIS_URL`：自动改用 Redis（多 worker 共享，任意 worker 签发的 token 都能校验）；
+  **Redis 不可达时自动回退内存缓存**（单实例下登录/防爆破仍可用，恢复后自动回 Redis）
+- `AUTH_STORE=sqlalchemy` 只解决用户数据持久化（UserPO 建表），**token 共享仍依赖 Redis**；
+  多进程部署建议配置 `REDIS_URL`（启动 banner 会告警）
 
 **保护单个接口**（推荐）：
 
@@ -130,8 +137,10 @@ class ArticleView(MethodView):
 ## 限流
 
 `RATE_LIMIT_ENABLED=true` 时按 (客户端IP, 请求路径) 固定窗口计数，
-`RATE_LIMIT_PER_MINUTE`（默认 60）次/分钟，超限返回 429。
-多实例部署建议改用 Redis 缓存实现分布式限流。
+`RATE_LIMIT_PER_MINUTE`（默认 60）次/分钟，超限返回 429（code=-1）。
+
+- 存储：`RATE_LIMIT_STORE=memory`（默认，进程内）/ `redis`（多实例准确，需配置 `REDIS_URL`）
+- 未配置 `REDIS_URL` 但设置为 `redis` 时自动回退内存存储
 
 ## Prometheus 指标
 

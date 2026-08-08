@@ -11,7 +11,7 @@
 - 📊 **可观测性**：request_id 全链路、JSON 日志、Prometheus `/metrics`、healthz/readyz 探针
 - 🗄️ **数据库**：SQLAlchemy + Flask-Migrate（MySQL/SQLite）、缓存（内存/Redis 自动降级）
 - 🛡️ **安全基线**：路径穿越防护、URI 脱敏、限流、安全响应头、可信代理
-- 🐳 **容器化**：多阶段 Dockerfile + dev/prod compose + CI 四流水线
+- 🐳 **容器化**：多阶段 Dockerfile + dev/prod compose + CI 六流水线（含 Windows）
 
 ## 🚀 快速开始（5 分钟）
 
@@ -52,7 +52,7 @@ py_flask_server/
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 开发启动脚本
-├── tests/                     # 206 个用例（覆盖率门槛 85%）
+├── tests/                     # 261 个用例（覆盖率门槛 85%，实测 93.88%）
 ├── docs/                      # 详细文档
 ├── Makefile                   # 统一命令入口
 ├── Dockerfile / docker-compose*.yml
@@ -66,6 +66,7 @@ make dev        # 启动开发服务器           python server.py
 make test       # 测试 + 覆盖率            pytest tests/ --cov=flask_server
 make lint       # 代码风格                 ruff check flask_server/ tests/ ...
 make audit      # 依赖安全审计            pip-audit -r requirements.txt
+make verify     # 真实环境自检（MySQL/Redis 全链路，需配置 .env）
 make migrate m="create users table"  # 生成迁移   make upgrade   # 执行迁移
 python scripts/scaffold.py my_project   # 生成新项目
 ```

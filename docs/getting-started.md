@@ -47,7 +47,8 @@ SQLITE_DB_PATH=storage/app.db
 
 ### 第 2 步：声明 Model
 
-创建 `flask_server/model/po/user.py`：
+脚手架已内置示例模型 `flask_server/model/po/user.py`（认证模块 sqlalchemy 存储模式复用），
+已自动导出并纳入迁移检测。**无需新建**，可按需修改字段，或参照它新建其他模型：
 
 ```python
 from flask_server.module.sqlalchemy import sqlalchemy
@@ -65,13 +66,8 @@ class UserPO(db.Model):
     create_time = db.Column(db.DateTime, default=datetime.now)
 ```
 
-在 `flask_server/model/po/__init__.py` 中导出：
-
-```python
-from .user import UserPO
-
-__all__ = ['UserPO']
-```
+> 注意：新建模型文件后需在 `flask_server/model/po/__init__.py` 中导出
+> （`from .xxx import XxxPO`），Flask-Migrate 才能识别建表。
 
 ### 第 3 步：运行数据库迁移
 
@@ -102,6 +98,13 @@ class UserResponseSchema(Schema):
     create_time = fields.String()
 ```
 
+**导出注册**：在 `flask_server/schema/__init__.py` 中加入导入（Controller 自动扫描，
+但 Schema 需显式导出才能 `from flask_server.schema import ...`）：
+
+```python
+from .user_schema import UserCreateSchema, UserResponseSchema
+```
+
 ### 第 5 步：编写 Service（业务逻辑）
 
 创建 `flask_server/service/user_service.py`：
@@ -121,13 +124,19 @@ class UserService:
         user = UserPO()
         user.uid = uid
         user.username = username
-        user.passwd = DataEncryptUtil.sha256(password)
+        user.passwd = DataEncryptUtil.pbkdf2_hmac(password)   # 加盐哈希，勿用明文/sha256
         sqlalchemy().session.add(user)
         return uid
 
     @staticmethod
     def get_by_uid(uid):
         return UserPO.query.filter(UserPO.uid == uid).first()
+```
+
+**导出注册**：在 `flask_server/service/__init__.py` 中加入导入：
+
+```python
+from .user_service import UserService
 ```
 
 ### 第 6 步：编写 Controller（接口路由）

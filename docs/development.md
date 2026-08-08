@@ -11,16 +11,25 @@ pytest tests/ --cov=flask_server --cov-report=term
 # 或 make test
 ```
 
-测试覆盖：HTTP 集成（统一响应/422/404/request_id/安全头/探针/限流）、
-认证模块（含 Redis 存储降级、防爆破、refresh 轮换）、Prometheus 指标、
-缓存降级恢复、事务提交/回滚（CI 含真实 MySQL）、
-路径穿越防护、雪花 ID 并发、SubprocessTask 哨兵停止等 **206 个用例**。
+测试覆盖：HTTP 集成（统一响应/422/404/request_id/安全头/探针/限流/健康检查故障分支）、
+认证模块（Redis 存储降级与内存兜底、防爆破、refresh 轮换）、Prometheus 指标、
+缓存降级恢复（含故障/脏数据自愈）、事务提交/回滚（CI 含真实 MySQL）、
+路径穿越防护、雪花 ID 并发、SubprocessTask 哨兵停止等 **261 个用例**（覆盖率 93.88%）。
+
+真实环境自检（云服务器 MySQL/Redis 全链路验证）：
+
+```bash
+python scripts/verify_real_env.py        # 连接→建库→集成测试→迁移→HTTP 全流程→启动冒烟
+# 可选：--skip-pytest / --skip-migrate / --skip-reflect / --skip-boot / --keep-migrations
+```
 
 CI 流水线（`.github/workflows/ci.yml`）：
 1. **test** — Python 3.10/3.12 矩阵 + 覆盖率门槛 85%
 2. **test-mysql** — 真实 MySQL 8.0 集成测试（`TEST_DB_URI` 环境变量）
-3. **lint** — ruff 代码风格检查
-4. **security** — pip-audit 依赖漏洞审计
+3. **test-windows** — Windows + Python 3.12 全量测试（覆盖 Windows 专属路径）
+4. **lint** — ruff 代码风格检查
+5. **security** — pip-audit 依赖漏洞审计
+6. **docker-build** — 多阶段镜像构建 + 容器启动冒烟
 
 ## 代码风格
 

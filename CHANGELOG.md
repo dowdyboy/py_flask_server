@@ -3,6 +3,47 @@
 本模板项目的变更记录。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.3.1] - 2026-08-08
+
+### 新增
+
+- **真实环境自检脚本** `scripts/verify_real_env.py`：连接探测 → 自动建库 → CI 对齐集成测试 →
+  Flask-Migrate 建表 → HTTP 全流程（认证/防爆破/限流/readyz）→ 反射容错 → 真实启动冒烟，
+  幂等可复跑，密码自动脱敏
+- **CI test-windows job**：Windows + Python 3.12 全量测试（覆盖 Windows 专属路径）
+- **认证 token 落 Redis**：配置 `REDIS_URL` 后 access/refresh token 与防爆破计数自动改用
+  Redis（多 worker 共享），未配置回退进程内内存
+
+### 修复
+
+- `.env.example` 空值配置导致启动崩溃：`SQLALCHEMY_URI`/`REDIS_URL`/`SQLITE_DB_PATH`
+  空字符串归一化为未配置（按文档 `cp .env.example .env` 即可启动）
+- `LOG_TO_CONSOLE` 空值不再静默覆盖 APP_ENV 预设档
+- **认证存储降级兜底**：Redis 不可达时 token/防爆破计数自动回退内存缓存（登录不再
+  "假成功"），Redis 恢复后自动回 Redis（读/删双向兜底）
+- 认证豁免路径改整段精确匹配（防 `/docsanything` 前缀绕过）
+- 注册/登录密码校验改用 `validate.Length`（兼容 marshmallow 3/4，修复返回 bool 的
+  lambda 校验在 marshmallow 4 下静默失效）；登录密码增加长度上限（防 PBKDF2 CPU DoS）
+- CSP 收紧：仅 `/docs` 放行 CDN/内联脚本，其余路径 `script-src 'self'`
+- `/metrics` 未匹配路由使用固定标签（防高基数）；`METRICS_ENABLED=false` 运行时返回
+  503 并告警
+- `flask_server` 启动链导入 model：`flask db migrate` 才能识别 UserPO 生成建表迁移
+- `scripts/db.py` 改用 `python -m flask`（虚拟环境 PATH 外可用）、migrate 消息整体传参
+  （含空格不再拆分）
+- examples 文件下载端点路径穿越防护
+- tests/conftest 中和本地 `.env`，测试不被真实配置（认证/限流/真实数据库）污染
+- benchmark p95/p99 小样本索引越界保护；memory_cache 标注 pickle 安全边界
+
+### 测试
+
+- 用例 224 → **261**，覆盖率 88.68% → **93.88%**（健康检查故障/成功分支、缓存降级
+  与自愈、防御分支、配置/边界分支补测）
+
+### 验证
+
+- 真实 MySQL 8.4 + Redis 7.4（云服务器 111.231.77.164）全链路 20 项通过：迁移建表、
+  auth 全流程、token 落 Redis、Redis 限流、防爆破锁定、反射容错、healthz/readyz/health
+
 ## [0.3.0] - 2026-08-08
 
 ### 新增

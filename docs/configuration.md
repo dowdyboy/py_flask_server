@@ -80,6 +80,8 @@ export SQLITE_DB_PATH='storage/app.db'
 - 配置 `REDIS_URL` 后自动使用 Redis 缓存（多进程/多实例场景）
 - 未配置时使用内存缓存 `memory_cache`（线程安全，TTL 后台自动清理）
 - Redis 不可达时自动降级并冷却重试，不影响业务
+- **认证 token / 防爆破计数同此策略**：配置 `REDIS_URL` 后自动落 Redis（多 worker 共享），
+  不可达时回退内存缓存（单实例仍可用），恢复后自动回 Redis
 
 ## 依赖列表
 
