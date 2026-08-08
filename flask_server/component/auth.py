@@ -1,5 +1,6 @@
 from functools import wraps
 import threading
+import time
 from datetime import datetime
 from flask import request, jsonify
 
@@ -10,7 +11,8 @@ from flask_server.util import DataEncryptUtil, RandomGenerator, CommonUtil, Logg
 # 认证模块骨架
 #
 # 功能：
-#   - 注册/登录/登出 + Token 签发（token 存缓存，TTL 可配）
+#   - 注册/登录/登出 + Access/Refresh Token 双令牌（refresh 轮换，单次使用）
+#   - 登录防爆破：连续失败 N 次锁定 M 秒
 #   - @login_required 装饰器（保护单个视图）
 #   - AUTH_ENABLED=true 时全局拦截 /api/ 下未豁免路径（默认豁免 auth/docs/健康检查）
 #
@@ -29,6 +31,9 @@ AUTH_EXEMPT_PATHS = (
 )
 
 _TOKEN_KEY_PREFIX = 'auth:token:'
+_REFRESH_TOKEN_KEY_PREFIX = 'auth:refresh:'
+_LOGIN_FAIL_KEY_PREFIX = 'auth:login_fail:'
+_LOGIN_LOCK_KEY_PREFIX = 'auth:login_lock:'
 
 # ------------------------- AuthUser -------------------------
 
@@ -76,8 +81,10 @@ class SqlAlchemyAuthStore:
 
     @staticmethod
     def _get_po():
-        from flask_server.model import UserPO
-        return UserPO
+        # 动态获取：占位模型会在 DB 初始化后 reload 为真实 ORM 模型，
+        # 每次调用取最新定义，避免模块加载时机问题
+        import importlib
+        return importlib.import_module('flask_server.model.po.user').UserPO
 
     @staticmethod
     def create(username, passwd_hash):
@@ -102,19 +109,29 @@ class SqlAlchemyAuthStore:
 
     @staticmethod
     def get_by_username(username):
+        from flask_server.module.sqlalchemy import in_app_context
         UserPO = SqlAlchemyAuthStore._get_po()
-        user = UserPO.query.filter(UserPO.username == username).first()
-        if user is None:
-            return None
-        return AuthUser(user.uid, user.username, user.passwd, user.create_time)
+
+        def _query():
+            user = UserPO.query.filter(UserPO.username == username).first()
+            if user is None:
+                return None
+            return AuthUser(user.uid, user.username, user.passwd, user.create_time)
+
+        return in_app_context(_query)
 
     @staticmethod
     def get_by_uid(uid):
+        from flask_server.module.sqlalchemy import in_app_context
         UserPO = SqlAlchemyAuthStore._get_po()
-        user = UserPO.query.filter(UserPO.uid == uid).first()
-        if user is None:
-            return None
-        return AuthUser(user.uid, user.username, user.passwd, user.create_time)
+
+        def _query():
+            user = UserPO.query.filter(UserPO.uid == uid).first()
+            if user is None:
+                return None
+            return AuthUser(user.uid, user.username, user.passwd, user.create_time)
+
+        return in_app_context(_query)
 
 
 # ------------------------- AuthService -------------------------
@@ -143,22 +160,76 @@ class AuthService:
         return uid
 
     @classmethod
+    def _is_login_locked(cls, username):
+        """是否处于登录锁定状态（连续失败达阈值）"""
+        lock_until = memory_cache.get(f'{_LOGIN_LOCK_KEY_PREFIX}{username}')
+        if lock_until is None:
+            return False
+        if time.time() < lock_until:
+            return True
+        # 锁定已过期，清除
+        memory_cache.delete(f'{_LOGIN_LOCK_KEY_PREFIX}{username}')
+        return False
+
+    @classmethod
+    def _record_login_fail(cls, username):
+        """记录一次登录失败，达阈值则锁定"""
+        fail_key = f'{_LOGIN_FAIL_KEY_PREFIX}{username}'
+        count = (memory_cache.get(fail_key) or 0) + 1
+        if count >= config.auth_login_max_fails:
+            memory_cache.set(f'{_LOGIN_LOCK_KEY_PREFIX}{username}',
+                             time.time() + config.auth_login_lock_seconds,
+                             ttl=config.auth_login_lock_seconds)
+            memory_cache.delete(fail_key)
+        else:
+            memory_cache.set(fail_key, count, ttl=config.auth_login_lock_seconds)
+
+    @classmethod
+    def _clear_login_fail(cls, username):
+        memory_cache.delete(f'{_LOGIN_FAIL_KEY_PREFIX}{username}')
+
+    @classmethod
     def login(cls, username, password):
-        """校验用户名密码，成功返回 token，失败返回 None"""
+        """校验用户名密码，成功返回 (access_token, refresh_token)，失败返回 None。
+
+        防爆破：连续失败 AUTH_LOGIN_MAX_FAILS 次后锁定 AUTH_LOGIN_LOCK_SECONDS 秒，
+        锁定期间即使密码正确也拒绝。
+        """
+        if cls._is_login_locked(username):
+            Logger.warn(f'AuthService login blocked (locked): {username}')
+            return None, 'locked'
         store = cls._get_store()
         user = store.get_by_username(username)
-        if user is None:
-            return None
-        if not DataEncryptUtil.verify_pbkdf2(password, user.passwd):
-            return None
-        token = RandomGenerator.secrets_token(32)
-        memory_cache.set(f'{_TOKEN_KEY_PREFIX}{token}', user.uid, ttl=config.auth_token_ttl)
+        if user is None or not DataEncryptUtil.verify_pbkdf2(password, user.passwd):
+            cls._record_login_fail(username)
+            return None, 'invalid'
+        cls._clear_login_fail(username)
+        access = RandomGenerator.secrets_token(32)
+        refresh = RandomGenerator.secrets_token(32)
+        memory_cache.set(f'{_TOKEN_KEY_PREFIX}{access}', user.uid, ttl=config.auth_token_ttl)
+        memory_cache.set(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh}', user.uid, ttl=config.auth_refresh_token_ttl)
         Logger.info(f'AuthService login: uid={user.uid}')
-        return token
+        return (access, refresh), None
+
+    @classmethod
+    def refresh_access_token(cls, refresh_token):
+        """用 refresh_token 换取新令牌（轮换：旧 refresh 作废，单次使用）"""
+        if not refresh_token:
+            return None
+        uid = memory_cache.get(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
+        if uid is None:
+            return None
+        memory_cache.delete(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
+        access = RandomGenerator.secrets_token(32)
+        new_refresh = RandomGenerator.secrets_token(32)
+        memory_cache.set(f'{_TOKEN_KEY_PREFIX}{access}', uid, ttl=config.auth_token_ttl)
+        memory_cache.set(f'{_REFRESH_TOKEN_KEY_PREFIX}{new_refresh}', uid, ttl=config.auth_refresh_token_ttl)
+        Logger.info(f'AuthService refresh: uid={uid}')
+        return access, new_refresh
 
     @classmethod
     def logout(cls, token):
-        """登出：删除 token"""
+        """登出：删除 access token（refresh token 到期自然失效）"""
         if token:
             memory_cache.delete(f'{_TOKEN_KEY_PREFIX}{token}')
 

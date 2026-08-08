@@ -1,0 +1,62 @@
+# Flask Server API 测试集（VS Code REST Client 插件）
+# 用法：启动服务（python server.py）后，打开本文件点击 "Send Request"。
+# 需要插件：https://marketplace.visualstudio.com/items?itemName=humao.rest-client
+
+@host = http://127.0.0.1:5000
+
+### 存活探针
+GET {{host}}/api/v1/healthz
+
+### 就绪探针
+GET {{host}}/api/v1/readyz
+
+### 健康检查（详情）
+GET {{host}}/api/v1/health
+
+### 指标（Prometheus）
+GET {{host}}/metrics
+
+### 回显（参数校验示例）
+POST {{host}}/api/v1/echo
+Content-Type: application/json
+
+{
+  "message": "hello"
+}
+
+### 注册用户
+# @name register
+POST {{host}}/api/v1/auth/register
+Content-Type: application/json
+
+{
+  "username": "alice",
+  "password": "secret123"
+}
+
+### 登录（获取 token）
+# @name login
+POST {{host}}/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "username": "alice",
+  "password": "secret123"
+}
+
+### 当前用户（需登录）
+GET {{host}}/api/v1/auth/me
+X-AUTH-TOKEN: {{login.response.body.$.data.token}}
+
+### 登出
+POST {{host}}/api/v1/auth/logout
+X-AUTH-TOKEN: {{login.response.body.$.data.token}}
+
+### 参数校验失败示例（422，统一格式）
+POST {{host}}/api/v1/echo
+Content-Type: application/json
+
+{}
+
+### 404 示例
+GET {{host}}/api/nonexistent

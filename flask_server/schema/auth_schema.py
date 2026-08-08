@@ -17,6 +17,11 @@ class AuthLoginSchema(Schema):
     password = fields.String(required=True, metadata={'description': '密码'})
 
 
+class AuthRefreshSchema(Schema):
+    """刷新令牌入参"""
+    refresh_token = fields.String(required=True, metadata={'description': '登录返回的 refresh_token'})
+
+
 class AuthUserResponseSchema(Schema):
     """用户信息响应"""
     uid = fields.String(metadata={'description': '用户ID'})

@@ -1,7 +1,7 @@
 from .sqlite import SQLite
 from .simple_memory_cache import memory_cache
 from .local_file_storage import local_file_storage
-from .sqlalchemy import sqlalchemy_trans, init_SQLAlchemy, init_Migrate, sqlalchemy, get_migrate
+from .sqlalchemy import sqlalchemy_trans, init_SQLAlchemy, init_Migrate, sqlalchemy, get_migrate, in_app_context
 from .redis_cache import redis_cache
 
 # 导出所有的功能模块
@@ -11,6 +11,6 @@ __all__ = [
     'SQLite',
     'memory_cache',
     'local_file_storage',
-    'sqlalchemy', 'sqlalchemy_trans', 'init_SQLAlchemy', 'init_Migrate', 'get_migrate',
+    'sqlalchemy', 'sqlalchemy_trans', 'init_SQLAlchemy', 'init_Migrate', 'get_migrate', 'in_app_context',
     'redis_cache',
 ]

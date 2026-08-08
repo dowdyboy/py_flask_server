@@ -62,7 +62,7 @@ class SQLite:
     def execute(sql, params=None, ret_row_id=False):
         with SQLite._lock:
             c = SQLite.conn.cursor()
-            if config.debug:
+            if config.debug and config.debug_sql:
                 Logger.info(sql)
             c.execute(sql, params or [])
             if ret_row_id:
@@ -78,7 +78,7 @@ class SQLite:
     def fetch(sql, params=None, ):
         with SQLite._lock:
             c = SQLite.conn.cursor()
-            if config.debug:
+            if config.debug and config.debug_sql:
                 Logger.info(sql)
             c.execute(sql, params or [])
             return c.fetchall()

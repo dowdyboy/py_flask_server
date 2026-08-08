@@ -77,6 +77,8 @@ class Config:
         _log_to_console_env = os.environ.get('LOG_TO_CONSOLE')
         self.log_to_console = (_log_to_console_env.lower() in ('1', 'true', 'yes')) if _log_to_console_env is not None else _preset['log_to_console']
         self.log_format = os.environ.get('LOG_FORMAT', 'text')   # text / json
+        # 是否打印 SQL 语句（开发调试用，默认关闭）
+        self.debug_sql = os.environ.get('DEBUG_SQL', 'false').lower() in ('1', 'true', 'yes')
 
         # sqlite相关配置（默认不启用）
         self.db_file_path = os.environ.get('SQLITE_DB_PATH')
@@ -104,14 +106,24 @@ class Config:
         # 限流配置（默认关闭）
         self.rate_limit_enabled = os.environ.get('RATE_LIMIT_ENABLED', 'false').lower() in ('1', 'true', 'yes')
         self.rate_limit_per_minute = _parse_int('RATE_LIMIT_PER_MINUTE', 60)
+        # 限流存储：memory（默认，进程内）/ redis（多实例准确，需配置 REDIS_URL）
+        self.rate_limit_store = os.environ.get('RATE_LIMIT_STORE', 'memory')
 
         # 认证模块配置（默认关闭；AUTH_STORE=sqlalchemy 时需配置 SQLALCHEMY_URI 并迁移建表）
         self.auth_enabled = os.environ.get('AUTH_ENABLED', 'false').lower() in ('1', 'true', 'yes')
         self.auth_token_ttl = _parse_int('AUTH_TOKEN_TTL', 7 * 24 * 3600)   # token 有效期（秒，默认 7 天）
+        self.auth_refresh_token_ttl = _parse_int('AUTH_REFRESH_TOKEN_TTL', 30 * 24 * 3600)   # refresh token 有效期（秒，默认 30 天）
         self.auth_store = os.environ.get('AUTH_STORE', 'memory')             # memory / sqlalchemy
+        # 登录防爆破：连续失败 N 次锁定 M 秒
+        self.auth_login_max_fails = _parse_int('AUTH_LOGIN_MAX_FAILS', 5)
+        self.auth_login_lock_seconds = _parse_int('AUTH_LOGIN_LOCK_SECONDS', 300)
 
         # Prometheus 指标（/metrics，依赖 prometheus-client，未安装或关闭时自动降级）
         self.metrics_enabled = os.environ.get('METRICS_ENABLED', 'true').lower() in ('1', 'true', 'yes')
+
+        # 雪花 ID 机器标识（多进程部署时每进程应配置不同值；未配置时按 PID 自动派生）
+        _worker_id_raw = os.environ.get('SNOWFLAKE_WORKER_ID')
+        self.snowflake_worker_id = _parse_int('SNOWFLAKE_WORKER_ID', -1) if _worker_id_raw else None
 
         # 可信代理配置（get_real_ip 仅在来自可信代理时才信任 X-Forwarded-For）
         _trusted_raw = os.environ.get('TRUSTED_PROXIES', '127.0.0.1,::1')

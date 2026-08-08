@@ -90,3 +90,13 @@ def _run_trans(func, *args, **kwargs):
         db.session.rollback()
         Logger.error(f'sqlalchemy_trans : {e}')
         raise
+
+
+def in_app_context(func, *args, **kwargs):
+    """在 app context 中执行函数（当前无 context 时自动创建），
+    供非请求线程/独立调用场景访问 db.session / Model.query 使用"""
+    from flask import has_app_context
+    if has_app_context():
+        return func(*args, **kwargs)
+    with _app.app_context():
+        return func(*args, **kwargs)

@@ -54,6 +54,7 @@ def _build_options():
 
 def run():
     from gunicorn.app.base import BaseApplication
+    from flask_server.util.banner import print_startup_banner
 
     class StandaloneApplication(BaseApplication):
         def __init__(self, app, options=None):
@@ -69,6 +70,7 @@ def run():
             return self.application
 
     options = _build_options()
+    print_startup_banner()
     print(f'[gunicorn] starting on {options["bind"]} '
           f'workers={options["workers"]} worker_class={options["worker_class"]}')
     StandaloneApplication(app, options).run()

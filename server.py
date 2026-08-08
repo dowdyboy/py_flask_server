@@ -1,9 +1,10 @@
 from flask_server import app, socketio, config
+from flask_server.util.banner import print_startup_banner
 
 
 if __name__ == '__main__':
     # 启动服务（开发调试）
-    # app.run(debug=config.debug, port=config.port)
+    print_startup_banner()
 
     # 启动服务（部署、支持websocket）
     if socketio is not None:

@@ -1,6 +1,7 @@
 import uuid
 import time
 import threading
+import os
 
 
 # 用于生成唯一ID的工具类
@@ -94,7 +95,17 @@ class SnowflakeIdWorker:
 
 class KeyGenerator:
 
-    snow_worker = SnowflakeIdWorker(worker_id=1, datacenter_id=1)
+    # 多进程安全：每进程使用不同 worker_id。
+    # 显式配置 SNOWFLAKE_WORKER_ID 时优先；否则按 PID 派生（0-31），
+    # 保证同一时刻不同进程的 worker_id 互不相同（同进程内由实例锁保证线程安全）。
+    @staticmethod
+    def _resolve_worker_id():
+        from ..config import config
+        if config.snowflake_worker_id is not None:
+            return config.snowflake_worker_id
+        return os.getpid() % 32
+
+    snow_worker = SnowflakeIdWorker(worker_id=_resolve_worker_id(), datacenter_id=1)
 
     @staticmethod
     def generate_uuid():

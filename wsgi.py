@@ -1,6 +1,7 @@
 import signal
 import sys
 from flask_server import app, config, socketio
+from flask_server.util.banner import print_startup_banner
 from waitress import serve
 
 
@@ -54,6 +55,7 @@ signal.signal(signal.SIGINT, _graceful_shutdown)
 
 
 if __name__ == '__main__':
+    print_startup_banner()
     serve(
         app,
         host=config.host,
