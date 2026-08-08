@@ -1,3 +1,4 @@
+import threading
 import time
 from flask_server.module.simple_memory_cache import SimpleMemoryCache
 
@@ -60,3 +61,9 @@ def test_overwrite():
     c.set('k', 'v1')
     c.set('k', 'v2')
     assert c.get('k') == 'v2'
+
+
+def test_cleanup_thread_running():
+    """模块级缓存应有后台 daemon 清理线程（防 TTL 键内存泄漏）"""
+    names = [t.name for t in threading.enumerate()]
+    assert 'memory-cache-cleanup' in names

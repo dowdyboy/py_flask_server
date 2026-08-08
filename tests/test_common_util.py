@@ -98,11 +98,68 @@ class _FakeReq:
         self.remote_addr = remote_addr
 
 
-def test_get_real_ip_forwarded():
-    req = _FakeReq(_FakeHeaders({'X-Forwarded-For': '1.2.3.4, 5.6.7.8'}))
+def test_get_real_ip_forwarded_from_trusted_proxy():
+    """来自可信代理时信任 X-Forwarded-For"""
+    req = _FakeReq(_FakeHeaders({'X-Forwarded-For': '1.2.3.4, 5.6.7.8'}), remote_addr='127.0.0.1')
     assert CommonUtil.get_real_ip(req) == '1.2.3.4'
+
+
+def test_get_real_ip_forwarded_ignored_from_untrusted():
+    """非可信来源携带 X-Forwarded-For 时应忽略，防止伪造IP"""
+    req = _FakeReq(_FakeHeaders({'X-Forwarded-For': '1.2.3.4'}))
+    assert CommonUtil.get_real_ip(req) == '9.9.9.9'
 
 
 def test_get_real_ip_remote():
     req = _FakeReq(_FakeHeaders({}))
     assert CommonUtil.get_real_ip(req) == '9.9.9.9'
+
+
+def test_mask_uri_basic():
+    assert CommonUtil.mask_uri(
+        'mysql+pymysql://user:secret@host:3306/db'
+    ) == 'mysql+pymysql://user:***@host:3306/db'
+
+
+def test_mask_uri_empty_username():
+    """redis://:password@host 空用户名格式也应脱敏"""
+    assert CommonUtil.mask_uri(
+        'redis://:secret@host:6379/0'
+    ) == 'redis://:***@host:6379/0'
+
+
+def test_mask_uri_none():
+    assert CommonUtil.mask_uri(None) is None
+
+
+def test_mask_uri_no_password():
+    """无密码的 URI 原样返回"""
+    assert CommonUtil.mask_uri('redis://host:6379/0') == 'redis://host:6379/0'
+
+
+def test_dict_map_no_mutation_of_mapper():
+    """传入 mapper_list 时不应修改调用方传入的 mapper"""
+    mapper = {'a': 'x'}
+    CommonUtil.dict_map({'a': 1, 'b': 2}, mapper=mapper, mapper_list=['b'])
+    assert mapper == {'a': 'x'}
+
+
+def test_obj_to_dict_datetime_fallback():
+    """datetime 等无 __dict__ 的对象应回退为字符串表示"""
+    from datetime import datetime
+    d = CommonUtil.obj_to_dict(datetime(2024, 6, 30, 12, 0, 0))
+    assert isinstance(d, str)
+    assert '2024-06-30' in d
+
+
+def test_obj_to_dict_unsupported_fallback():
+    """无法处理的对象（如 bytes）回退为字符串"""
+    d = CommonUtil.obj_to_dict(b'\x01\x02')
+    assert isinstance(d, str)
+
+
+def test_dict_map_only_false_with_mapper_list():
+    """only=False + mapper_list：保留所有键，mapper_list 键名不变"""
+    obj = {'a': 1, 'b': 2, 'c': 3}
+    out = CommonUtil.dict_map(obj, mapper={'a': 'x'}, mapper_list=['b'], only=False)
+    assert out == {'x': 1, 'b': 2, 'c': 3}
