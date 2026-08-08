@@ -66,6 +66,16 @@ def test_request_id_hooks_registered():
     assert 'clear_request_id' in [f.__name__ for f in app.teardown_request_funcs.get(None, [])]
 
 
+def test_controllers_auto_registered():
+    """controller 自动发现注册：新建模块的 blp 无需手动注册即生效"""
+    from flask_server import app
+    rules = {r.rule for r in app.url_map.iter_rules()}
+    assert '/api/v1/auth/login' in rules
+    assert '/api/v1/echo' in rules
+    assert '/api/v1/healthz' in rules
+    assert '/metrics' in rules
+
+
 def test_request_id_response_header(client):
     """响应应回写 X-Request-Id（透传客户端提供的值）"""
     resp = client.get('/hello', headers={'X-Request-Id': 'my-trace-id'})

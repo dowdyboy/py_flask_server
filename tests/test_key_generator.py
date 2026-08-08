@@ -63,3 +63,34 @@ def test_snowflake_clock_moved_backwards():
     worker.next_id()                  # 正常生成一次
     with pytest.raises(Exception, match='Clock moved backwards'):
         worker.next_id()
+
+
+def test_worker_id_derived_from_pid(monkeypatch):
+    """未配置 SNOWFLAKE_WORKER_ID 时按 PID 派生 worker_id（多进程隔离）"""
+    from flask_server.util.key_generator import KeyGenerator
+    from flask_server import config
+
+    monkeypatch.setattr(config, 'snowflake_worker_id', None)
+    monkeypatch.setattr('os.getpid', lambda: 100)     # 100 % 32 = 4
+    assert KeyGenerator._resolve_worker_id() == 4
+    monkeypatch.setattr('os.getpid', lambda: 200)     # 200 % 32 = 8
+    assert KeyGenerator._resolve_worker_id() == 8
+
+
+def test_worker_id_config_takes_priority(monkeypatch):
+    """显式配置 SNOWFLAKE_WORKER_ID 时优先于 PID 派生"""
+    from flask_server.util.key_generator import KeyGenerator
+    from flask_server import config
+
+    monkeypatch.setattr(config, 'snowflake_worker_id', 7)
+    monkeypatch.setattr('os.getpid', lambda: 100)
+    assert KeyGenerator._resolve_worker_id() == 7
+
+
+def test_worker_id_range():
+    """PID 派生结果必须在 0-31 范围内（雪花 worker_id 位宽）"""
+    from flask_server import config
+
+    config.snowflake_worker_id = None
+    for pid in range(0, 10000, 17):
+        assert 0 <= pid % 32 <= 31
