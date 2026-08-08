@@ -1,8 +1,9 @@
-"""SQLAlchemy 事务与 CRUD 集成测试（使用 SQLite 临时库 + 测试内声明式 Model）"""
+"""SQLAlchemy 事务与 CRUD 集成测试（默认 SQLite 临时库；设置 TEST_DB_URI 环境变量可跑真实 MySQL）"""
+
+import os
 
 import pytest
 from flask import Flask
-from sqlalchemy import text
 from importlib import import_module
 
 from flask_server import config
@@ -11,12 +12,41 @@ from flask_server import config
 # 必须用 importlib 获取真实子模块
 sa_module = import_module('flask_server.module.sqlalchemy')
 
+# CI 中设置 TEST_DB_URI 时跑真实 MySQL（如 mysql+pymysql://root:root@127.0.0.1:3306/testdb?charset=utf8mb4）
+_TEST_DB_URI = os.environ.get('TEST_DB_URI')
+
+
+def _ensure_mysql_database(uri):
+    """SQLAlchemy 不自动建库：经 pymysql 直连（不指定库）创建目标数据库"""
+    import pymysql
+    from sqlalchemy.engine import make_url
+
+    url = make_url(uri)
+    conn = pymysql.connect(
+        host=url.host, port=url.port or 3306,
+        user=url.username, password=url.password or '',
+        charset='utf8mb4',
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f'CREATE DATABASE IF NOT EXISTS `{url.database}` '
+                f'CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci')
+        conn.commit()
+    finally:
+        conn.close()
+
 
 @pytest.fixture
 def db_env(monkeypatch, tmp_path):
-    """初始化 SQLAlchemy（sqlite 临时库）+ 测试模型，测试后清理"""
-    db_file = tmp_path / 'it.db'
-    monkeypatch.setattr(config, 'sqlalchemy_uri', f'sqlite:///{db_file.as_posix()}')
+    """初始化 SQLAlchemy + 测试模型，测试后清理（默认 sqlite；TEST_DB_URI 时用 MySQL）"""
+    if _TEST_DB_URI:
+        _ensure_mysql_database(_TEST_DB_URI)
+        uri = _TEST_DB_URI
+    else:
+        db_file = tmp_path / 'it.db'
+        uri = f'sqlite:///{db_file.as_posix()}'
+    monkeypatch.setattr(config, 'sqlalchemy_uri', uri)
     monkeypatch.setattr(config, 'db_reflect_on_start', False)
     monkeypatch.setattr(sa_module, 'db', None)
 

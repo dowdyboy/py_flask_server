@@ -1,7 +1,6 @@
 """HTTP 层集成测试：验证统一响应格式、422 校验格式、404、request_id 等"""
 
 from flask import request
-import pytest
 from werkzeug.exceptions import abort
 
 
@@ -252,3 +251,62 @@ def test_spa_fallback_returns_index(client):
     resp = client.get('/some/spa/route')
     assert resp.status_code == 200
     assert 'Flask' in resp.get_data(as_text=True)
+
+
+def test_healthz_liveness(client):
+    """存活探针：恒 200，不检查依赖"""
+    resp = client.get('/api/v1/healthz')
+    assert resp.status_code == 200
+    assert resp.get_json()['data']['status'] == 'up'
+
+
+def test_readyz_no_dependencies(client):
+    """未配置 DB/Redis 时就绪探针返回 200"""
+    from flask_server.module import sqlalchemy, redis_cache
+    assert sqlalchemy() is None
+    assert redis_cache is None
+    resp = client.get('/api/v1/readyz')
+    assert resp.status_code == 200
+    assert resp.get_json()['data']['status'] == 'ready'
+
+
+def test_readyz_db_failure_returns_503(client, monkeypatch):
+    """DB 依赖故障时就绪探针返回 503 + 统一格式"""
+    from importlib import import_module
+    sa_mod = import_module('flask_server.module.sqlalchemy')
+    from flask_server import config
+
+    class _FakeDb:
+        class _Engine:
+            def connect(self):
+                raise RuntimeError('mock db down')
+
+        engine = _Engine()
+        text = lambda s: s   # noqa: E731
+
+    monkeypatch.setattr(sa_mod, 'db', _FakeDb())
+    monkeypatch.setattr(config, 'sqlalchemy_uri', 'mysql+pymysql://x:y@z/db')
+    resp = client.get('/api/v1/readyz')
+    assert resp.status_code == 503
+    body = resp.get_json()
+    assert body['code'] == 5030
+    assert body['data']['db'] == 'error'
+
+
+def test_readyz_redis_failure_returns_503(client, monkeypatch):
+    """Redis 依赖故障时就绪探针返回 503"""
+    from flask_server import config
+
+    class _FakeClient:
+        def ping(self):
+            raise ConnectionError('mock redis down')
+
+    class _FakeCache:
+        client = _FakeClient()
+
+    # 默认 redis_cache 包属性为 None（未配置），此处注入假实例触发故障路径
+    monkeypatch.setattr('flask_server.module.redis_cache', _FakeCache())
+    monkeypatch.setattr(config, 'redis_url', 'redis://localhost:6379/0')
+    resp = client.get('/api/v1/readyz')
+    assert resp.status_code == 503
+    assert resp.get_json()['data']['redis'] == 'error'
