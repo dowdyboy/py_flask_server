@@ -24,8 +24,11 @@ WORKER_NUM=4 python wsgi_gunicorn.py
    如 gunicorn 配置中为每个 worker 注入不同的 `SNOWFLAKE_WORKER_ID`
 2. **缓存/限流**：memory_cache 与限流计数为进程内，多 worker 下互相独立——
    必须配置 `REDIS_URL` 保持一致（启动 banner 会告警）
-3. **登录锁定**：防爆破计数存缓存，多 worker 下同样需 Redis 才能全局生效
-4. **定时任务**：若使用 APScheduler，多 worker 下任务会重复执行——建议单 worker 运行
+3. **认证**：access/refresh token 与登录防爆破计数默认存进程内缓存；配置 `REDIS_URL`
+   后自动改用 Redis（多 worker 共享，任意 worker 签发的 token 都能校验）。
+   `AUTH_STORE=sqlalchemy` 只解决用户数据持久化，**token 共享仍依赖 Redis**
+4. **登录锁定**：防爆破计数存缓存，多 worker 下同样需 Redis 才能全局生效
+5. **定时任务**：若使用 APScheduler，多 worker 下任务会重复执行——建议单 worker 运行
    或加分布式锁（参考 `examples/scheduler_demo.py`）
 
 两个入口均支持 SIGTERM/SIGINT 优雅关闭（释放 DB 连接池、Redis 连接、线程池）。

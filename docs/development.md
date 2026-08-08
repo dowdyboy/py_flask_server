@@ -6,17 +6,18 @@
 # 安装开发依赖
 pip install -r requirements-dev.txt
 
-# 运行测试（含覆盖率检查，分支覆盖率阈值 80%）
+# 运行测试（含覆盖率检查，覆盖率门槛 85%）
 pytest tests/ --cov=flask_server --cov-report=term
 # 或 make test
 ```
 
 测试覆盖：HTTP 集成（统一响应/422/404/request_id/安全头/探针/限流）、
-认证模块、Prometheus 指标、缓存降级恢复、事务提交/回滚（CI 含真实 MySQL）、
-路径穿越防护、雪花 ID 并发、SubprocessTask 哨兵停止等 **175 个用例**。
+认证模块（含 Redis 存储降级、防爆破、refresh 轮换）、Prometheus 指标、
+缓存降级恢复、事务提交/回滚（CI 含真实 MySQL）、
+路径穿越防护、雪花 ID 并发、SubprocessTask 哨兵停止等 **206 个用例**。
 
 CI 流水线（`.github/workflows/ci.yml`）：
-1. **test** — Python 3.10/3.12 矩阵 + 覆盖率门槛 80%
+1. **test** — Python 3.10/3.12 矩阵 + 覆盖率门槛 85%
 2. **test-mysql** — 真实 MySQL 8.0 集成测试（`TEST_DB_URI` 环境变量）
 3. **lint** — ruff 代码风格检查
 4. **security** — pip-audit 依赖漏洞审计
