@@ -54,13 +54,13 @@ def _cache_set(key, value, ttl=None):
 
     Redis 不可达时（redis_cache 冷却期，set 返回 False）回退写入内存缓存，
     保证单实例下登录/防爆破仍可用；Redis 恢复后新写入自动回到 Redis。
+    降级不逐条告警（RedisCache 已在故障开始/恢复时告警过，避免冷却期内刷屏）。
     """
     cache = _token_cache()
     if cache.set(key, value, ttl=ttl):
         return True
     if cache is memory_cache:
         return False   # 内存写入失败（不应发生），避免自兜底死循环
-    Logger.warn(f'Auth cache set failed, falling back to memory ({key.rsplit(":", 1)[0]}:*)')
     return memory_cache.set(key, value, ttl=ttl)
 
 
@@ -91,7 +91,6 @@ def _cache_incr(key, ttl=None):
     count = cache.incr(key, ttl=ttl)
     if count is not None or cache is memory_cache:
         return count
-    Logger.warn(f'Auth cache incr failed, falling back to memory ({key.rsplit(":", 1)[0]}:*)')
     return memory_cache.incr(key, ttl=ttl)
 
 
@@ -155,6 +154,7 @@ class SqlAlchemyAuthStore:
     @staticmethod
     def create(username, passwd_hash):
         from flask_server.module.sqlalchemy import sqlalchemy, sqlalchemy_trans
+        from sqlalchemy.exc import IntegrityError
         UserPO = SqlAlchemyAuthStore._get_po()
 
         @sqlalchemy_trans
@@ -171,7 +171,12 @@ class SqlAlchemyAuthStore:
             sqlalchemy().session.add(user)
             return uid
 
-        return _do_create()
+        try:
+            return _do_create()
+        except IntegrityError:
+            # 并发重复注册：先查重后插入存在 TOCTOU 竞态，唯一索引兜底
+            # （@sqlalchemy_trans 已回滚），映射为与预检一致的重复注册语义
+            raise ValueError('username already exists')
 
     @staticmethod
     def get_by_username(username):
@@ -315,6 +320,13 @@ class AuthService:
             return None
         uid = _cache_get(f'{_TOKEN_KEY_PREFIX}{token}')
         if uid is None:
+            return None
+        return cls.get_user_by_uid(uid)
+
+    @classmethod
+    def get_user_by_uid(cls, uid):
+        """按 uid 获取用户（不存在返回 None）"""
+        if not uid:
             return None
         return cls._get_store().get_by_uid(uid)
 

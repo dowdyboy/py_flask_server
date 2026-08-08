@@ -12,7 +12,7 @@ if _socketio_will_init and _async_mode == 'eventlet':
         _async_mode = 'threading'   # 未安装 eventlet 则降级为 threading
 
 from functools import wraps
-from flask import Flask, request, g
+from flask import Flask, request, g, Response
 from flask_cors import CORS
 from werkzeug.exceptions import HTTPException, UnprocessableEntity
 from flask_smorest import Api
@@ -77,10 +77,19 @@ def json_response(func):
     def wrapper(*args, **kwargs):
         resp = func(*args, **kwargs)
         if isinstance(resp, tuple):
-            obj, status = resp
+            # 支持 Flask 2/3 元组约定：(data, status) / (data, status, headers)
+            obj, status = resp[0], resp[1]
+            headers = resp[2] if len(resp) >= 3 else None
+            # 视图返回 Response 时直接透传，避免序列化响应对象
+            if isinstance(obj, Response):
+                return (obj, status, headers) if headers is not None else (obj, status)
             if obj is None:
                 obj = GraceResult.ok()
-            return CommonUtil.obj_to_dict(obj), status
+            data = CommonUtil.obj_to_dict(obj)
+            return (data, status, headers) if headers is not None else (data, status)
+        # 视图直接返回 Response（send_file/redirect 等）时原样透传
+        if isinstance(resp, Response):
+            return resp
         if resp is None:
             resp = GraceResult.ok()
         return CommonUtil.obj_to_dict(resp)
@@ -174,6 +183,12 @@ def clear_request_id(exc=None):
 # Exception Handler ########
 # 恢复 RESTful 状态码：HTTP 异常保留原状态码，业务异常返回 500，参数错误返回 400
 
+# 生产环境（非 development）5xx 响应不向客户端回显内部异常详情（可能含 SQL/路径/连接串），
+# 详情只写入服务端日志（含 traceback）；development 环境保留详情便于本地调试。
+def _internal_error_detail(e):
+    return str(e) if config.app_env == 'development' else '服务器内部错误'
+
+
 @app.errorhandler(HTTPException)
 @json_response
 def http_exception_handler(e):
@@ -181,10 +196,12 @@ def http_exception_handler(e):
     if e.code is not None and 400 <= e.code < 500:
         Logger.warn(f'http_exception_handler : {e}')
     else:
-        Logger.error(f'http_exception_handler : {e}')
+        Logger.error(f'http_exception_handler : {e}', exc_info=True)
     if e.code == 404:
         return GraceResult.error(data='资源不存在'), 404
-    return GraceResult.error(data=str(e)), e.code
+    # 5xx 脱敏：只回显通用消息；4xx 客户端错误信息可安全回显
+    data = str(e) if (e.code is not None and e.code < 500) else _internal_error_detail(e)
+    return GraceResult.error(data=data), e.code
 
 
 @app.errorhandler(UnprocessableEntity)
@@ -192,7 +209,7 @@ def http_exception_handler(e):
 def unprocessable_entity_handler(e):
     # 参数校验失败（flask-smorest/webargs 422）：统一为 GraceResult 格式，
     # 保留字段级错误信息供客户端定位问题
-    Logger.error(f'unprocessable_entity_handler : {e}')
+    Logger.error(f'unprocessable_entity_handler : {e}', exc_info=True)
     data = getattr(e, 'data', None) or {}
     errors = data.get('messages') or data.get('errors')
     return GraceResult.param_error(data=errors), 422
@@ -201,7 +218,7 @@ def unprocessable_entity_handler(e):
 @app.errorhandler(KeyError)
 @json_response
 def param_exception_handler(e):
-    Logger.error(f'param_exception_handler : {e}')
+    Logger.error(f'param_exception_handler : {e}', exc_info=True)
     return GraceResult.param_error(data=str(e)), 400
 
 
@@ -210,7 +227,7 @@ def param_exception_handler(e):
 def all_exception_handler(e):
     # 防御性双保险：若 HTTPException 意外落入此 handler，仍按原状态码返回
     if isinstance(e, HTTPException):
-        Logger.error(f'http_exception_fallback : {e}')
-        return GraceResult.error(data=str(e)), e.code
-    Logger.error(f'all_exception_handler : {e}')
-    return GraceResult.error(data=str(e)), 500
+        Logger.error(f'http_exception_fallback : {e}', exc_info=True)
+        return GraceResult.error(data=_internal_error_detail(e)), e.code
+    Logger.error(f'all_exception_handler : {e}', exc_info=True)
+    return GraceResult.error(data=_internal_error_detail(e)), 500

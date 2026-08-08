@@ -183,8 +183,11 @@ def step_migrate(args):
 
 def step_http_flow(args, redis_client, mysql_url):
     """HTTP 全流程：注册/登录/me/refresh 轮换/登出/防爆破/限流 + 数据落点断言"""
-    # 限流阈值调小便于触发 429；必须在导入 flask_server（读配置）之前设置
-    os.environ['RATE_LIMIT_PER_MINUTE'] = '10'
+    # 限流阈值说明：限流现为「路径级 + IP 级总配额」双层（IP 级兜底防随机路径绕过）。
+    # 本流程共 ~31 个非探针请求（认证/防爆破），阈值必须大于该数才能让流程通过，
+    # 再由后续 burst（>阈值）触发 429。100/min 下第 ~101 个总请求被 IP 级配额拦截。
+    # 必须在导入 flask_server（读配置）之前设置
+    os.environ['RATE_LIMIT_PER_MINUTE'] = '100'
     from flask_server import app
 
     client = app.test_client()
@@ -251,9 +254,9 @@ def step_http_flow(args, redis_client, mysql_url):
     check('brute-force lock -> 429/4003',
           r.status_code == 429 and r.get_json()['code'] == 4003, f'status={r.status_code}')
 
-    # 限流：burst 触发 429
+    # 限流：burst 触发 429（IP 级总配额在第 ~101 个总请求触发，含认证流程的 ~31 个）
     got_429 = False
-    for _ in range(15):
+    for _ in range(110):
         r = client.get('/hello')
         if r.status_code == 429:
             got_429 = True

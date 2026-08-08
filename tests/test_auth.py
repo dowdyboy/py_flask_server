@@ -325,6 +325,58 @@ def test_auth_sqlalchemy_duplicate_rejected(auth_db_env):
         AuthService.register('noah', 'other456')
 
 
+def test_sqlalchemy_store_integrity_error_maps_to_duplicate(monkeypatch):
+    """并发重复注册（绕过预检触发唯一索引 IntegrityError）应映射为重复注册语义而非 500"""
+    import sqlite3
+    from importlib import import_module
+    from sqlalchemy.exc import IntegrityError
+    from flask_server import config
+    from flask_server.component.auth import SqlAlchemyAuthStore, AuthService
+
+    sa_module = import_module('flask_server.module.sqlalchemy')
+
+    class _FakeSession:
+        def add(self, obj):
+            pass
+
+        def commit(self):
+            raise IntegrityError(
+                'INSERT INTO user ...', {},
+                sqlite3.IntegrityError('UNIQUE constraint failed: user.username'))
+
+        def rollback(self):
+            pass
+
+    class _FakeDb:
+        session = _FakeSession()
+
+    class _FakeQuery:
+        def filter(self, *a, **k):
+            return self
+
+        def first(self):
+            return None   # 预检通过，走唯一索引兜底路径
+
+    class _FakeUserPO:
+        query = _FakeQuery()
+        username = 'dummy'   # 预检表达式 UserPO.username == username 需要类属性
+
+    monkeypatch.setattr(SqlAlchemyAuthStore, '_get_po', staticmethod(lambda: _FakeUserPO))
+    monkeypatch.setattr(sa_module, 'db', _FakeDb())
+    monkeypatch.setattr(sa_module, 'sqlalchemy', lambda: _FakeDb())
+    monkeypatch.setattr(config, 'sqlalchemy_uri', 'sqlite:///tmp/x.db')
+    AuthService._store = SqlAlchemyAuthStore()
+    try:
+        # 在 app context 内调用，走 sqlalchemy_trans 直接事务路径
+        from flask import Flask
+        app = Flask(__name__)
+        with app.app_context():
+            with pytest.raises(ValueError, match='username already exists'):
+                SqlAlchemyAuthStore.create('race_user', 'hash')
+    finally:
+        AuthService._store = None
+
+
 # ------------------------- P3: token 存储自动降级 -------------------------
 
 

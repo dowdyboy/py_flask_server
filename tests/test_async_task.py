@@ -218,7 +218,17 @@ def test_subprocess_task_sentinel_to_subprocess_queue(monkeypatch):
     task.start()
     time.sleep(0.1)
     task.stop()
-    assert task.subprocess_queue.get_nowait() is None
+    # multiprocessing.Queue 的 put 由后台 feeder 线程异步刷新到管道，
+    # 立即 get_nowait() 可能因尚未落盘而 Empty（竞态）。带超时轮询等待哨兵可见。
+    sentinel = None
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            sentinel = task.subprocess_queue.get_nowait()
+            break
+        except Exception:
+            time.sleep(0.05)
+    assert sentinel is None
 
 
 def test_watch_process_none_no_crash():

@@ -83,7 +83,11 @@ class MeView(MethodView):
     @login_required
     def get(self):
         """当前登录用户信息（需要登录）"""
-        user = AuthService.get_user_by_token(request.headers.get('X-AUTH-TOKEN'))
+        # login_required 已校验 token 并把 uid 写入 request.info，这里直接按 uid 查询
+        uid = request.info.get('uid')
+        if uid is None:
+            return GraceResult.business_error(4002, '未登录或 Token 已过期'), 401
+        user = AuthService.get_user_by_uid(uid)
         if user is None:
             return GraceResult.business_error(4002, '未登录或 Token 已过期'), 401
         # 注意：只返回安全字段，绝不泄露 passwd 哈希

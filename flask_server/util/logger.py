@@ -68,11 +68,9 @@ class Logger:
                  backup_count=5,
                  to_console=False,
                  log_format='text',
+                 to_file=True,
                  **args
                  ):
-        if filename is None:
-            filename = time.strftime("%Y_%m_%d_%H_%M_%S", time.localtime())
-            filename = f'log_{filename}.log'
         # 使用命名 logger，不污染 root
         logger = logging.getLogger('flask_server')
         # 清理已有 handler，避免重复初始化
@@ -84,12 +82,16 @@ class Logger:
             formatter = JsonFormatter()
         else:
             formatter = logging.Formatter(format)
-        file_handler = RotatingFileHandler(
-            filename, maxBytes=max_bytes, backupCount=backup_count,
-            encoding='utf-8',
-        )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+        if to_file:
+            if filename is None:
+                filename = time.strftime("%Y_%m_%d_%H_%M_%S", time.localtime())
+                filename = f'log_{filename}.log'
+            file_handler = RotatingFileHandler(
+                filename, maxBytes=max_bytes, backupCount=backup_count,
+                encoding='utf-8',
+            )
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
         if to_console:
             console_handler = logging.StreamHandler()
             console_handler.setFormatter(formatter)
@@ -100,12 +102,12 @@ class Logger:
         logging.getLogger('flask_server').info(Logger._format_msg(txt))
 
     @staticmethod
-    def warn(txt):
-        logging.getLogger('flask_server').warning(Logger._format_msg(txt))
+    def warn(txt, exc_info=False):
+        logging.getLogger('flask_server').warning(Logger._format_msg(txt), exc_info=exc_info)
 
     @staticmethod
-    def error(txt):
-        logging.getLogger('flask_server').error(Logger._format_msg(txt))
+    def error(txt, exc_info=False):
+        logging.getLogger('flask_server').error(Logger._format_msg(txt), exc_info=exc_info)
 
 
 Logger.init(filename=config.log_filename,
@@ -113,4 +115,5 @@ Logger.init(filename=config.log_filename,
             max_bytes=config.log_max_bytes,
             backup_count=config.log_backup_count,
             to_console=config.log_to_console,
-            log_format=config.log_format, )
+            log_format=config.log_format,
+            to_file=config.log_to_file, )

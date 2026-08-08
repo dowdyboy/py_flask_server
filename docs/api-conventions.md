@@ -136,11 +136,26 @@ class ArticleView(MethodView):
 
 ## 限流
 
-`RATE_LIMIT_ENABLED=true` 时按 (客户端IP, 请求路径) 固定窗口计数，
-`RATE_LIMIT_PER_MINUTE`（默认 60）次/分钟，超限返回 429（code=-1）。
+`RATE_LIMIT_ENABLED=true` 时启用，固定窗口计数（`RATE_LIMIT_PER_MINUTE`，默认 60 次/分钟），
+超限返回 429（code=-1）。
 
-- 存储：`RATE_LIMIT_STORE=memory`（默认，进程内）/ `redis`（多实例准确，需配置 `REDIS_URL`）
-- 未配置 `REDIS_URL` 但设置为 `redis` 时自动回退内存存储
+**双层配额**（原子 INCR 计数，防并发竞态绕过）：
+
+- `rate:{ip}:{path}` 路径级配额：同一 IP 对同一路径的请求上限
+- `rate:{ip}` IP 级总配额：同一 IP 的**全部**请求上限（兜底，防止攻击者用随机路径
+  绕过路径级配额——webui catch-all 使任意唯一路径各有独立计数键）
+
+**豁免端点**（不计数，防编排系统误伤）：`/metrics`、`/api/v1/healthz`、`/api/v1/readyz`、
+`/api/v1/health`（探针被 429 会导致实例被摘除 → 流量集中 → 更 429 的雪崩循环）。
+
+**存储与降级**：
+
+- `RATE_LIMIT_STORE=memory`（默认，进程内）/ `redis`（多实例准确，需配置 `REDIS_URL`）
+- Redis 主存储**运行中不可达**时自动回退内存计数（单实例下限流仍生效，恢复后自动回 Redis）；
+  `RATE_LIMIT_STORE=redis` 但未配置 `REDIS_URL` 时同样回退内存存储
+
+**客户端 IP 解析**：`get_real_ip` 仅在来源位于 `TRUSTED_PROXIES`（支持 CIDR）时信任
+`X-Forwarded-For`（取第一个非空条目），否则使用 `remote_addr`。
 
 ## Prometheus 指标
 

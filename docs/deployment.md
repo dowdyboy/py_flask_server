@@ -30,8 +30,18 @@ WORKER_NUM=4 python wsgi_gunicorn.py
 4. **登录锁定**：防爆破计数存缓存，多 worker 下同样需 Redis 才能全局生效
 5. **定时任务**：若使用 APScheduler，多 worker 下任务会重复执行——建议单 worker 运行
    或加分布式锁（参考 `examples/scheduler_demo.py`）
+6. **日志**：每个 worker 都向 `LOG_FILE_PATH`（默认 `server.log`）写入，
+   多进程并发轮转同一文件存在竞态（可能丢行）。生产建议：将日志重定向到 stdout
+   （如 `LOG_FILE_PATH=` 禁用文件日志 + 容器日志采集器），或将 `LOG_FILE_PATH`
+   指向共享挂载卷后由外部工具统一轮转
+7. **Prometheus 指标**：未启用 multiprocess 模式时，各 worker 的 `/metrics` 只含本进程的
+   计数（轮询任一 worker 都会漏掉其他 worker 的数据）。需要全局准确指标时：
+   配置 `prometheus_multiproc_dir` 共享目录 + `PROMETHEUS_MULTIPROC_DIR` 环境变量，
+   并部署 prometheus-client 多进程模式（或用独立采集端聚合）
 
-两个入口均支持 SIGTERM/SIGINT 优雅关闭（释放 DB 连接池、Redis 连接、线程池）。
+waitress（wsgi.py）与 gunicorn（wsgi_gunicorn.py）均支持优雅退出：
+waitress 由 `wsgi.py` 注册的 SIGTERM/SIGINT 处理器释放 DB 连接池、Redis 连接、线程池；
+gunicorn 由自身管理信号与 worker 优雅退出。
 
 ## Docker 部署
 
@@ -91,7 +101,14 @@ docker run -p 5000:5000 --env-file .env flask-server
 3. **数据库**：使用连接池、限制数据库用户权限。
 4. **安全响应头**：默认注入 X-Content-Type-Options / X-Frame-Options / Referrer-Policy / CSP
    （`SECURITY_HEADERS_ENABLED=false` 可关闭）。
-5. **限流**：`RATE_LIMIT_ENABLED=true` 按 IP+路径 固定窗口限流，超限返回 429。
+5. **限流**：`RATE_LIMIT_ENABLED=true` 按 IP+路径 固定窗口限流（另有 IP 级总配额兜底，
+   防随机路径绕过），超限返回 429；`/metrics` 与健康探针端点豁免限流。
+6. **可信代理**：`TRUSTED_PROXIES` 内的来源会被信任其 `X-Forwarded-For` 头。
+   ⚠️ 使用 CIDR（如 Docker 的 `172.16.0.0/12`）时，该网段内**任何**主机（含同网络下
+   其他容器）都能伪造 `X-Forwarded-For`（绕过限流、污染日志 IP）。请确保网段内仅含
+   可信服务；如需严格隔离，应改为信任具体网关 IP。
+7. **认证与监控**：`AUTH_ENABLED=true` 时 `/metrics` 等未豁免端点需要 `X-AUTH-TOKEN`
+   请求头，Prometheus 抓取需配置该头（或按需加入豁免）。
 
 ## Swagger UI 内网/离线部署
 

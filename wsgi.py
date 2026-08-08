@@ -1,5 +1,4 @@
 import signal
-import sys
 from flask_server import app, config, socketio
 from flask_server.util.banner import print_startup_banner
 from waitress import serve
@@ -45,7 +44,9 @@ def _graceful_shutdown(signum, frame):
         Logger.warn(f'AsyncTask shutdown error: {e}')
 
     Logger.info('Graceful shutdown complete')
-    sys.exit(0)
+    # sys.exit 会抛 SystemExit，在信号处理器中可能被吞导致进程不退；os._exit 确保立即退出
+    import os
+    os._exit(0)
 
 
 # 注册 SIGTERM 信号处理（Docker stop / K8s pod 终止时触发）

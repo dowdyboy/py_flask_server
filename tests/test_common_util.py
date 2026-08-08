@@ -130,9 +130,39 @@ def test_get_real_ip_forwarded_ignored_from_untrusted():
     assert CommonUtil.get_real_ip(req) == '9.9.9.9'
 
 
+def test_get_real_ip_skips_empty_xff_entries():
+    """X-Forwarded-For 首项为空（`, 1.2.3.4`）时应取第一个非空条目，而非空串"""
+    req = _FakeReq(_FakeHeaders({'X-Forwarded-For': ' , 1.2.3.4'}), remote_addr='127.0.0.1')
+    assert CommonUtil.get_real_ip(req) == '1.2.3.4'
+
+
+def test_get_real_ip_xff_all_empty_falls_back_to_remote():
+    """X-Forwarded-For 全部为空时回退到 remote_addr"""
+    req = _FakeReq(_FakeHeaders({'X-Forwarded-For': ' , '}), remote_addr='127.0.0.1')
+    assert CommonUtil.get_real_ip(req) == '127.0.0.1'
+
+
 def test_get_real_ip_remote():
     req = _FakeReq(_FakeHeaders({}))
     assert CommonUtil.get_real_ip(req) == '9.9.9.9'
+
+
+def test_get_real_ip_cidr_trusted():
+    """CIDR 前缀匹配的可信代理也应信任 X-Forwarded-For（Docker 网关网段场景）"""
+    req = _FakeReq(_FakeHeaders({'X-Forwarded-For': '1.2.3.4'}), remote_addr='172.17.0.1')
+    assert CommonUtil.get_real_ip(req, ['127.0.0.1', '172.16.0.0/12']) == '1.2.3.4'
+
+
+def test_get_real_ip_cidr_untrusted():
+    """CIDR 网段之外的来源仍不信任 X-Forwarded-For"""
+    req = _FakeReq(_FakeHeaders({'X-Forwarded-For': '1.2.3.4'}), remote_addr='10.0.0.1')
+    assert CommonUtil.get_real_ip(req, ['127.0.0.1', '172.16.0.0/12']) == '10.0.0.1'
+
+
+def test_get_real_ip_invalid_proxy_entry_ignored():
+    """可信代理列表中的非法条目应被忽略，不影响其他条目"""
+    req = _FakeReq(_FakeHeaders({'X-Forwarded-For': '1.2.3.4'}), remote_addr='127.0.0.1')
+    assert CommonUtil.get_real_ip(req, ['not-an-ip', '127.0.0.1']) == '1.2.3.4'
 
 
 def test_mask_uri_basic():
@@ -164,12 +194,12 @@ def test_dict_map_no_mutation_of_mapper():
     assert mapper == {'a': 'x'}
 
 
-def test_obj_to_dict_datetime_fallback():
-    """datetime 等无 __dict__ 的对象应回退为字符串表示"""
+def test_obj_to_dict_datetime_iso():
+    """datetime 应转为 ISO 8601 字符串（而非 str() 的本地格式）"""
     from datetime import datetime
     d = CommonUtil.obj_to_dict(datetime(2024, 6, 30, 12, 0, 0))
     assert isinstance(d, str)
-    assert '2024-06-30' in d
+    assert d == '2024-06-30T12:00:00'
 
 
 def test_obj_to_dict_unsupported_fallback():

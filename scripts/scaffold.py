@@ -19,7 +19,7 @@ from datetime import date
 
 # 复制时排除的目录/文件
 ALWAYS_EXCLUDE_DIRS = {'.git', '__pycache__', '.pytest_cache', '.venv', 'venv',
-                       'htmlcov', '.idea', '.vscode'}
+                       'htmlcov', '.idea', '.vscode', '.opencode'}
 EXCLUDE_FILES = {'.coverage', '.DS_Store', 'Thumbs.db'}
 
 
@@ -42,6 +42,9 @@ def copy_template(src_dir, dst_dir, author='Your Name', exclude_dirs=None):
             elif os.path.isfile(full) and name == '.env':
                 ignored.add(name)
             elif name.endswith(('.log', '.db', '.sqlite', '.sqlite3', '.pyc', '.pyo')):
+                ignored.add(name)
+            # storage/ 目录下仅保留占位文件，不复制用户数据
+            elif os.path.basename(current) == 'storage' and name != '.gitkeep':
                 ignored.add(name)
         return ignored
 

@@ -96,23 +96,109 @@ def test_debug_sql_printing_path(monkeypatch):
 
 
 def test_init_sqlite_db_executes_init_sql(monkeypatch):
-    """init_sqlite_db 执行配置的初始化 SQL 列表"""
+    """init_sqlite_db 用 executescript 执行配置的初始化 SQL（整体执行，保留存储过程内分号）"""
     from flask_server import config
     from flask_server.module.sqlite import init_sqlite_db
 
     executed = []
 
+    class _FakeCur:
+        def executescript(self, sql):
+            executed.append(sql)
+
     class _FakeConn:
         def cursor(self):
-            return self
-
-        def execute(self, sql):
-            executed.append(sql)
+            return _FakeCur()
 
         def commit(self):
             pass
 
-    monkeypatch.setattr(config, 'db_init_sql_list', ['CREATE TABLE t(x INT)'])
+    monkeypatch.setattr(config, 'db_init_sql', 'CREATE TABLE t(x INT);\n-- comment with ;\nCREATE TABLE u(y INT);')
     monkeypatch.setattr(SQLite, 'conn', _FakeConn())
     init_sqlite_db()
-    assert executed == ['CREATE TABLE t(x INT)']
+    assert executed == ['CREATE TABLE t(x INT);\n-- comment with ;\nCREATE TABLE u(y INT);']
+
+
+def test_init_sqlite_db_skipped_when_no_init_sql(monkeypatch):
+    """未配置初始化 SQL 时 init_sqlite_db 为空操作"""
+    from flask_server import config
+    from flask_server.module.sqlite import init_sqlite_db
+
+    executed = []
+
+    class _FakeCur:
+        def executescript(self, sql):
+            executed.append(sql)
+
+    class _FakeConn:
+        def cursor(self):
+            return _FakeCur()
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(config, 'db_init_sql', None)
+    monkeypatch.setattr(SQLite, 'conn', _FakeConn())
+    init_sqlite_db()
+    assert executed == []
+
+
+def test_execute_retries_on_database_locked(monkeypatch):
+    """并发写锁冲突（database is locked）应重试后成功，而非直接抛异常"""
+    import sqlite3
+    from flask_server.module.sqlite import SQLite as S
+
+    calls = {'n': 0}
+
+    class _FakeCur:
+        def execute(self, sql, params=None):
+            calls['n'] += 1
+            if calls['n'] <= 2:
+                raise sqlite3.OperationalError('database is locked')
+
+        lastrowid = 7
+
+    class _FakeConn:
+        def cursor(self):
+            return _FakeCur()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    conn = _FakeConn()
+    monkeypatch.setattr(S, 'conn', conn)
+    monkeypatch.setattr(S, '_LOCKED_RETRIES', 3)
+    monkeypatch.setattr(S, '_LOCKED_RETRY_INTERVAL', 0)
+    row_id = S.execute('INSERT INTO t VALUES (?)', [1], ret_row_id=True)
+    assert row_id == 7
+    assert calls['n'] == 3   # 2 次锁冲突 + 1 次成功
+
+
+def test_execute_raises_after_retries_exhausted(monkeypatch):
+    """锁冲突重试耗尽后仍应抛异常"""
+    import sqlite3
+    from flask_server.module.sqlite import SQLite as S
+
+    class _FakeCur:
+        def execute(self, sql, params=None):
+            raise sqlite3.OperationalError('database is locked')
+
+    class _FakeConn:
+        def cursor(self):
+            return _FakeCur()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    monkeypatch.setattr(S, 'conn', _FakeConn())
+    monkeypatch.setattr(S, '_LOCKED_RETRIES', 2)
+    monkeypatch.setattr(S, '_LOCKED_RETRY_INTERVAL', 0)
+    import pytest
+    with pytest.raises(sqlite3.OperationalError):
+        S.execute('INSERT INTO t VALUES (?)', [1])

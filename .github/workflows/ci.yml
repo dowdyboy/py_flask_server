@@ -82,7 +82,7 @@ jobs:
       - name: Install ruff
         run: pip install ruff
       - name: Ruff check
-        run: ruff check flask_server/ tests/ examples/ server.py wsgi.py
+        run: ruff check flask_server/ tests/ examples/ scripts/ server.py wsgi.py wsgi_gunicorn.py
 
   deps-sync:
     runs-on: ubuntu-latest

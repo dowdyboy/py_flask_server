@@ -272,6 +272,74 @@ def test_json_response_decorator():
     assert returns_ok()['data'] == {'x': 1}
 
 
+def test_json_response_passes_through_response():
+    """json_response 应原样透传 Response 对象（send_file/redirect 场景），不得序列化"""
+    from flask import Response
+    from flask_server.app import json_response
+
+    @json_response
+    def returns_response():
+        return Response(b'file-content', status=200, mimetype='application/octet-stream')
+
+    @json_response
+    def returns_response_tuple():
+        return Response('created', status=201), 201
+
+    resp = returns_response()
+    assert isinstance(resp, Response)
+    assert resp.get_data() == b'file-content'
+
+    resp, status = returns_response_tuple()
+    assert isinstance(resp, Response)
+    assert status == 201
+
+
+def test_json_response_three_tuple():
+    """json_response 应支持 Flask 3 元组 (data, status, headers)"""
+    from flask import Response
+    from flask_server.app import json_response
+
+    @json_response
+    def returns_three_tuple():
+        return {'a': 1}, 201, {'X-Custom': 'v'}
+
+    @json_response
+    def returns_three_tuple_with_response():
+        return Response('ok'), 202, {'X-Custom': 'v2'}
+
+    data, status, headers = returns_three_tuple()
+    assert data == {'a': 1}
+    assert status == 201
+    assert headers == {'X-Custom': 'v'}
+
+    resp, status, headers = returns_three_tuple_with_response()
+    assert isinstance(resp, Response)
+    assert status == 202
+    assert headers == {'X-Custom': 'v2'}
+
+
+def test_500_hides_internal_detail_in_production(client, monkeypatch):
+    """非 development 环境 500 不应向客户端回显内部异常详情"""
+    from flask_server import app, config
+    monkeypatch.setattr(config, 'app_env', 'production')
+    monkeypatch.setitem(app.config, 'TESTING', False)   # TESTING 下异常会传播，不走 500
+
+    def boom():
+        raise ValueError('secret-db-connection-string')
+
+    teardown = _probe(app, boom)
+    try:
+        resp = client.get('/hello')
+        assert resp.status_code == 500
+        body = resp.get_json()
+        assert body['code'] == -1
+        assert 'secret-db-connection-string' not in body['data']
+        assert body['data'] == '服务器内部错误'
+    finally:
+        teardown()
+        monkeypatch.setitem(app.config, 'TESTING', True)
+
+
 def test_spa_fallback_returns_index(client):
     """无扩展名的路径回退到 index.html（SPA）"""
     resp = client.get('/some/spa/route')

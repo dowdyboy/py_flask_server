@@ -73,7 +73,11 @@ class Config:
         self.max_content_length = _parse_int('MAX_CONTENT_LENGTH', 16 * 1024 * 1024)   # 默认 16MB
 
         # logger配置
-        self.log_filename = os.path.join(self.project_dir, 'server.log')
+        # LOG_FILE_PATH：日志文件路径（默认项目根 server.log）；设为空字符串则禁用文件日志（仅控制台）
+        _log_file_path = os.environ.get('LOG_FILE_PATH')
+        self.log_to_file = _log_file_path is not None and bool(_log_file_path.strip())
+        self.log_filename = _log_file_path.strip() if _log_file_path and _log_file_path.strip() \
+            else os.path.join(self.project_dir, 'server.log')
         self.log_level = logging.DEBUG if self.debug else logging.INFO
         self.log_max_bytes = _parse_int('LOG_MAX_BYTES', 10 * 1024 * 1024)
         self.log_backup_count = _parse_int('LOG_BACKUP_COUNT', 5)
@@ -87,12 +91,17 @@ class Config:
 
         # sqlite相关配置（默认不启用；空值视为未配置）
         self.db_file_path = os.environ.get('SQLITE_DB_PATH') or None
-        self.db_init_sql_list = []
-        # S4: 支持从外部 SQL 文件加载初始化脚本
+        # S4: 支持从外部 SQL 文件加载初始化脚本（保存原始文本，由 sqlite 模块 executescript 执行，
+        # 避免按分号拆分破坏存储过程/字符串内的分号）
+        self.db_init_sql = None
         _init_sql_path = os.environ.get('INIT_SQL_PATH') or None
         if _init_sql_path and os.path.isfile(_init_sql_path):
             with open(_init_sql_path, 'r', encoding='utf-8') as f:
-                self.db_init_sql_list = [s.strip() for s in f.read().split(';') if s.strip()]
+                self.db_init_sql = f.read()
+        self.db_init_sql_list = []
+        if self.db_init_sql:
+            # 兼容旧接口：按分号拆分一份语句列表（简单建表脚本场景可用）
+            self.db_init_sql_list = [s.strip() for s in self.db_init_sql.split(';') if s.strip()]
 
         # sqlalchemy相关配置（默认不启用；空值视为未配置）
         self.sqlalchemy_uri = os.environ.get('SQLALCHEMY_URI') or None

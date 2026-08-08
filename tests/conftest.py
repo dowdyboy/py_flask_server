@@ -20,6 +20,10 @@ for _key, _val in {
     'RATE_LIMIT_ENABLED': 'false',
     'DB_REFLECT_ON_START': 'false',
     'APP_ENV': 'development',
+    # 测试日志不写项目根 server.log（LOG_FILE_PATH 为空 = 禁用文件 handler）
+    'LOG_FILE_PATH': '',
+    # 固定 DEBUG=true：禁用 health 依赖检查缓存等仅生产生效的逻辑，保证测试实时探测
+    'DEBUG': 'true',
 }.items():
     os.environ.setdefault(_key, _val)
 

@@ -86,6 +86,11 @@ class CommonUtil:
         if isinstance(obj, (int, float, str, bool)):
             return obj
 
+        # datetime/date 转 ISO 8601 字符串（比 str() 的本地格式更规范）
+        import datetime as _dt
+        if isinstance(obj, (_dt.datetime, _dt.date)):
+            return obj.isoformat()
+
         # 如果是列表，递归转换列表中的每个元素
         if isinstance(obj, list):
             if _seen is None:
@@ -138,7 +143,8 @@ class CommonUtil:
             request (flask.Request): Flask请求对象，包含请求头信息
             trusted_proxies (list, optional): 可信代理IP列表。仅在请求来自可信代理时
                 才信任 X-Forwarded-For，防止客户端伪造IP。默认为 None，
-                此时使用配置的 TRUSTED_PROXIES（默认 127.0.0.1,::1）
+                此时使用配置的 TRUSTED_PROXIES（默认 127.0.0.1,::1）。
+                支持精确 IP 与 CIDR 前缀（如 172.16.0.0/12，覆盖 Docker 网关网段）
 
         Returns:
             str: 客户端的真实IP地址
@@ -146,12 +152,38 @@ class CommonUtil:
         if trusted_proxies is None:
             from ..config import config
             trusted_proxies = config.trusted_proxies
-        # 仅当请求确实来自可信代理时，才信任 X-Forwarded-For（取第一个 IP）
-        if request.remote_addr in trusted_proxies and 'X-Forwarded-For' in request.headers:
-            user_ip = request.headers.get('X-Forwarded-For').split(',')[0].strip()
+        # 仅当请求确实来自可信代理时，才信任 X-Forwarded-For（取第一个非空条目，
+        # 防 `, 1.2.3.4` 这类空首项把 IP 归一为空串）
+        if _is_trusted_addr(request.remote_addr, trusted_proxies) and 'X-Forwarded-For' in request.headers:
+            xff = request.headers.get('X-Forwarded-For')
+            user_ip = next((p.strip() for p in xff.split(',') if p.strip()), None)
+            if user_ip is None:
+                user_ip = request.remote_addr
         else:
             user_ip = request.remote_addr
         return user_ip
+
+
+def _is_trusted_addr(remote_addr, trusted_proxies) -> bool:
+    """判断来源地址是否在可信代理列表中（支持精确 IP 与 CIDR 前缀；非法条目忽略）"""
+    if not remote_addr:
+        return False
+    import ipaddress
+    try:
+        remote = ipaddress.ip_address(remote_addr)
+    except ValueError:
+        # 非 IP（如 unix socket 占位符），按精确字符串匹配兜底
+        return remote_addr in (trusted_proxies or [])
+    for item in trusted_proxies or []:
+        try:
+            if '/' in item:
+                if remote in ipaddress.ip_network(item, strict=False):
+                    return True
+            elif remote == ipaddress.ip_address(item):
+                return True
+        except ValueError:
+            continue   # 忽略配置中的非法条目
+    return False
 
 
 

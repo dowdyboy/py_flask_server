@@ -88,7 +88,7 @@ def _run_trans(func, *args, **kwargs):
         return ret
     except Exception as e:
         db.session.rollback()
-        Logger.error(f'sqlalchemy_trans : {e}')
+        Logger.error(f'sqlalchemy_trans : {e}', exc_info=True)
         raise
 
 

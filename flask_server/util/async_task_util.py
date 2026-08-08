@@ -17,17 +17,16 @@ from .logger import Logger
 
 async def async_run_func(func, **kwargs):
     """
-    异步执行指定函数
+    异步执行指定函数（在独立线程中真正异步执行）
 
-    注意：此函数仅包装同步函数为异步调用签名，不会改变函数的执行方式。
-    若在 eventlet 模式下使用，asyncio.run 可能与 eventlet 事件循环冲突，
+    注意：若在 eventlet 模式下使用，asyncio 与 eventlet 事件循环可能冲突，
     建议在 threading 模式下使用。
 
     Args:
         func (callable): 需要异步执行的函数对象
         **kwargs: 传递给func的关键字参数
     """
-    func(**kwargs)
+    await asyncio.to_thread(func, **kwargs)
 
 
 def do_run_func(func, **kwargs):
@@ -63,16 +62,12 @@ async def async_run_command(cmd, extra_param, on_success, on_error):
                                                     stderr=asyncio.subprocess.PIPE)
         stdout, stderr = await proc.communicate()
         if proc.returncode == 0:
-            # print(f"{cmd} succeeded, {stdout.decode()}")
             if on_success is not None:
                 on_success(extra_param, [stdout.decode()])
         else:
-            # print(f"{cmd} failed with code {proc.returncode}")
-            # print(stderr.decode())
             if on_error is not None:
                 on_error(extra_param, [proc.returncode, stderr.decode()])
     except Exception as e:
-        # print(f"{cmd} failed with try catch: {e}")
         if on_error is not None:
             on_error(extra_param, [e])
 
@@ -179,10 +174,6 @@ class AsyncTaskUtil:
         )
 
 
-# AsyncTaskUtil.submit_cmd_task_plain(
-#     'node --version',
-#     'hello,task', lambda a,b: print(a,b), lambda a,b: print(a,b))
-
 # 进程退出时关闭线程池（wait=False 不等待任务完成直接关闭）
 atexit.register(lambda: AsyncTaskUtil.executor.shutdown(wait=False))
 
@@ -226,11 +217,11 @@ class SubprocessTaskInterface:
         raise NotImplementedError
 
     def on_thread_func_error(self, e, handler, task):
-        Logger.error(f'SubprocessTask thread_func error: {e}')
+        Logger.error(f'SubprocessTask thread_func error: {e}', exc_info=True)
         task.stop()
 
     def on_subprocess_func_error(self, e, handler, task):
-        Logger.error(f'SubprocessTask subprocess_func error: {e}')
+        Logger.error(f'SubprocessTask subprocess_func error: {e}', exc_info=True)
         task.stop()
 
 class SubprocessTask:
@@ -295,14 +286,11 @@ class SubprocessTask:
             Logger.error(f'SubprocessTask Stop Subprocess Error: {e}')
 
     def watch_process(self, p, callback):
-        # print('!!!!!!!!!!!!!watch_process')
-        """独立监控线程"""
+        """独立监控线程：子进程退出且返回码非 0 时触发错误回调"""
         if p is None:
             return
-        # p.join()
         while p.is_alive():
             time.sleep(1)
-        # print(f'!!!!!!!!!!!!!!!!p.exitcode: {p.exitcode}')
         if p.exitcode != 0:
             callback(p.exitcode, p, self)
 

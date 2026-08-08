@@ -1,6 +1,7 @@
 import sqlite3
 import threading
 import os
+import time
 from ..config import config
 from ..util import Logger
 
@@ -9,8 +10,18 @@ from ..util import Logger
 
 class SQLite:
 
-    # 线程锁：sqlite3 连接对象本身非线程安全，check_same_thread=False 仅绕过 Python 层检查
-    _lock = threading.Lock()
+    # 每线程独立连接（threading.local）：sqlite3 连接非线程安全，
+    # 单连接 + 全局锁虽正确但并发上限低（长查询会阻塞全部操作），
+    # per-thread 连接各线程互不阻塞，写操作由 SQLite 文件锁串行化。
+    _local = threading.local()
+
+    # 并发写冲突重试：per-thread 连接下多个线程同时写可能触发
+    # OperationalError: database is locked，此处做有限次重试（退避等待），
+    # 配合连接级 busy_timeout，显著降低写冲突导致 500 的概率。
+    _LOCKED_RETRIES = 3
+    _LOCKED_RETRY_INTERVAL = 0.1   # 秒
+    # sqlite3.connect 的 timeout：默认 5s，这里放宽到 30s（配合 busy_timeout 生效）
+    _CONNECT_TIMEOUT = 30
 
     # 判断是否使用sqlite3数据库，如果使用，则初始化连接，否则为None
     if config.db_file_path is not None:
@@ -19,10 +30,39 @@ class SQLite:
         _db_dir = os.path.dirname(config.db_file_path)
         if _db_dir:
             os.makedirs(_db_dir, exist_ok=True)
-        conn = sqlite3.connect(config.db_file_path, check_same_thread=False)
+        conn = sqlite3.connect(config.db_file_path, timeout=_CONNECT_TIMEOUT, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        # 提升并发写容错：WAL 模式允许读不阻塞写、写不阻塞读（单写者）
+        try:
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA busy_timeout=30000')
+        except sqlite3.Error as e:
+            Logger.warn(f'SQLite PRAGMA failed: {e}')
     else:
         conn = None
+
+    @classmethod
+    def _get_conn(cls):
+        """获取当前线程的连接。
+
+        主线程复用模块级连接（保持测试注入 SQLite.conn 的兼容性）；
+        工作线程惰性创建专属连接（sqlite3 连接非线程安全）。
+        未配置 SQLITE_DB_PATH 时（conn 被外部注入的场景）工作线程复用模块级连接。
+        """
+        if cls.conn is None:
+            return None
+        if threading.current_thread() is threading.main_thread() or not config.db_file_path:
+            return cls.conn
+        c = getattr(cls._local, 'conn', None)
+        if c is None:
+            c = sqlite3.connect(config.db_file_path, timeout=cls._CONNECT_TIMEOUT, check_same_thread=False)
+            c.row_factory = sqlite3.Row
+            try:
+                c.execute('PRAGMA busy_timeout=30000')
+            except sqlite3.Error:
+                pass
+            cls._local.conn = c
+        return c
 
     # 将值转换为字符串，用于sql语句中
     # 注意：仅支持 ? 占位符参数化查询，禁止将值直接拼接进 SQL（防注入）
@@ -50,28 +90,46 @@ class SQLite:
     # SQLite.execute("INSERT INTO table (column1, column2) VALUES (?, ?)", [1, 2])
     @staticmethod
     def execute(sql, params=None, ret_row_id=False):
-        with SQLite._lock:
-            c = SQLite.conn.cursor()
-            if config.debug and config.debug_sql:
-                Logger.info(sql)
-            c.execute(sql, params or [])
-            if ret_row_id:
-                row_id = c.lastrowid
-            else:
-                row_id = None
-            SQLite.conn.commit()
-            return row_id
+        conn = SQLite._get_conn()
+        if conn is None:
+            raise RuntimeError('SQLite 未启用，请配置 SQLITE_DB_PATH')
+        if config.debug and config.debug_sql:
+            Logger.info(sql)
+        last_error = None
+        for attempt in range(SQLite._LOCKED_RETRIES + 1):
+            try:
+                cur = conn.cursor()
+                cur.execute(sql, params or [])
+                if ret_row_id:
+                    row_id = cur.lastrowid
+                else:
+                    row_id = None
+                conn.commit()
+                return row_id
+            except sqlite3.OperationalError as e:
+                if 'locked' not in str(e).lower() or attempt >= SQLite._LOCKED_RETRIES:
+                    raise
+                # 回滚未提交事务再重试，避免 commit 锁冲突后重试造成重复写入
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                last_error = e
+                time.sleep(SQLite._LOCKED_RETRY_INTERVAL * (attempt + 1))
+        raise last_error
 
     # 执行sql语句，返回结果，多用于select语句，用法示例：
     # SQLite.fetch("SELECT * FROM table WHERE id = ?", [1])
     @staticmethod
     def fetch(sql, params=None, ):
-        with SQLite._lock:
-            c = SQLite.conn.cursor()
-            if config.debug and config.debug_sql:
-                Logger.info(sql)
-            c.execute(sql, params or [])
-            return c.fetchall()
+        conn = SQLite._get_conn()
+        if conn is None:
+            raise RuntimeError('SQLite 未启用，请配置 SQLITE_DB_PATH')
+        if config.debug and config.debug_sql:
+            Logger.info(sql)
+        cur = conn.cursor()
+        cur.execute(sql, params or [])
+        return cur.fetchall()
 
     # 插入数据，用法示例：
     # SQLite.insert("table", ["column1", "column2"], [1, 2])
@@ -118,13 +176,15 @@ class SQLite:
         SQLite.execute(sql, params=params)
 
 # 初始化sqlite数据库，用于创建表和插入初始数据
+# 使用 executescript 执行整个 SQL 文件（SQLite 自带解析器处理分号/注释/引号内分号，
+# 优于 Python 按 ';' 拆分——后者会破坏存储过程与字符串字面量）
 def init_sqlite_db():
-    if SQLite.conn is not None:
+    if SQLite.conn is not None and config.db_init_sql:
         Logger.info('init_sqlite_db doing ... ... ... ')
-        c = SQLite.conn.cursor()
-        for sql in config.db_init_sql_list:
-            c.execute(sql)
-        SQLite.conn.commit()
+        conn = SQLite.conn
+        cur = conn.cursor()
+        cur.executescript(config.db_init_sql)
+        conn.commit()
 
 
 init_sqlite_db()

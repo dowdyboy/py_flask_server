@@ -34,6 +34,7 @@
 | `LOG_MAX_BYTES` | `10485760` | 日志单文件最大字节数（默认 10MB） |
 | `LOG_BACKUP_COUNT` | `5` | 保留的历史日志文件数 |
 | `LOG_TO_CONSOLE` | _随 APP_ENV_ | 是否输出日志到控制台 |
+| `LOG_FILE_PATH` | `server.log` | 日志文件路径（默认项目根 `server.log`）；设为空字符串则禁用文件日志（仅控制台）。测试场景建议设空，避免测试运行污染日志 |
 | `DEBUG_SQL` | `false` | 是否打印 SQL 语句（开发调试用） |
 | `SQLALCHEMY_URI` | _无_ | SQLAlchemy 数据库 URI |
 | `SQLITE_DB_PATH` | _无_ | SQLite 数据库文件路径 |
@@ -42,11 +43,11 @@
 | `DB_POOL_RECYCLE` | `3600` | 连接回收时间（秒） |
 | `DB_POOL_PRE_PING` | `true` | 连接前 ping 检查 |
 | `DB_POOL_TIMEOUT` | `30` | 获取连接超时（秒） |
-| `INIT_SQL_PATH` | _无_ | SQL 初始化脚本文件路径 |
+| `INIT_SQL_PATH` | _无_ | SQL 初始化脚本文件路径（整体以 `executescript` 执行，兼容存储过程/注释内的分号） |
 | `REDIS_URL` | _无_ | Redis 连接地址，未配置时使用内存缓存 |
 | `RATE_LIMIT_ENABLED` | `false` | 是否启用接口限流（按 IP+路径 固定窗口计数） |
 | `RATE_LIMIT_PER_MINUTE` | `60` | 每个 IP+路径 每分钟允许的请求数，超出返回 429 |
-| `TRUSTED_PROXIES` | `127.0.0.1,::1` | 可信代理 IP 列表；`get_real_ip` 仅信任来自这些地址的 `X-Forwarded-For` |
+| `TRUSTED_PROXIES` | `127.0.0.1,::1` | 可信代理 IP 列表（支持精确 IP 与 CIDR 前缀，如 `172.16.0.0/12` 覆盖 Docker 网关网段）；`get_real_ip` 仅信任来自这些地址的 `X-Forwarded-For`。⚠️ CIDR 内任何主机都可伪造 `X-Forwarded-For`（绕过限流/污染日志），请确保网段内仅含可信服务 |
 | `SECURITY_HEADERS_ENABLED` | `true` | 是否注入安全响应头（X-Frame-Options/CSP 等） |
 | `AUTH_ENABLED` | `false` | 是否启用全局认证保护（开启后 /api/ 下未豁免路径需 X-AUTH-TOKEN） |
 | `AUTH_TOKEN_TTL` | `604800` | access token 有效期（秒，默认 7 天） |

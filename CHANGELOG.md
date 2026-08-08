@@ -3,6 +3,67 @@
 本模板项目的变更记录。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 修复
+
+- **异常日志携带 traceback**：`Logger.error/warn` 新增 `exc_info` 参数；
+  全局 errorhandler 与 `sqlalchemy_trans` 记录完整堆栈（修复前全局 handler 接管异常后
+  Flask 不再打印 traceback，线上 500 仅一行消息无法定位）
+- **500 错误详情脱敏**：非 development 环境 5xx 响应只回显通用消息，
+  内部异常详情（SQL/路径/连接串）仅入日志
+- **限流原子化**：固定窗口计数改用原子 INCR（并发下不再绕过阈值）；
+  Redis 主存储不可用时回退内存计数（与 auth 模块降级策略一致，单实例限流仍生效）
+- **Docker 网关限流误伤**：`get_real_ip` 支持 CIDR 可信代理（如 `172.16.0.0/12`），
+  compose 默认信任 Docker 网关网段，修复容器部署下所有客户端共享同一限流桶的误报 429
+- **`@json_response` 透传 Response**：视图返回 `Response`（send_file/redirect）时原样返回，
+  不再被序列化为对象字典
+- **健康检查依赖探测缓存**：非 debug 模式结果短 TTL 缓存（5s），
+  探针高频轮询不再每次真实连库/连 Redis；readyz 保持实时
+- **测试日志隔离**：新增 `LOG_FILE_PATH` 配置，测试环境默认禁用文件日志
+  （修复前 pytest 运行向项目根 `server.log` 追加写入）
+- **SQLite 并发改进**：per-thread 连接替代单连接+全局锁（长查询不再阻塞全部操作）；
+  初始化脚本改 `executescript` 整体执行（兼容存储过程/字符串内分号）
+- `async_run_func` 改为 `asyncio.to_thread` 真正在线程中异步执行（修复前为同步直调）
+- `/metrics` 豁免限流（监控抓取不再被误伤 429）
+- `/me` 视图去掉重复 token 查询（`login_required` 已写 uid，新增 `AuthService.get_user_by_uid`）
+- `obj_to_dict` 对 datetime/date 输出 ISO 8601（修复前为 `str()` 本地格式）
+- `wsgi.py` 优雅关闭改用 `os._exit`（避免 SystemExit 在信号处理器中被吞导致进程不退）
+
+### 新增
+
+- `LOG_FILE_PATH` 配置项：自定义日志文件路径；空字符串禁用文件日志
+- **限流 IP 级总配额**：`rate:{ip}` 兜底计数，封堵「随机路径绕过路径级配额」的漏洞
+  （webui catch-all 使任意唯一路径各有独立计数键，攻击者可拼随机路径绕过原实现）
+- `json_response` 支持 Flask 3 元组 `(data, status, headers)`（修复前 3 元组抛 ValueError）
+- SQLite 并发写容错：连接级 `busy_timeout` + WAL 模式 + `database is locked` 有限重试
+  （修复前 per-thread 连接在高并发写下会抛锁冲突异常；重试前回滚避免重复写入）
+- pyproject.toml 补齐 `prometheus-client` 依赖（修复 deps-sync CI job 必然失败的清单不一致，
+  `pip install -e .` 依赖残缺）
+- `test_subprocess_task_sentinel_to_subprocess_queue` 修复 multiprocessing.Queue
+  feeder 线程刷新竞态（带超时轮询，消除 CI/本机偶发失败）
+- `SQLite._get_conn` 未配置 `SQLITE_DB_PATH` 时工作线程复用模块级连接（修复注入场景 TypeError）
+- CI lint job 覆盖 `wsgi_gunicorn.py`/`scripts/`（与 Makefile 一致）
+- README/docs 用例数与覆盖率数字同步（306 用例 / 91.72%）
+- **探针端点豁免限流**：`/metrics`、`/api/v1/healthz`、`/api/v1/readyz`、`/api/v1/health`
+  不再计数（修复 readyz 被 429 导致编排系统摘除实例 → 流量集中 → 更 429 的雪崩循环）
+- `get_real_ip` 跳过 `X-Forwarded-For` 空条目（修复 `, 1.2.3.4` 首项为空时 IP 归一为空串，
+  全空时回退 remote_addr）
+- **认证并发注册竞态修复**：`SqlAlchemyAuthStore.create` 捕获唯一索引 `IntegrityError`
+  映射为重复注册语义（修复先查重后插入的 TOCTOU 竞态在并发下返回 500）
+- docker-compose.prod.yml：`REDIS_URL` 带上 `${REDIS_PASSWORD}`（修复设置 Redis 密码后
+  app 无法认证连接的不一致）
+- 文档：CIDR 可信代理的 XFF 伪造风险、多 worker 日志轮转建议、gunicorn 优雅关闭措辞修正、
+  `AUTH_ENABLED` 下 `/metrics` 抓取需 token 说明
+- requirements-dev.txt 补 `ruff`（`make lint` 依赖）
+- scaffold.py 排除 `.opencode/` 与 `storage/` 下用户数据文件
+- `verify_real_env.py` 适配双层限流：阈值调至 100、burst 增至 110
+  （修复 IP 级总配额使流程第 11 个请求即 429、防爆破断言必然失败的回归）
+- 文档：api-conventions.md 限流章节同步（双层配额/探针豁免/降级语义）、
+  deployment.md 补 gunicorn 多 worker 下 `/metrics` 进程级计数说明
+- Redis 降级路径去除逐请求重复 warn（冷却期内刷屏；故障开始/恢复仍由 RedisCache 告警）
+- scaffold.py 移除未使用的 `STORAGE_EXCLUDE_NAMES` 常量
+
 ## [0.3.2] - 2026-08-08
 
 ### 修复
