@@ -3,6 +3,35 @@
 本模板项目的变更记录。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-08-08
+
+### 新增
+
+- **登录防爆破**：连续失败 `AUTH_LOGIN_MAX_FAILS`（默认 5）次锁定 `AUTH_LOGIN_LOCK_SECONDS`（默认 300）秒，锁定期间正确密码也拒绝（code 4003）
+- **Refresh Token 轮换**：登录返回 `{token, refresh_token}`；`POST /api/v1/auth/refresh` 单次使用换新（`AUTH_REFRESH_TOKEN_TTL` 默认 30 天）
+- **雪花 ID 多进程隔离**：`SNOWFLAKE_WORKER_ID` 显式配置或按 PID 自动派生（修复 gunicorn 多 worker 生成重复 ID）
+- **分布式限流**：`RATE_LIMIT_STORE=redis`（多实例准确，需 REDIS_URL）
+- **性能基准脚本** `scripts/benchmark.py`：并发压测，输出 QPS/平均/P50/P95/P99 延迟
+- **示例补齐**：SocketIO 事件演示（`examples/socketio_demo.py`）、文件上传/下载/删除端点（`examples/controller/file_controller.py`）、APScheduler 定时任务（`examples/scheduler_demo.py`）
+- **发布流程**：`v*` tag 自动创建 GitHub Release（notes 提取自 CHANGELOG）
+- **CI docker-build job**：多阶段构建验证 + 容器启动冒烟 + 镜像体积输出
+- **启动自检增强**：多 worker 未配 Redis 时 banner 告警（memory_cache 进程内不一致）
+
+### 修复
+
+- 认证 `SqlAlchemyAuthStore` 无 app context 崩溃（新增 `in_app_context` 通用辅助）
+- 认证 sqlalchemy 存储补集成测试（含占位模型 reload 语义）
+
+### 测试
+
+- 认证 9 → 18 例（防爆破 3、refresh 轮换 2、sqlalchemy store 4）
+- 新增 benchmark 4 例、分布式限流 3 例、雪花 PID 派生 3 例、banner 多 worker 告警 2 例
+- 用例总数 184 → **203**，覆盖率 ~85%
+
+### 文档
+
+- docs 补充：benchmark 用法、登录防爆破与 refresh 说明、多进程部署注意事项
+
 ## [0.2.0] - 2026-08-08
 
 ### 新增
