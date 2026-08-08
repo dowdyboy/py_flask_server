@@ -3,11 +3,11 @@ from flask_server.util import Logger, GraceResult
 from flask import request
 
 # 样例Controller，展示了获取参数和使用cache
-# 注意：接入工程前需在 flask_server/service/__init__.py 中导出 UserService
+# 注意：接入工程前需将 UserService 放入 flask_server/service/ 并导出
 #       from .user_service import UserService
 #       __all__ = ['UserService']
 
-from flask_server.service import UserService
+from examples.service.user_service import UserService
 from flask_server.module import memory_cache as cache
 
 

@@ -1,5 +1,5 @@
-# 先加载webui的controller
-from .webui_controller import *
+# 先加载webui的controller（显式导入，避免 * 导入污染命名空间）
+from . import webui_controller  # noqa: F401   # 注册 webui 路由
 # 后面加载的url覆盖前面的
 from .hello_controller import blp as hello_blp
 
@@ -13,5 +13,6 @@ api.register_blueprint(hello_blp)
 # 用户/文章等接口样例可参考 examples/controller/
 
 __all__ = [
-
+    'webui_controller',
 ]
+

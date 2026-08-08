@@ -3,8 +3,13 @@ from flask_smorest import Blueprint
 from flask_server.app import app, json_response
 from flask_server.util import Logger, GraceResult
 from flask_server.schema import GraceResultSchema, EchoSchema
+from flask_server import config
+import time
 
 Logger.info("hello_controller.py loaded")
+
+# 进程启动时间（用于健康检查的 uptime 字段）
+_start_time = time.time()
 
 
 # === @app.route 风格（最简示例，无校验无文档） ===
@@ -26,7 +31,11 @@ class HealthView(MethodView):
     @blp.response(200, GraceResultSchema)
     def get(self):
         """健康检查（含 DB/Redis 连通性）"""
-        status = {'status': 'up'}
+        status = {
+            'status': 'up',
+            'version': config.api_version,
+            'uptime': int(time.time() - _start_time),
+        }
 
         # 检查数据库连通性
         from flask_server.module import sqlalchemy

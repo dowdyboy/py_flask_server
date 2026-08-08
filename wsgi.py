@@ -4,6 +4,13 @@ from flask_server import app, config, socketio
 from waitress import serve
 
 
+# waitress 是纯 WSGI 服务器，不支持 WebSocket；启用 SocketIO 时给出明确警告
+if socketio is not None:
+    from flask_server.util import Logger
+    Logger.warn('SOCKETIO_ENABLED=true but waitress does not support WebSocket. '
+                'WebSocket 请求将失效，请改用 server.py（eventlet/threading 模式）。')
+
+
 def _graceful_shutdown(signum, frame):
     """优雅关闭：清理 DB 连接池、Redis 连接、线程池"""
     from flask_server.util import Logger
@@ -42,6 +49,8 @@ def _graceful_shutdown(signum, frame):
 
 # 注册 SIGTERM 信号处理（Docker stop / K8s pod 终止时触发）
 signal.signal(signal.SIGTERM, _graceful_shutdown)
+# 注册 SIGINT（Windows 下 Ctrl+C 触发；SIGTERM 在 Windows 不会产生）
+signal.signal(signal.SIGINT, _graceful_shutdown)
 
 
 if __name__ == '__main__':

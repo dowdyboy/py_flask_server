@@ -1,7 +1,6 @@
 from flask_server.module import sqlalchemy, sqlalchemy_trans
 from sqlalchemy import and_
-from flask_server.model import UserPO
-from flask_server.util import DataEncryptUtil, GraceResult, RandomGenerator, Logger
+from flask_server.util import DataEncryptUtil, RandomGenerator, Logger
 from flask_server.module import memory_cache
 from datetime import datetime
 
@@ -14,13 +13,21 @@ from datetime import datetime
 # 注意：接入工程前需在 flask_server/service/__init__.py 中导出 UserService，
 #       并在 flask_server/model/po/__init__.py 中导出 UserPO
 
+
+def _get_user_po():
+    """延迟导入 UserPO（声明式定义见 examples/model/user_declared.py）"""
+    from examples.model.user_declared import UserPO
+    return UserPO
+
+
 class UserService:
 
     @staticmethod
     @sqlalchemy_trans
     def login(username, password):
+        UserPO = _get_user_po()
         password = DataEncryptUtil.sha256(password)
-        Logger.info(f'UserService login: username({username}), password({password})')
+        Logger.info(f'UserService login: username({username})')
         user = UserPO.query.filter(and_(
             UserPO.username == username, UserPO.passwd == password
         )).first()
@@ -35,6 +42,7 @@ class UserService:
     @staticmethod
     @sqlalchemy_trans
     def list():
+        UserPO = _get_user_po()
         users = UserPO.query.all()
         Logger.info(f'UserService list: {len(users)} users')
         return users
@@ -42,6 +50,7 @@ class UserService:
     @staticmethod
     @sqlalchemy_trans
     def add():
+        UserPO = _get_user_po()
         u = UserPO()
         u.uid = '1'
         u.username = 'admin'
@@ -49,4 +58,3 @@ class UserService:
         u.last_login_time = datetime.now()
         u.create_time = datetime.now()
         sqlalchemy().session.add(u)
-

@@ -17,8 +17,14 @@ class JsonFormatter(logging.Formatter):
         log_entry = {
             'timestamp': self.formatTime(record, self.datefmt),
             'level': record.levelname,
+            'logger': record.name,
             'message': record.getMessage(),
         }
+        # 附带当前 request_id，便于链路追踪（ELK 场景按此字段聚合）
+        Logger._ensure_ctx()
+        rid = Logger._request_id_ctx.get()
+        if rid:
+            log_entry['request_id'] = rid
         return json.dumps(log_entry, ensure_ascii=False)
 
 

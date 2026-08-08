@@ -14,7 +14,7 @@ if _socketio_will_init and _async_mode == 'eventlet':
 from functools import wraps
 from flask import Flask, request, g
 from flask_cors import CORS
-from werkzeug.exceptions import HTTPException
+from werkzeug.exceptions import HTTPException, UnprocessableEntity
 from flask_smorest import Api
 from .module import init_SQLAlchemy, init_Migrate
 from .util import Logger, GraceResult, CommonUtil
@@ -28,6 +28,11 @@ CORS(app, origins=config.cors_origins)
 # 安全配置
 app.config['SECRET_KEY'] = config.secret_key
 app.config['MAX_CONTENT_LENGTH'] = config.max_content_length
+
+# 非 development 环境使用默认 SECRET_KEY 时告警（生产环境必须修改）
+if config.app_env != 'development' and config.secret_key_is_default:
+    Logger.warn('SECRET_KEY is set to the default scaffold value. '
+                'Please set a strong custom SECRET_KEY in production!')
 
 # flask-smorest API 文档 + 参数校验
 app.config.update({
@@ -51,7 +56,7 @@ if _socketio_will_init:
             async_mode=_async_mode,
             ping_timeout=120,
             ping_interval=30,
-            max_http_buffer_size=5e8,
+            max_http_buffer_size=config.socketio_max_http_buffer_size,
             cors_allowed_origins=config.cors_origins,
         )
     except ImportError:
@@ -122,6 +127,38 @@ def parse_request_form_data():
         request.payload = dict(request.form.to_dict(), **request.files.to_dict())
 
 
+@app.after_request
+def set_request_id_header(resp):
+    # 回写 X-Request-Id，客户端可据此关联服务端日志进行链路追踪
+    rid = getattr(g, 'request_id', None)
+    if rid:
+        resp.headers['X-Request-Id'] = rid
+    return resp
+
+
+# 基础安全响应头（SECURITY_HEADERS_ENABLED=true 时生效）
+_SECURITY_HEADERS = {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+}
+
+
+@app.after_request
+def set_security_headers(resp):
+    if config.security_headers_enabled:
+        for k, v in _SECURITY_HEADERS.items():
+            resp.headers.setdefault(k, v)
+        # CSP 宽松基础版：/docs 使用 CDN（jsdelivr）资源，放行远程脚本与内联样式
+        if request.path != config.api_docs_url:
+            resp.headers.setdefault(
+                'Content-Security-Policy',
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+            )
+    return resp
+
+
 @app.teardown_request
 def clear_request_id(exc=None):
     """请求结束时清除 request_id，避免线程复用时串号"""
@@ -138,6 +175,17 @@ def http_exception_handler(e):
     if e.code == 404:
         return GraceResult.error(data='资源不存在'), 404
     return GraceResult.error(data=str(e)), e.code
+
+
+@app.errorhandler(UnprocessableEntity)
+@json_response
+def unprocessable_entity_handler(e):
+    # 参数校验失败（flask-smorest/webargs 422）：统一为 GraceResult 格式，
+    # 保留字段级错误信息供客户端定位问题
+    Logger.error(f'unprocessable_entity_handler : {e}')
+    data = getattr(e, 'data', None) or {}
+    errors = data.get('messages') or data.get('errors')
+    return GraceResult.param_error(data=errors), 422
 
 
 @app.errorhandler(KeyError)

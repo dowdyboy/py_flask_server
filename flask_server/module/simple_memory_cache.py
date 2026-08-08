@@ -8,6 +8,9 @@ from ..util import Logger
 
 
 class SimpleMemoryCache:
+
+    CLEANUP_INTERVAL = 60   # 后台清理线程的执行间隔（秒）
+
     def __init__(self):
         self.cache = {}
         self.expiry_times = {}
@@ -81,3 +84,20 @@ class SimpleMemoryCache:
 
 
 memory_cache = SimpleMemoryCache()
+
+
+def _start_cleanup_thread():
+    """后台守护线程：定期清理已过期的键，防止 TTL 键长期占用内存"""
+    def _sweep():
+        while True:
+            time.sleep(SimpleMemoryCache.CLEANUP_INTERVAL)
+            try:
+                memory_cache.clear_expired()
+            except Exception as e:
+                Logger.warn(f'SimpleMemoryCache cleanup failed: {e}')
+
+    t = threading.Thread(target=_sweep, daemon=True, name='memory-cache-cleanup')
+    t.start()
+
+
+_start_cleanup_thread()

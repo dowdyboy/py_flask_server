@@ -2,29 +2,27 @@ from functools import wraps
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from ..config import config
-from ..util import Logger
+from ..util import Logger, CommonUtil
 
 # 使用SQLAlchemy作为数据库访问层，具体使用参考sqlalchemy库
 # 本文件中的函数用于初始化SQLAlchemy对象，以及提供一个装饰器用于事务处理
 
 # 脱敏数据库 URI 中的密码部分，避免明文密码写入日志
 def _mask_uri(uri):
-    if uri is None:
-        return None
-    # 匹配 scheme://user:password@host 格式，将 password 替换为 ***
-    import re
-    return re.sub(r'(://[^:]+:)[^@]+(@)', r'\1***\2', uri)
+    return CommonUtil.mask_uri(uri)
 
 Logger.info(f'SQLALCHEMY_DATABASE_URI : {_mask_uri(config.sqlalchemy_uri)}')
 
 db: SQLAlchemy = None
 migrate: Migrate = None
+_app = None   # 初始化时绑定的 Flask app（单应用场景）
 
 
 # 初始化SQLAlchemy对象，并根据配置决定是否反射数据库表结构
 def init_SQLAlchemy(app):
-    global db
+    global db, _app
     if config.sqlalchemy_uri is not None and db is None:
+        _app = app
         Logger.info(f'init_SQLAlchemy : {_mask_uri(config.sqlalchemy_uri)}')
         app.config['SQLALCHEMY_DATABASE_URI'] = config.sqlalchemy_uri
         app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = config.sqlalchemy_track_modify
@@ -37,8 +35,13 @@ def init_SQLAlchemy(app):
         }
         db = SQLAlchemy(app)
         if config.db_reflect_on_start:
-            with app.app_context():
-                db.reflect()
+            # 容错：反射失败（如 DB 短暂不可达）不应导致应用启动崩溃，
+            # engine 本身为惰性连接，首个查询时才真正连库
+            try:
+                with app.app_context():
+                    db.reflect()
+            except Exception as e:
+                Logger.warn(f'db.reflect failed, continuing without reflection: {e}')
     else:
         db = None
 
@@ -69,12 +72,21 @@ def sqlalchemy_trans(func):
     def wrapper(*args, **kwargs):
         if db is None:
             raise RuntimeError('SQLAlchemy 未初始化，请配置 SQLALCHEMY_URI')
-        try:
-            ret = func(*args, **kwargs)
-            db.session.commit()
-            return ret
-        except Exception as e:
-            db.session.rollback()
-            Logger.error(f'sqlalchemy_trans : {e}')
-            raise
+        from flask import has_app_context
+        # 自动管理 app context：业务函数内无需再手动 with app.app_context()
+        if has_app_context():
+            return _run_trans(func, *args, **kwargs)
+        with _app.app_context():
+            return _run_trans(func, *args, **kwargs)
     return wrapper
+
+
+def _run_trans(func, *args, **kwargs):
+    try:
+        ret = func(*args, **kwargs)
+        db.session.commit()
+        return ret
+    except Exception as e:
+        db.session.rollback()
+        Logger.error(f'sqlalchemy_trans : {e}')
+        raise

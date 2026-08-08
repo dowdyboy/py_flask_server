@@ -1,15 +1,39 @@
 
 
+from typing import Any, Dict, List, Optional
+
+
 # 简单通用工具类
 
 
 class CommonUtil:
 
     @staticmethod
+    def mask_uri(uri: Optional[str]) -> Optional[str]:
+        """
+        脱敏连接字符串中的密码部分，避免明文密码写入日志
+
+        支持两种常见格式：
+            scheme://user:password@host
+            scheme://:password@host     (空用户名)
+        无密码的 URI 原样返回
+
+        Args:
+            uri (str): 原始连接字符串，如 mysql+pymysql://user:pass@host/db 或 redis://:pass@host:6379/0
+
+        Returns:
+            str: 密码替换为 *** 的脱敏字符串；uri 为 None 时返回 None
+        """
+        if uri is None:
+            return None
+        import re
+        return re.sub(r'(://[^:/@]*:)[^@]*(@)', r'\1***\2', uri)
+
+    @staticmethod
     def dict_map(obj: dict,
-                 mapper: dict = None,
-                 mapper_list: list = None,
-                 only=True):
+                 mapper: Optional[dict] = None,
+                 mapper_list: Optional[list] = None,
+                 only: bool = True) -> dict:
         
         
         """
@@ -29,6 +53,8 @@ class CommonUtil:
         if mapper is None:
             mapper = dict()
         if mapper_list is not None:
+            # 拷贝后再增补，避免修改调用方传入的 mapper
+            mapper = dict(mapper)
             for k in mapper_list:
                 mapper[k] = k
         new_obj = dict()
@@ -104,25 +130,25 @@ class CommonUtil:
         return str(obj)
 
     @staticmethod
-    def get_real_ip(request):
+    def get_real_ip(request, trusted_proxies: Optional[list] = None) -> str:
         """
         从HTTP请求中获取客户端的真实IP地址
-        
+
         Args:
             request (flask.Request): Flask请求对象，包含请求头信息
-        
-        Returns:
-            str: 客户端的真实IP地址。优先从X-Forwarded-For头部获取(当存在代理时)，
-                否则返回remote_addr
-        
-        Note:
-            - X-Forwarded-For头部可能包含多个IP地址(逗号分隔)，通常第一个是客户端真实IP
-            - 适用于代理服务器(如Nginx)转发的请求场景
-        """
+            trusted_proxies (list, optional): 可信代理IP列表。仅在请求来自可信代理时
+                才信任 X-Forwarded-For，防止客户端伪造IP。默认为 None，
+                此时使用配置的 TRUSTED_PROXIES（默认 127.0.0.1,::1）
 
-        # X-Forwarded-For可以包含多个IP地址，通常第一个是客户端的真实IP
-        if 'X-Forwarded-For' in request.headers:
-            user_ip = request.headers.get('X-Forwarded-For').split(',')[0]
+        Returns:
+            str: 客户端的真实IP地址
+        """
+        if trusted_proxies is None:
+            from ..config import config
+            trusted_proxies = config.trusted_proxies
+        # 仅当请求确实来自可信代理时，才信任 X-Forwarded-For（取第一个 IP）
+        if request.remote_addr in trusted_proxies and 'X-Forwarded-For' in request.headers:
+            user_ip = request.headers.get('X-Forwarded-For').split(',')[0].strip()
         else:
             user_ip = request.remote_addr
         return user_ip

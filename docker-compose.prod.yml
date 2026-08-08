@@ -1,13 +1,28 @@
+# 生产环境编排（示例）：app（waitress）+ MySQL + Redis
+# 用法：
+#   cp .env.example .env   # 修改 SECRET_KEY / 数据库密码等
+#   docker-compose -f docker-compose.prod.yml up -d --build
+#
+# 与开发版 docker-compose.yml 的差异：
+#   - app 使用 waitress WSGI 服务器（python wsgi.py）
+#   - MySQL/Redis 不暴露宿主端口（仅内网互通），更安全
+#   - server.log 挂载到宿主便于日志采集
+# 生产部署前必须设置：SECRET_KEY、MYSQL_PASSWORD、MYSQL_ROOT_PASSWORD
+
 services:
   app:
     build: .
+    command: ["python", "wsgi.py"]
     ports:
       - "${SERVER_PORT:-5000}:5000"
     environment:
+      APP_ENV: production
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: 5000
-      SQLALCHEMY_URI: mysql+pymysql://app:apppass@mysql:3306/appdb?charset=utf8mb4
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
+      SQLALCHEMY_URI: mysql+pymysql://app:${MYSQL_PASSWORD:-apppass}@mysql:3306/appdb?charset=utf8mb4
       REDIS_URL: redis://redis:6379/0
+      DB_REFLECT_ON_START: "false"
     depends_on:
       mysql:
         condition: service_healthy
@@ -22,21 +37,19 @@ services:
     volumes:
       - ./storage:/app/storage
       - ./webui:/app/webui
+      - ./server.log:/app/server.log
     restart: unless-stopped
-    stop_grace_period: 10s
+    stop_grace_period: 15s
 
   mysql:
     image: mysql:8.0
-    # 注意：以下密码为模板示例，生产环境请通过 .env 或 Docker secrets 注入，勿硬编码
     environment:
       MYSQL_DATABASE: appdb
       MYSQL_USER: app
-      MYSQL_PASSWORD: apppass
-      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-apppass}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set}
     volumes:
       - mysql_data:/var/lib/mysql
-    ports:
-      - "3306:3306"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 5s
@@ -46,11 +59,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
     volumes:
       - redis_data:/data
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

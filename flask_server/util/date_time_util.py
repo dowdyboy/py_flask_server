@@ -15,6 +15,35 @@ class DateTimeUtil:
         return int(time.time() * 1000)
 
     @staticmethod
+    def utc_now_str(format_string='%Y-%m-%d %H:%M:%S'):
+        """
+        获取当前 UTC 时间的字符串（不依赖服务器本地时区）
+
+        Args:
+            format_string: 格式化字符串，默认为 '%Y-%m-%d %H:%M:%S'
+
+        Returns:
+            str: UTC 时间字符串
+        """
+        return datetime.datetime.now(datetime.timezone.utc).strftime(format_string)
+
+    @staticmethod
+    def format_timestamp_utc(timestamp, format_string='%Y-%m-%d %H:%M:%S'):
+        """
+        将毫秒时间戳格式化为 UTC 时间字符串（不依赖服务器本地时区）
+
+        Args:
+            timestamp: 毫秒级时间戳
+            format_string: 格式化字符串，默认为 '%Y-%m-%d %H:%M:%S'
+
+        Returns:
+            str: UTC 时间字符串
+        """
+        return datetime.datetime.fromtimestamp(
+            timestamp / 1000, tz=datetime.timezone.utc
+        ).strftime(format_string)
+
+    @staticmethod
     def format_timestamp(timestamp, format_string='%Y-%m-%d %H:%M:%S'):
         """
         将时间戳格式化为指定格式的字符串

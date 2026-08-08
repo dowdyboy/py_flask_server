@@ -11,10 +11,9 @@ from flask_server.util import DataEncryptUtil, RandomGenerator, Logger, CommonUt
 
 
 # 延迟导入 UserPO，避免未配置 DB 时 import 报错
-# 注意：UserPO 定义在 examples/model/user_declared.py，接入工程时需将其复制到
-#       flask_server/model/po/ 并在 flask_server/model/po/__init__.py 中导出
+# UserPO 声明式定义见 examples/model/user_declared.py
 def _get_user_po():
-    from flask_server.model import UserPO
+    from examples.model.user_declared import UserPO
     return UserPO
 
 

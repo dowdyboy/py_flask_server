@@ -3,10 +3,10 @@ from flask_server.util import Logger, GraceResult, CommonUtil
 from flask import request
 
 # 样例Controller，展示了通过MySQL进行增删改查
-# 注意：接入工程前需在 flask_server/service/__init__.py 中导出 ArticleService
-#       并在 flask_server/model/po/__init__.py 中导出 ArticlePO 和 BuyRecordPO
+# 注意：接入工程前需将 ArticleService 放入 flask_server/service/ 并导出
+#       并将 ArticlePO/BuyRecordPO（examples/model/article_declared.py）放入 model/po/ 并导出
 
-from flask_server.service import ArticleService
+from examples.service.article_service import ArticleService
 
 
 Logger.info("article_controller.py loaded")

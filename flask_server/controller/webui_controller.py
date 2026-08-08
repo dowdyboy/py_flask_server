@@ -1,4 +1,6 @@
 import os
+import threading
+from collections import OrderedDict
 from flask import send_from_directory, abort
 from flask_server import app, config
 from flask_server.util import Logger
@@ -8,8 +10,29 @@ from flask_server.util import Logger
 
 Logger.info("webui_controller.py loaded")
 
-# 静态文件存在性缓存：debug 模式下禁用，避免开发期缓存陈旧；生产模式启用以减少磁盘 IO
-path_exist_cache = dict() if not config.debug else None
+# 静态文件存在性缓存：debug 模式下禁用，避免开发期缓存陈旧；生产模式启用以减少磁盘 IO。
+# OrderedDict + 上限 + 锁：避免无界增长导致内存泄漏，多线程安全
+path_exist_cache = OrderedDict() if not config.debug else None
+_PATH_CACHE_MAX = 2048
+_path_cache_lock = threading.Lock()
+
+
+def _cache_get(path):
+    """读取缓存并刷新访问顺序（LRU）"""
+    with _path_cache_lock:
+        if path in path_exist_cache:
+            path_exist_cache.move_to_end(path)
+            return path_exist_cache[path]
+        return None
+
+
+def _cache_set(path, exists):
+    """写入缓存，超限时淘汰最久未访问的项"""
+    with _path_cache_lock:
+        path_exist_cache[path] = exists
+        path_exist_cache.move_to_end(path)
+        while len(path_exist_cache) > _PATH_CACHE_MAX:
+            path_exist_cache.popitem(last=False)
 
 # 静态资源扩展名集合：带这些扩展名且不存在的路径返回 404，而非回退 index.html
 STATIC_EXT_SET = {
@@ -45,23 +68,26 @@ def webui(filename):
     if ext.lower() in STATIC_EXT_SET and not file_exists:
         abort(404)
 
-    if path_exist_cache is not None and filepath in path_exist_cache.keys():
-        if path_exist_cache[filepath]:
-            return send_from_directory(config.webui_dir, filename)
-        else:
+    if path_exist_cache is not None:
+        cached = _cache_get(filepath)
+        if cached is not None:
+            if cached:
+                return send_from_directory(config.webui_dir, filename)
             index_path = os.path.join(config.webui_dir, 'index.html')
             if os.path.exists(index_path):
                 return send_from_directory(config.webui_dir, 'index.html')
             abort(404)
     else:
-        if file_exists:
-            if path_exist_cache is not None:
-                path_exist_cache[filepath] = True
-            return send_from_directory(config.webui_dir, filename)
-        else:
-            if path_exist_cache is not None:
-                path_exist_cache[filepath] = False
-            index_path = os.path.join(config.webui_dir, 'index.html')
-            if os.path.exists(index_path):
-                return send_from_directory(config.webui_dir, 'index.html')
-            abort(404)
+        cached = None
+
+    if file_exists:
+        if path_exist_cache is not None:
+            _cache_set(filepath, True)
+        return send_from_directory(config.webui_dir, filename)
+    else:
+        if path_exist_cache is not None:
+            _cache_set(filepath, False)
+        index_path = os.path.join(config.webui_dir, 'index.html')
+        if os.path.exists(index_path):
+            return send_from_directory(config.webui_dir, 'index.html')
+        abort(404)

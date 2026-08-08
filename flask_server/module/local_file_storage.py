@@ -12,13 +12,13 @@ class LocalFileStorage:
         self.root_path = root_path
 
     # 基于配置的根目录，生成最终的路径，并校验防止路径穿越
-    def _gen_final_path(self, path):
+    def _gen_final_path(self, path, create_dirs=True):
         final_path = os.path.realpath(os.path.join(self.root_path, path))
         root_real = os.path.realpath(self.root_path)
         # 校验最终路径在 root_path 内，防止 .. 路径穿越
         if not final_path.startswith(root_real + os.sep) and final_path != root_real:
             raise ValueError(f'Path traversal detected: {path} escapes root {self.root_path}')
-        if not os.path.isdir(os.path.dirname(final_path)):
+        if create_dirs and not os.path.isdir(os.path.dirname(final_path)):
             os.makedirs(
                 os.path.dirname(final_path),
                 exist_ok=True,
@@ -86,9 +86,9 @@ class LocalFileStorage:
         else:
             os.remove(str(path))
 
-    # 判断文件或目录是否存在
+    # 判断文件或目录是否存在（无副作用：不创建任何目录）
     def exists(self, path):
-        path = self._gen_final_path(path)
+        path = self._gen_final_path(path, create_dirs=False)
         return os.path.exists(path)
 
 

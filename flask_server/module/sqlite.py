@@ -22,6 +22,8 @@ class SQLite:
     # 将值转换为字符串，用于sql语句中
     @staticmethod
     def _parse_value(value):
+        if value is None:
+            return 'NULL'
         if isinstance(value, str):
             return f"'{value}'"
         elif isinstance(value, int):
@@ -98,7 +100,7 @@ class SQLite:
                f"FROM {SQLite._parse_table_name(table)} "
                f"{'WHERE ' + conditions if conditions else ''} "
                f"{'ORDER BY ' + order_by if order_by else ''} "
-               f"{'LIMIT ' + str(limit) if limit else ''}")
+               f"{'LIMIT ' + str(limit) if limit is not None else ''}")
         return SQLite.fetch(sql, params=params)
 
     # 查询所有数据，用法示例：
