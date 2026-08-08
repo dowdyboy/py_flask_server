@@ -375,3 +375,57 @@
 | S6 | Swagger UI ç¦»çº¿æ”¯æŒ | å†…ç½® Swagger UI é™æ€èµ„æºæˆ–æ”¯æŒè‡ªå®šä¹‰ URLï¼Œè§£å†³å†…ç½‘æ—  CDN é—®é¢˜ |
 | S7 | è·¯å¾„ç©¿è¶Šç»Ÿä¸€é˜²æŠ¤ | `webui_controller.py` çš„ `os.path.exists` åº”ä½¿ç”¨ `os.path.realpath` æ ¡éªŒï¼Œä¸Ž `local_file_storage.py` ä¿æŒä¸€è‡´ |
 | S8 | ä¸º `memory_cache` æ·»åŠ çº¿ç¨‹é” | waitress æ˜¯å¤šçº¿ç¨‹ WSGI æœåŠ¡å™¨ï¼Œç¼“å­˜éœ€è¦çº¿ç¨‹å®‰å…¨ä¿è¯
+
+---
+
+## Ê®Ò»¡¢µÚËÄÂÖÓÅ»¯¹éµµ£¨2026-08-07£©
+
+> Ö´ÐÐ·¶Î§£ºA ×é£¨ÕæÊµ¶Ì°å 5 Ïî£©+ B ×é£¨Éú²úÔöÇ¿ 8 Ïî£©+ C ×é£¨¹¤³Ì»¯ 6 Ïî£©£¬¹² 19 Ïî¡£
+> Ö´ÐÐ»·¾³£ºconda t2xpu£¨Python 3.13£¬Flask 3.1.2£¬flask-smorest 0.47.0£¬pytest 9.1.1£©
+
+### 11.1 ¹Ø¼ü·¢ÏÖ£¨Ö´ÐÐ¹ý³ÌÖÐÐÂ·¢ÏÖ£©
+
+| # | Î»ÖÃ | ÎÊÌâ | ÐÞ¸´ |
+|---|------|------|------|
+| F1 | `requirements.txt` | **flask-smorest>=1.2.0,<2.0 ÓÀÔ¶ÎÞ·¨°²×°**£ºPyPI ÉÏ¸Ã°ü×î¸ß°æ±¾Îª 0.47.0£¨ÎÞ 1.x£©£¬pip install Ö±½ÓÊ§°Ü | ¸ÄÎª `>=0.42.0,<1.0`£¨requirements.txt + README£© |
+| F2 | `flask_server/module/sqlalchemy.py` | `sqlalchemy_trans` ×°ÊÎÆ÷ÔÚ app context Íâµ÷ÓÃ»áÅ× "Working outside of application context"£¬ÒµÎñ´úÂë±ØÐë×ÔÐÐ¹ÜÀí context | ×°ÊÎÆ÷×Ô¶¯¹ÜÀí context£¨`has_app_context()` ÅÐ¶Ï + `_app.app_context()` °ü¹ü£©£¬ÒµÎñº¯ÊýÎÞÐèÔÙÊÖ¶¯ with |
+
+### 11.2 A ×é£ºÕæÊµ¶Ì°å£¨5 Ïî£©
+
+| # | ÐÞ¸´ÄÚÈÝ | ËµÃ÷ |
+|---|---------|------|
+| A1 | `.env` ×Ô¶¯¼ÓÔØ | ÒýÈë python-dotenv£¬`config.py` ¼ÓÔØÏîÄ¿¸ù `.env`£¨README ½Ì³Ì"cp .env.example .env"¼´ÉúÐ§£© |
+| A2 | Redis È¥µôÃ¿´Î ping | Õý³£Ê±ÁãÌ½²âÖ±Í¨£¨²Ù×÷³É¹¦¼´Ö¤Ã÷¿ÉÓÃ£©£»Ê§°Ü½øÈë 30s ÀäÈ´£¬ÀäÈ´ºóÊ×´Î²Ù×÷ ping »Ö¸´Ì½²â¡£¼õÉÙÃ¿´Î get/set µÄÒ»´Î RTT |
+| A3 | request_id ¿É¹Û²âÐÔ | ÏìÓ¦»ØÐ´ `X-Request-Id` Í·£¨Í¸´«»ò×Ô¶¯Éú³É£©£»`LOG_FORMAT=json` Ê±ÈÕÖ¾¸½´ø `request_id` ×Ö¶Î£¨ELK ¾ÛºÏÓÃ£© |
+| A4 | examples ÐÞ¸´ | ²¹°ü½á¹¹£¨`__init__.py`£©£»controller µ¼Èë¸Ä examples ÄÚÂ·¾¶£»service ÑÓ³Ùµ¼Èë + Î´Åä¿âÕ¼Î»Ä£ÐÍ£»`random_string`¡ú`secrets_token`£»ÐÂÔöÉùÃ÷Ê½ `article_declared.py`£¨º¬ BuyRecordPO£© |
+| A5 | README Í¬²½ | ²âÊÔ¸²¸ÇÁÐ±í¡¢422 FAQ¡¢.env ËµÃ÷¡¢ÐÂÅäÖÃÏî |
+
+### 11.3 B ×é£ºÉú²úÔöÇ¿£¨8 Ïî£©
+
+| # | ÐÞ¸´ÄÚÈÝ | ËµÃ÷ |
+|---|---------|------|
+| B1 | ÏÞÁ÷×é¼þ | `component/rate_limit.py`£º°´ (IP, Â·¾¶) ¹Ì¶¨´°¿Ú¼ÆÊý£¨memory_cache TTL£©£¬`RATE_LIMIT_ENABLED=false` Ä¬ÈÏ¹Ø£¬`RATE_LIMIT_PER_MINUTE=60`£¬³¬ÏÞ 429 |
+| B2 | ¿ÉÐÅ´úÀí | `TRUSTED_PROXIES`£¨Ä¬ÈÏ `127.0.0.1,::1`£©£¬`get_real_ip` ½öÐÅÈÎÀ´×Ô¿ÉÐÅ´úÀíµÄ X-Forwarded-For£¬·À IP Î±Ôì |
+| B3 | webui »º´æÉÏÏÞ | `path_exist_cache` ¸Ä OrderedDict + Ëø + ÉÏÏÞ 2048£¨LRU ÌÔÌ­£©£¬ÐÞ¸´ÎÞ½çÔö³¤ÄÚ´æÐ¹Â© |
+| B4 | Ïß³Ì³ØÓÐ½ç¶ÓÁÐ | `BoundedExecutor`£¨ÐÅºÅÁ¿£©£¬`ASYNC_TASK_QUEUE_MAX=500`£¬³¬ÏÞ¾Ü¾ø²¢¸æ¾¯£¬·ÀÎÞ½ç¶ÓÁÐÄÚ´æÅòÕÍ |
+| B5 | ÈÝÆ÷½¡¿µ¼ì²é | docker-compose app ·þÎñ¼Ó healthcheck£¨GET /api/v1/health£©£»`/health` ·µ»Ø `version`/`uptime` |
+| B6 | DB ¼¯³É²âÊÔ | ÐÂÔö 3 ¸ö£º`sqlalchemy_trans` Ìá½»/»Ø¹ö + ÍêÕû CRUD£¨sqlite ÁÙÊ±¿â + ²âÊÔÄÚÉùÃ÷Ê½ model£©£»SQLite ÕæÊµÁ¬½Ó CRUD + LIMIT ÓïÒå |
+| B7 | °²È«ÏìÓ¦Í· | X-Content-Type-Options / X-Frame-Options / Referrer-Policy / ¿íËÉ CSP£¨/docs »íÃâ£©£¬`SECURITY_HEADERS_ENABLED=true` Ä¬ÈÏ¿ª |
+| B8 | UTC Ê±¼ä¹¤¾ß | `DateTimeUtil.utc_now_str()` / `format_timestamp_utc()`£¨²»ÒÀÀµ·þÎñÆ÷±¾µØÊ±Çø£© |
+
+### 11.4 C ×é£º¹¤³Ì»¯£¨6 Ïî£©
+
+| # | ÐÞ¸´ÄÚÈÝ |
+|---|---------|
+| C1 | GitHub Actions CI£¨Python 3.10/3.12 ¾ØÕó + pytest£© |
+| C2 | pyproject.toml£¨°üÔªÊý¾Ý + pytest ÅäÖÃ + ruff ¹æÔò¶Î£¬Ö§³Ö `pip install -e .`£© |
+| C3 | ºËÐÄÎÄ¼þÀàÐÍ×¢½â£¨grace_result / common / config / redis_cache£© |
+| C4 | docker-compose.prod.yml£¨waitress Èë¿Ú¡¢SECRET_KEY ±ØÌîÐ£Ñé¡¢ÈÕÖ¾¾í¡¢²»±©Â¶ DB/Redis ¶Ë¿Ú£© |
+| C5 | ±¾ÎÄµµµÚËÄÂÖ¹éµµ |
+| C6 | README ²¹ flask-smorest ETag/Page ·ÖÒ³ÓÃ·¨ |
+
+### 11.5 ²âÊÔÓëÑéÖ¤
+
+- ²âÊÔ×ÜÊý£º**61 ¡ú 108**£¨ÐÂÔö 47 ¸öÓÃÀý£¬È«²¿Í¨¹ý£©
+- Ã°ÑÌÑéÖ¤£º`import flask_server` / `import wsgi` Õý³££¬ÃüÃû¿Õ¼äÎÛÈ¾ÒÑÏû³ý
+- ¸²¸ÇÐÂÔö£ºHTTP ¼¯³É£¨Í³Ò»ÏìÓ¦/422/404/request_id Í·/°²È«Í·/ÏÞÁ÷£©¡¢Redis ½µ¼¶»Ö¸´¡¢BoundedExecutor¡¢DB ÊÂÎñ¼¯³É¡¢UTC ¹¤¾ß

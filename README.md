@@ -55,6 +55,7 @@
    cp .env.example .env
    # 编辑 .env，按需配置（数据库、端口等）
    ```
+   > 框架启动时会自动加载项目根目录的 `.env` 文件，无需手动 export。
 
 6. **启动服务**：
    ```bash
@@ -89,8 +90,8 @@ pip install -r requirements.txt
 默认不启用数据库。如需启用，通过环境变量配置：
 
 ```bash
-# MySQL（SQLAlchemy）
-export SQLALCHEMY_URI='mysql+pymysql://username:password@host:3306/database_name'
+# MySQL（SQLAlchemy，建议显式指定 charset=utf8mb4 保证中文正确）
+export SQLALCHEMY_URI='mysql+pymysql://username:password@host:3306/database_name?charset=utf8mb4'
 
 # 或 SQLite
 export SQLITE_DB_PATH='storage/app.db'
@@ -220,10 +221,10 @@ py_flask_server/
 SQLITE_DB_PATH=storage/app.db
 
 # 或使用 MySQL
-# SQLALCHEMY_URI=mysql+pymysql://root:password@localhost:3306/mydb
+# SQLALCHEMY_URI=mysql+pymysql://root:password@localhost:3306/mydb?charset=utf8mb4
 ```
 
-> 若使用 SQLite，本框架会自动创建数据库文件。若使用 MySQL，需先创建数据库。
+> 若使用 SQLite，本框架会自动创建数据库文件。若使用 MySQL，需先创建数据库，建议显式加 `?charset=utf8mb4`。
 
 ### 第 2 步：声明 Model
 
@@ -594,6 +595,8 @@ flask db upgrade     # 执行迁移（建表/改表）
 
 在 `model/po/` 下声明 Model（推荐声明式，参考 `examples/model/user_declared.py`），迁移脚本会自动检测变更。
 
+> **反射与迁移共存约束**：`DB_REFLECT_ON_START=true` 时启动会反射现有表到 metadata（便于查询已有库表）。反射表与声明式 Model **不能同名**（会报 Table already defined）。建议：已有库用反射，新建表用声明式 + Migrate；或统一声明式并设 `DB_REFLECT_ON_START=false`。
+
 ### 11. Redis 缓存
 
 配置 `REDIS_URL` 后自动启用 Redis 缓存（多进程/多实例场景）：
@@ -619,6 +622,45 @@ from flask_server.util import GraceResult
 # 自定义业务码（非 0/1001/-1）
 return GraceResult.business_error(2001, '用户不存在')
 ```
+
+### 13. 分页与 ETag（flask-smorest 进阶）
+
+**分页**（`Page`）：flask-smorest 内置分页支持，配合 `paginate` 使用：
+
+```python
+from flask_smorest import Page
+
+class UserPage(Page):
+    """用户分页响应"""
+    items = ma.fields.List(ma.fields.Raw())
+
+@blp.route('/users/page')
+class UserPageView(MethodView):
+    @blp.arguments(UserQuerySchema, location='query')
+    @blp.response(200, UserPage)
+    def get(self, query):
+        """分页查询用户"""
+        return UserService.list(page=query['page'], per_page=query['per_page'])
+```
+
+分页返回结构：`{items: [...], page: n, per_page: n, total: n}`（对应 SQLAlchemy 的 `paginate()`）。
+
+**ETag 缓存协商**（`@blp.etag`）：GET 响应自动携带 `ETag` 头，客户端带 `If-None-Match` 时返回 304，节省带宽：
+
+```python
+@blp.route('/articles/<string:aid>')
+class ArticleView(MethodView):
+    @blp.etag  # 校验 If-None-Match，命中返回 304
+    @blp.response(200, GraceResultSchema)
+    def get(self, aid):
+        """获取文章"""
+        article = ArticleService.get(aid)
+        if article is None:
+            return GraceResult.business_error(4004, '文章不存在'), 404
+        return GraceResult.ok(article)
+```
+
+> ETag 与 `@blp.arguments` 同时使用时需把 `@blp.etag` 放在最外层（先校验再验参）。
 
 ## 🐳 Docker 部署
 
@@ -652,12 +694,18 @@ docker run -p 5000:5000 --env-file .env flask-server
 python wsgi.py
 ```
 
-或在 Docker 中：
+**容器化生产部署**（waitress 入口 + 不暴露 DB/Redis 端口 + SECRET_KEY 必填校验 + 日志卷）：
+
+```bash
+docker-compose -f docker-compose.prod.yml up -d --build
+```
+
+或临时在开发编排中使用生产入口：
 ```bash
 docker-compose exec app python wsgi.py
 ```
 
-> 生产环境请确保 `DEBUG=false`、收紧 `CORS_ORIGINS`、配置 HTTPS。
+> 生产环境请确保 `APP_ENV=production`、`DEBUG=false`、设置强 `SECRET_KEY`、收紧 `CORS_ORIGINS`、配置 HTTPS。
 
 ## 🛠️ 配置说明
 
@@ -674,6 +722,7 @@ docker-compose exec app python wsgi.py
 | `THREAD_NUM` | `10` | 线程池大小 |
 | `SOCKETIO_ENABLED` | `false` | 是否启用 WebSocket（需安装 Flask-SocketIO） |
 | `SOCKETIO_ASYNC_MODE` | `threading` | SocketIO 异步模式：`threading`(默认) / `eventlet` |
+| `SOCKETIO_MAX_HTTP_BUFFER_SIZE` | `1000000` | WebSocket 单条消息大小上限（字节，默认 1MB） |
 | `CORS_ORIGINS` | `*` | CORS 允许来源，`*` 或逗号分隔列表 |
 | `SECRET_KEY` | _默认值_ | Flask 密钥，生产环境必须修改 |
 | `MAX_CONTENT_LENGTH` | `16777216` | 请求体最大字节数（默认 16MB） |
@@ -691,6 +740,11 @@ docker-compose exec app python wsgi.py
 | `DB_POOL_TIMEOUT` | `30` | 获取连接超时（秒） |
 | `INIT_SQL_PATH` | _无_ | SQL 初始化脚本文件路径 |
 | `REDIS_URL` | _无_ | Redis 连接地址，未配置时使用内存缓存 |
+| `RATE_LIMIT_ENABLED` | `false` | 是否启用接口限流（按 IP+路径 固定窗口计数） |
+| `RATE_LIMIT_PER_MINUTE` | `60` | 每个 IP+路径 每分钟允许的请求数，超出返回 429 |
+| `TRUSTED_PROXIES` | `127.0.0.1,::1` | 可信代理 IP 列表；`get_real_ip` 仅信任来自这些地址的 `X-Forwarded-For` |
+| `SECURITY_HEADERS_ENABLED` | `true` | 是否注入安全响应头（X-Frame-Options/CSP 等） |
+| `ASYNC_TASK_QUEUE_MAX` | `500` | 异步任务排队上限，超限拒绝新任务并告警 |
 
 > 日志写入 `server.log`（追加模式，按 `LOG_MAX_BYTES` 轮转，保留 `LOG_BACKUP_COUNT` 个历史文件）；文件存储于 `storage/` 目录。
 > `DateTimeUtil` 等时间工具依赖服务器本地时区，跨时区部署请同步调整服务器时区。
@@ -801,7 +855,7 @@ Flask>=3.1.2,<4.0
 flask-cors>=6.0.2,<7.0
 Flask-SQLAlchemy>=3.1.1,<4.0
 flask-migrate>=4.0.0,<5.0
-flask-smorest>=1.2.0,<2.0
+flask-smorest>=0.42.0,<1.0
 marshmallow>=3.21.0,<4.0
 requests>=2.32.5,<3.0
 Werkzeug>=3.1.5,<4.0
@@ -823,7 +877,7 @@ pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
-测试覆盖核心工具类与模块：`GraceResult`、`CommonUtil`、`SimpleMemoryCache`、`DateTimeUtil`、`RandomGenerator`、`DataEncryptUtil`、`KeyGenerator`（雪花 ID 并发）、`LocalFileStorage`（路径穿越防护）。
+测试覆盖核心工具类与模块：`GraceResult`、`CommonUtil`（含 URI 脱敏/循环引用/可信代理 IP）、`SimpleMemoryCache`（TTL/后台清理）、`DateTimeUtil`（含 UTC）、`RandomGenerator`、`DataEncryptUtil`、`KeyGenerator`（雪花 ID 并发）、`LocalFileStorage`（路径穿越防护/无副作用）、`RedisCache`（降级与自动恢复）、`SQLite`（真实 CRUD/LIMIT）、`SQLAlchemy`（事务提交/回滚集成测试）、`BoundedExecutor`（队列上限）、`rate_limit`（限流 429），以及 HTTP 层集成测试（统一响应/422 校验格式/404/request_id 头/安全响应头/health/docs）。当前共 **108 个用例**。
 
 ## ❓ 常见问题
 
@@ -880,6 +934,16 @@ set FLASK_APP=flask_server.app:app       # Windows
 ### 参数校验返回 422
 
 这是 flask-smorest 的参数校验拦截。检查请求体是否符合 Schema 定义（必填字段、字段类型）。查看 `/docs` 中的接口文档了解所需参数。
+
+框架已将 422 校验错误统一为 GraceResult 格式返回，字段级错误位于 `data`：
+
+```json
+{
+  "code": 1001,
+  "msg": "参数错误",
+  "data": {"json": {"message": ["Missing data for required field."]}}
+}
+```
 
 ## 🤝 贡献
 
