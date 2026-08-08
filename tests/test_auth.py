@@ -330,6 +330,31 @@ class _FakeRedisClient:
         pass
 
 
+class _FailingRedisClient:
+    """模拟 Redis 不可达：所有操作抛 ConnectionError"""
+
+    def ping(self):
+        raise ConnectionError('mock redis down')
+
+    def set(self, key, data):
+        raise ConnectionError('mock redis down')
+
+    def setex(self, key, ttl, data):
+        raise ConnectionError('mock redis down')
+
+    def get(self, key):
+        raise ConnectionError('mock redis down')
+
+    def delete(self, key):
+        raise ConnectionError('mock redis down')
+
+    def exists(self, key):
+        raise ConnectionError('mock redis down')
+
+    def expire(self, key, ttl):
+        raise ConnectionError('mock redis down')
+
+
 def _fake_redis_cache(client):
     """绕过 __init__ 构造 RedisCache 实例（避免真实连接）"""
     from flask_server.module.redis_cache import RedisCache
@@ -378,3 +403,43 @@ def test_tokens_in_memory_when_no_redis(client, fresh_store, monkeypatch):
 
     assert any(k.startswith('auth:token:') for k in memory_cache.cache.keys()), '未配置 Redis 时应写入内存'
     assert client.get('/api/v1/auth/me', headers={'X-AUTH-TOKEN': token}).status_code == 200
+
+
+def test_tokens_fallback_to_memory_when_redis_down(client, fresh_store, monkeypatch):
+    """R1 回归：Redis 不可达时登录 token 回退内存缓存，登录/校验闭环仍可用"""
+    from flask_server.component import auth as auth_module
+    from flask_server.module import memory_cache
+
+    monkeypatch.setattr(auth_module.config, 'redis_url', 'redis://127.0.0.1:6399/0')
+    monkeypatch.setattr(auth_module, 'redis_cache', _fake_redis_cache(_FailingRedisClient()))
+
+    client.post('/api/v1/auth/register', json={'username': 'failuser', 'password': 'secret123'})
+    r = client.post('/api/v1/auth/login', json={'username': 'failuser', 'password': 'secret123'})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    token = r.get_json()['data']['token']
+    # token 已回退写入内存缓存（而非静默丢失）
+    assert any(k.startswith('auth:token:') for k in memory_cache.cache.keys()), 'Redis 挂时 token 应回退内存'
+    # 校验闭环可用：不再是"登录成功即失效"
+    r = client.get('/api/v1/auth/me', headers={'X-AUTH-TOKEN': token})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert r.get_json()['data']['username'] == 'failuser'
+    # 登出后内存兜底也清除
+    client.post('/api/v1/auth/logout', headers={'X-AUTH-TOKEN': token})
+    assert not any(k.startswith('auth:token:') for k in memory_cache.cache.keys())
+
+
+def test_brute_force_still_works_when_redis_down(client, fresh_store, monkeypatch):
+    """R1 回归：Redis 不可达时防爆破计数回退内存，锁定仍生效"""
+    from flask_server import config
+    from flask_server.component import auth as auth_module
+
+    monkeypatch.setattr(config, 'auth_login_max_fails', 3)
+    monkeypatch.setattr(auth_module.config, 'redis_url', 'redis://127.0.0.1:6399/0')
+    monkeypatch.setattr(auth_module, 'redis_cache', _fake_redis_cache(_FailingRedisClient()))
+
+    client.post('/api/v1/auth/register', json={'username': 'lockfail', 'password': 'secret123'})
+    for _ in range(3):
+        client.post('/api/v1/auth/login', json={'username': 'lockfail', 'password': 'wrong-pass'})
+    r = client.post('/api/v1/auth/login', json={'username': 'lockfail', 'password': 'secret123'})
+    assert r.status_code == 429
+    assert r.get_json()['code'] == 4003

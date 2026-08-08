@@ -54,3 +54,12 @@ def test_metrics_histogram_present(client):
     body = client.get('/metrics').get_data(as_text=True)
     assert 'http_request_duration_seconds' in body
     assert 'http_request_duration_seconds_bucket' in body
+
+
+def test_metrics_disabled_returns_503(client, monkeypatch):
+    """R4 回归：METRICS_ENABLED=false 时 /metrics 返回 503（运行时判断）"""
+    from flask_server import config
+    monkeypatch.setattr(config, 'metrics_enabled', False)
+    resp = client.get('/metrics')
+    assert resp.status_code == 503
+    assert 'metrics disabled' in resp.get_data(as_text=True)

@@ -24,6 +24,8 @@ try:
     )
     _METRICS_AVAILABLE = True
 except ImportError:
+    from flask_server.util import Logger
+    Logger.warn('prometheus-client not installed, /metrics disabled (pip install prometheus-client)')
     _METRICS_AVAILABLE = False
     _REQUESTS = None
     _DURATION = None
@@ -41,7 +43,7 @@ def _route_label():
     return _UNMATCHED_ROUTE
 
 
-if _METRICS_AVAILABLE and config.metrics_enabled:
+if _METRICS_AVAILABLE:
 
     @app.before_request
     def metrics_start_timer():
@@ -57,16 +59,10 @@ if _METRICS_AVAILABLE and config.metrics_enabled:
             _DURATION.labels(method=request.method, route=route).observe(time.perf_counter() - start)
         return resp
 
-    @app.route('/metrics')
-    def metrics():
-        """Prometheus 指标端点（text/plain 格式）"""
-        return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
-else:
-    from flask_server.util import Logger
 
-    if not _METRICS_AVAILABLE:
-        Logger.warn('prometheus-client not installed, /metrics disabled (pip install prometheus-client)')
-
-    @app.route('/metrics')
-    def metrics():
+@app.route('/metrics')
+def metrics():
+    """Prometheus 指标端点（text/plain 格式；关闭或依赖缺失时返回 503）"""
+    if not config.metrics_enabled or not _METRICS_AVAILABLE:
         return 'metrics disabled', 503
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)

@@ -44,3 +44,11 @@ def test_summarize_computes_percentiles():
     assert r['p95_ms'] == 95.0
     assert r['p99_ms'] == 99.0
     assert r['qps'] == 10.0
+
+
+def test_summarize_small_sample_no_index_error():
+    """R5 回归：小样本（1-10 个）时 p95/p99 索引不越界"""
+    for n in (1, 2, 5, 10):
+        r = summarize(list(range(n)), 0, 1.0)
+        assert r['p95_ms'] >= 0
+        assert r['p99_ms'] >= 0

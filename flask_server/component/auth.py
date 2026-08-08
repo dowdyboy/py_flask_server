@@ -37,13 +37,41 @@ _LOGIN_LOCK_KEY_PREFIX = 'auth:login_lock:'
 
 
 def _token_cache():
-    """认证令牌/防爆破计数的存储：配置 REDIS_URL 时用 Redis（多实例共享），否则进程内内存。
-
-    与 module/redis_cache 的降级语义一致：Redis 不可达时自动冷却降级，不中断业务。
-    """
+    """认证令牌/防爆破计数的首选存储：配置 REDIS_URL 时用 Redis（多实例共享），否则进程内内存。"""
     if config.redis_url is not None and redis_cache is not None:
         return redis_cache
     return memory_cache
+
+
+def _cache_set(key, value, ttl=None):
+    """写入认证缓存（带降级兜底）。
+
+    Redis 不可达时（redis_cache 冷却期，set 返回 False）回退写入内存缓存，
+    保证单实例下登录/防爆破仍可用；Redis 恢复后新写入自动回到 Redis。
+    """
+    cache = _token_cache()
+    if cache.set(key, value, ttl=ttl):
+        return True
+    if cache is memory_cache:
+        return False   # 内存写入失败（不应发生），避免自兜底死循环
+    Logger.warn(f'Auth cache set failed, falling back to memory ({key.rsplit(":", 1)[0]}:*)')
+    return memory_cache.set(key, value, ttl=ttl)
+
+
+def _cache_get(key):
+    """读取认证缓存：主存储 miss 时查内存兜底（与 _cache_set 的回退对称）。"""
+    cache = _token_cache()
+    value = cache.get(key)
+    if value is not None or cache is memory_cache:
+        return value
+    return memory_cache.get(key)
+
+
+def _cache_delete(key):
+    """删除认证缓存：主存储与内存兜底都清理，防止轮换/登出后残留。"""
+    _token_cache().delete(key)
+    if config.redis_url is not None:
+        memory_cache.delete(key)
 
 # ------------------------- AuthUser -------------------------
 
@@ -172,33 +200,31 @@ class AuthService:
     @classmethod
     def _is_login_locked(cls, username):
         """是否处于登录锁定状态（连续失败达阈值）"""
-        cache = _token_cache()
-        lock_until = cache.get(f'{_LOGIN_LOCK_KEY_PREFIX}{username}')
+        lock_until = _cache_get(f'{_LOGIN_LOCK_KEY_PREFIX}{username}')
         if lock_until is None:
             return False
         if time.time() < lock_until:
             return True
         # 锁定已过期，清除
-        cache.delete(f'{_LOGIN_LOCK_KEY_PREFIX}{username}')
+        _cache_delete(f'{_LOGIN_LOCK_KEY_PREFIX}{username}')
         return False
 
     @classmethod
     def _record_login_fail(cls, username):
         """记录一次登录失败，达阈值则锁定"""
-        cache = _token_cache()
         fail_key = f'{_LOGIN_FAIL_KEY_PREFIX}{username}'
-        count = (cache.get(fail_key) or 0) + 1
+        count = (_cache_get(fail_key) or 0) + 1
         if count >= config.auth_login_max_fails:
-            cache.set(f'{_LOGIN_LOCK_KEY_PREFIX}{username}',
-                      time.time() + config.auth_login_lock_seconds,
-                      ttl=config.auth_login_lock_seconds)
-            cache.delete(fail_key)
+            _cache_set(f'{_LOGIN_LOCK_KEY_PREFIX}{username}',
+                       time.time() + config.auth_login_lock_seconds,
+                       ttl=config.auth_login_lock_seconds)
+            _cache_delete(fail_key)
         else:
-            cache.set(fail_key, count, ttl=config.auth_login_lock_seconds)
+            _cache_set(fail_key, count, ttl=config.auth_login_lock_seconds)
 
     @classmethod
     def _clear_login_fail(cls, username):
-        _token_cache().delete(f'{_LOGIN_FAIL_KEY_PREFIX}{username}')
+        _cache_delete(f'{_LOGIN_FAIL_KEY_PREFIX}{username}')
 
     @classmethod
     def login(cls, username, password):
@@ -216,11 +242,10 @@ class AuthService:
             cls._record_login_fail(username)
             return None, 'invalid'
         cls._clear_login_fail(username)
-        cache = _token_cache()
         access = RandomGenerator.secrets_token(32)
         refresh = RandomGenerator.secrets_token(32)
-        cache.set(f'{_TOKEN_KEY_PREFIX}{access}', user.uid, ttl=config.auth_token_ttl)
-        cache.set(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh}', user.uid, ttl=config.auth_refresh_token_ttl)
+        _cache_set(f'{_TOKEN_KEY_PREFIX}{access}', user.uid, ttl=config.auth_token_ttl)
+        _cache_set(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh}', user.uid, ttl=config.auth_refresh_token_ttl)
         Logger.info(f'AuthService login: uid={user.uid}')
         return (access, refresh), None
 
@@ -229,15 +254,14 @@ class AuthService:
         """用 refresh_token 换取新令牌（轮换：旧 refresh 作废，单次使用）"""
         if not refresh_token:
             return None
-        cache = _token_cache()
-        uid = cache.get(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
+        uid = _cache_get(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
         if uid is None:
             return None
-        cache.delete(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
+        _cache_delete(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
         access = RandomGenerator.secrets_token(32)
         new_refresh = RandomGenerator.secrets_token(32)
-        cache.set(f'{_TOKEN_KEY_PREFIX}{access}', uid, ttl=config.auth_token_ttl)
-        cache.set(f'{_REFRESH_TOKEN_KEY_PREFIX}{new_refresh}', uid, ttl=config.auth_refresh_token_ttl)
+        _cache_set(f'{_TOKEN_KEY_PREFIX}{access}', uid, ttl=config.auth_token_ttl)
+        _cache_set(f'{_REFRESH_TOKEN_KEY_PREFIX}{new_refresh}', uid, ttl=config.auth_refresh_token_ttl)
         Logger.info(f'AuthService refresh: uid={uid}')
         return access, new_refresh
 
@@ -245,14 +269,14 @@ class AuthService:
     def logout(cls, token):
         """登出：删除 access token（refresh token 到期自然失效）"""
         if token:
-            _token_cache().delete(f'{_TOKEN_KEY_PREFIX}{token}')
+            _cache_delete(f'{_TOKEN_KEY_PREFIX}{token}')
 
     @classmethod
     def get_user_by_token(cls, token):
         """按 token 获取用户（未登录返回 None）"""
         if not token:
             return None
-        uid = _token_cache().get(f'{_TOKEN_KEY_PREFIX}{token}')
+        uid = _cache_get(f'{_TOKEN_KEY_PREFIX}{token}')
         if uid is None:
             return None
         return cls._get_store().get_by_uid(uid)

@@ -5,6 +5,10 @@ from ..util import Logger
 
 # 简单的内存缓存
 # 注意：waitress 为多线程 WSGI 服务器，本缓存已加线程锁保证安全
+#
+# 安全边界：值经 pickle 序列化存储，仅限存放框架/业务内部数据（自产自消）。
+# 切勿将外部不可信输入直接作为 value 写入（pickle 反序列化存在代码执行风险）；
+# 需要跨实例共享或持久化时请使用 redis_cache（配置 REDIS_URL）。
 
 
 class SimpleMemoryCache:

@@ -42,8 +42,9 @@ def summarize(latencies, errors, elapsed):
         return {'qps': 0.0, 'avg_ms': 0.0, 'median_ms': 0.0,
                 'p95_ms': 0.0, 'p99_ms': 0.0, 'requests': 0, 'errors': errors}
     latencies.sort()
-    p95 = latencies[int(total * 0.95) - 1]
-    p99 = latencies[int(total * 0.99) - 1]
+    # 小样本保护：p95/p99 索引可能越界（如仅 1 个样本时 int(0.95*1)-1 = -1）
+    p95 = latencies[min(int(total * 0.95) - 1, total - 1)]
+    p99 = latencies[min(int(total * 0.99) - 1, total - 1)]
     return {
         'qps': round(total / elapsed, 1) if elapsed > 0 else 0.0,
         'avg_ms': round(statistics.mean(latencies), 2),
