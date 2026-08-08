@@ -40,20 +40,11 @@ def test_select_limit_value(monkeypatch):
     assert 'LIMIT 10' in captured['sql']
 
 
-def test_parse_value_none():
-    assert SQLite._parse_value(None) == 'NULL'
-
-
-def test_parse_value_types():
-    assert SQLite._parse_value('abc') == "'abc'"
-    assert SQLite._parse_value(1) == '1'
-    assert SQLite._parse_value(1.5) == '1.5'
-
-
-def test_parse_value_unsupported():
-    import pytest
-    with pytest.raises(Exception):
-        SQLite._parse_value(b'bytes')
+def test_no_parse_value_method():
+    """_parse_value/_parse_values 已移除（未转义字面量拼接是注入隐患），
+    值必须走 ? 占位符参数化"""
+    assert not hasattr(SQLite, '_parse_value')
+    assert not hasattr(SQLite, '_parse_values')
 
 
 @pytest.fixture

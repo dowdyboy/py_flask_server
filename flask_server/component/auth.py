@@ -35,6 +35,12 @@ _REFRESH_TOKEN_KEY_PREFIX = 'auth:refresh:'
 _LOGIN_FAIL_KEY_PREFIX = 'auth:login_fail:'
 _LOGIN_LOCK_KEY_PREFIX = 'auth:login_lock:'
 
+# 时序均衡：用户不存在时也执行一次 PBKDF2 校验（虚拟哈希），
+# 消除"用户名是否存在"的可观测时序差（防用户名枚举）
+_DUMMY_PASSWORD_HASH = DataEncryptUtil.pbkdf2_hmac(
+    'dummy-timing-equalizer', salt='0' * 32, iterations=100000,
+)
+
 
 def _token_cache():
     """认证令牌/防爆破计数的首选存储：配置 REDIS_URL 时用 Redis（多实例共享），否则进程内内存。"""
@@ -65,6 +71,28 @@ def _cache_get(key):
     if value is not None or cache is memory_cache:
         return value
     return memory_cache.get(key)
+
+
+def _cache_getdel(key):
+    """原子读取并删除（refresh token 单次使用轮换）。
+
+    主存储为 Redis 时 miss 会查内存兜底（与 _cache_set 的回退对称）并同步清理。
+    """
+    cache = _token_cache()
+    value = cache.getdel(key)
+    if value is not None or cache is memory_cache:
+        return value
+    return memory_cache.getdel(key)
+
+
+def _cache_incr(key, ttl=None):
+    """原子自增（防爆破计数）：Redis 主存储不可用时回退内存计数（单实例安全）"""
+    cache = _token_cache()
+    count = cache.incr(key, ttl=ttl)
+    if count is not None or cache is memory_cache:
+        return count
+    Logger.warn(f'Auth cache incr failed, falling back to memory ({key.rsplit(":", 1)[0]}:*)')
+    return memory_cache.incr(key, ttl=ttl)
 
 
 def _cache_delete(key):
@@ -119,8 +147,8 @@ class SqlAlchemyAuthStore:
 
     @staticmethod
     def _get_po():
-        # 动态获取：占位模型会在 DB 初始化后 reload 为真实 ORM 模型，
-        # 每次调用取最新定义，避免模块加载时机问题
+        # 每次调用取模块最新定义的 UserPO（flask_server/__init__.py 的加载顺序保证：
+        # app → init_SQLAlchemy → model，配置了 SQLALCHEMY_URI 时导入的即为真实 ORM 模型）
         import importlib
         return importlib.import_module('flask_server.model.po.user').UserPO
 
@@ -183,6 +211,10 @@ class AuthService:
         if cls._store is None:
             from flask_server.config import config
             if config.auth_store == 'sqlalchemy':
+                # 配置校验：漏配 SQLALCHEMY_URI 时给出清晰报错，而非运行时 AttributeError
+                if config.sqlalchemy_uri is None:
+                    raise RuntimeError(
+                        'AUTH_STORE=sqlalchemy 需要配置 SQLALCHEMY_URI（并执行 flask db upgrade 建表）')
                 cls._store = SqlAlchemyAuthStore()
             else:
                 cls._store = MemoryAuthStore()
@@ -211,16 +243,16 @@ class AuthService:
 
     @classmethod
     def _record_login_fail(cls, username):
-        """记录一次登录失败，达阈值则锁定"""
+        """记录一次登录失败（原子自增，incr 已持久化并带 TTL），达阈值则锁定"""
         fail_key = f'{_LOGIN_FAIL_KEY_PREFIX}{username}'
-        count = (_cache_get(fail_key) or 0) + 1
+        count = _cache_incr(fail_key, ttl=config.auth_login_lock_seconds)
+        if count is None:
+            count = 0   # 缓存不可用（不应发生）：跳过计数，不阻塞登录流程
         if count >= config.auth_login_max_fails:
             _cache_set(f'{_LOGIN_LOCK_KEY_PREFIX}{username}',
                        time.time() + config.auth_login_lock_seconds,
                        ttl=config.auth_login_lock_seconds)
             _cache_delete(fail_key)
-        else:
-            _cache_set(fail_key, count, ttl=config.auth_login_lock_seconds)
 
     @classmethod
     def _clear_login_fail(cls, username):
@@ -238,7 +270,12 @@ class AuthService:
             return None, 'locked'
         store = cls._get_store()
         user = store.get_by_username(username)
-        if user is None or not DataEncryptUtil.verify_pbkdf2(password, user.passwd):
+        if user is None:
+            # 时序均衡：用户不存在也执行等价 PBKDF2 校验（防用户名枚举时序侧信道）
+            DataEncryptUtil.verify_pbkdf2(password, _DUMMY_PASSWORD_HASH)
+            cls._record_login_fail(username)
+            return None, 'invalid'
+        if not DataEncryptUtil.verify_pbkdf2(password, user.passwd):
             cls._record_login_fail(username)
             return None, 'invalid'
         cls._clear_login_fail(username)
@@ -251,13 +288,13 @@ class AuthService:
 
     @classmethod
     def refresh_access_token(cls, refresh_token):
-        """用 refresh_token 换取新令牌（轮换：旧 refresh 作废，单次使用）"""
+        """用 refresh_token 换取新令牌（轮换：旧 refresh 原子作废，单次使用）"""
         if not refresh_token:
             return None
-        uid = _cache_get(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
+        # 原子读取并删除（GETDEL）：并发使用同一 refresh_token 时仅一次成功
+        uid = _cache_getdel(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
         if uid is None:
             return None
-        _cache_delete(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
         access = RandomGenerator.secrets_token(32)
         new_refresh = RandomGenerator.secrets_token(32)
         _cache_set(f'{_TOKEN_KEY_PREFIX}{access}', uid, ttl=config.auth_token_ttl)

@@ -84,6 +84,12 @@ def test_api_prefix_not_swallowed(client):
     assert resp.status_code == 404
 
 
+def test_api_exact_path_not_swallowed(client):
+    """R 回归：精确 /api 路径同样返回 404（修复前落入 SPA 回退返回 index.html）"""
+    resp = client.get('/api')
+    assert resp.status_code == 404
+
+
 def test_path_traversal_returns_404(client):
     """路径穿越请求被拦截返回 404（_is_path_safe 分支）"""
     resp = client.get('/../etc/passwd')

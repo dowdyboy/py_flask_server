@@ -65,6 +65,19 @@ def test_metrics_disabled_returns_503(client, monkeypatch):
     assert 'metrics disabled' in resp.get_data(as_text=True)
 
 
+def test_metrics_disabled_no_recording(client, monkeypatch):
+    """R4 回归：METRICS_ENABLED=false 时请求不再被统计（before/after 零开销）"""
+    from flask_server import config
+    # Prometheus 计数器为进程级全局，比较开关关闭前后的计数是否增长
+    label = 'http_requests_total{method="GET",route="/hello"'
+    before = client.get('/metrics').get_data(as_text=True).count(label)
+    monkeypatch.setattr(config, 'metrics_enabled', False)
+    client.get('/hello')
+    monkeypatch.setattr(config, 'metrics_enabled', True)
+    after = client.get('/metrics').get_data(as_text=True).count(label)
+    assert after == before
+
+
 def test_metrics_record_without_timer(client):
     """metrics_record 无计时起点（未走 before_request）时不记录时长（46->63 分支）"""
     from flask_server.component.metrics import metrics_record

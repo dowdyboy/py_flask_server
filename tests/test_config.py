@@ -153,3 +153,43 @@ def test_init_sql_path_loaded(tmp_path, monkeypatch):
     monkeypatch.setenv('INIT_SQL_PATH', str(sql))
     cfg = config_module.Config()
     assert cfg.db_init_sql_list == ['CREATE TABLE t(id INT)', 'INSERT INTO t VALUES (1)']
+
+
+def test_snowflake_worker_id_valid(monkeypatch):
+    """合法 SNOWFLAKE_WORKER_ID（0-31）直接生效"""
+    monkeypatch.setenv('SNOWFLAKE_WORKER_ID', '7')
+    assert config_module.Config().snowflake_worker_id == 7
+
+
+def test_snowflake_worker_id_unset(monkeypatch):
+    """未配置时按 PID 派生（None 表示走 key_generator 的默认逻辑）"""
+    monkeypatch.delenv('SNOWFLAKE_WORKER_ID', raising=False)
+    assert config_module.Config().snowflake_worker_id is None
+
+
+def test_snowflake_worker_id_invalid_string(monkeypatch):
+    """非数字值回退为 None 且告警（修复前 -1 会让 KeyGenerator 初始化抛 ValueError）"""
+    monkeypatch.setenv('SNOWFLAKE_WORKER_ID', 'abc')
+    cfg = config_module.Config()
+    assert cfg.snowflake_worker_id is None
+
+
+def test_snowflake_worker_id_out_of_range(monkeypatch):
+    """越界值（>31）回退为 None，避免 SnowflakeIdWorker 越界异常"""
+    monkeypatch.setenv('SNOWFLAKE_WORKER_ID', '99')
+    assert config_module.Config().snowflake_worker_id is None
+
+
+def test_unknown_app_env_warns_and_falls_back():
+    """R 回归：APP_ENV 未知值（拼写错误）告警并回退 development 预设"""
+    code = (
+        "import os\n"
+        "os.environ['APP_ENV'] = 'prduction'\n"
+        "from flask_server.config import config\n"
+        "assert config.host == '127.0.0.1'\n"      # development 预设（debug=True 等）
+        "print('DONE')\n"
+    )
+    result = _run_in_subprocess(code)
+    assert result.returncode == 0, f'stderr:\n{result.stderr}'
+    assert 'DONE' in result.stdout
+    assert '[Config WARNING] APP_ENV' in result.stdout, '应打印未知 APP_ENV 告警'

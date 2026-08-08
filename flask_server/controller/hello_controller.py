@@ -48,12 +48,14 @@ class HealthView(MethodView):
             except Exception as e:
                 status['db'] = f'error: {e}'
 
-        # 检查 Redis 连通性
+        # 检查 Redis 连通性（尊重 RedisCache 的冷却逻辑：故障期间不真实连接，快速返回）
         from flask_server.module import redis_cache
         if redis_cache is not None:
             try:
-                redis_cache.client.ping()
-                status['redis'] = 'ok'
+                if redis_cache.ping():
+                    status['redis'] = 'ok'
+                else:
+                    status['redis'] = 'error'
             except Exception as e:
                 status['redis'] = f'error: {e}'
 
@@ -87,12 +89,15 @@ class ReadyzView(MethodView):
                 status['db'] = 'error'
                 return GraceResult.business_error(5030, 'dependency not ready', status), 503
 
-        # 检查 Redis 连通性
+        # 检查 Redis 连通性（尊重冷却逻辑，故障期间快速返回 error）
         from flask_server.module import redis_cache
         if redis_cache is not None:
             try:
-                redis_cache.client.ping()
-                status['redis'] = 'ok'
+                if redis_cache.ping():
+                    status['redis'] = 'ok'
+                else:
+                    status['redis'] = 'error'
+                    return GraceResult.business_error(5030, 'dependency not ready', status), 503
             except Exception:
                 status['redis'] = 'error'
                 return GraceResult.business_error(5030, 'dependency not ready', status), 503

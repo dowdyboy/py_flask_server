@@ -70,9 +70,11 @@ def run_benchmark(url, endpoints, concurrency, total_requests, duration):
                 try:
                     resp = requests.get(target, timeout=10)
                     if resp.status_code >= 500:
-                        errors[0] += 1
+                        with lock:
+                            errors[0] += 1
                 except Exception:
-                    errors[0] += 1
+                    with lock:
+                        errors[0] += 1
                 with lock:
                     latencies.append((time.perf_counter() - start) * 1000)
 

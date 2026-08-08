@@ -46,6 +46,21 @@ class RedisCache:
                 return False
         return True
 
+    def ping(self) -> bool:
+        """连通性探测（供健康检查使用）：冷却期内快速返回 False，不真实连接；
+        冷却期外执行真实 ping，失败则进入冷却并返回 False"""
+        if not self._check():
+            return False
+        try:
+            ok = bool(self.client.ping())
+            if not ok:
+                self._mark_unavailable()
+            return ok
+        except Exception as e:
+            Logger.warn(f'RedisCache ping failed: {e}')
+            self._mark_unavailable()
+            return False
+
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
         """设置键值对，value 会被 JSON 序列化"""
         if not self._check():
@@ -91,6 +106,47 @@ class RedisCache:
             Logger.warn(f'RedisCache delete failed key={key}: {e}')
             self._mark_unavailable()
 
+    def getdel(self, key: str) -> Any:
+        """原子读取并删除（GETDEL，供 refresh token 轮换等单次使用场景）"""
+        if not self._check():
+            return None
+        try:
+            data = self.client.getdel(key)
+        except Exception as e:
+            Logger.warn(f'RedisCache getdel failed key={key}: {e}')
+            self._mark_unavailable()
+            return None
+        if data is None:
+            return None
+        try:
+            return json.loads(data)
+        except Exception as e:
+            Logger.warn(f'RedisCache getdel parse failed key={key}: {e}')
+            return None
+
+    def incr(self, key: str, ttl: Optional[int] = None) -> Optional[int]:
+        """原子自增计数（INCR，供防爆破计数等场景），返回新值；失败返回 None"""
+        if not self._check():
+            return None
+        try:
+            pipe = self.client.pipeline()
+            pipe.incr(key)
+            # 每次自增顺延过期时间：活动期内计数窗口不断刷新（与内存实现一致），
+            # 防止攻击者等待窗口结束后再爆破
+            if ttl:
+                pipe.expire(key, ttl)
+            results = pipe.execute()
+        except Exception as e:
+            Logger.warn(f'RedisCache incr failed key={key}: {e}')
+            self._mark_unavailable()
+            return None
+        try:
+            return int(results[0])
+        except (TypeError, ValueError):
+            # 损坏/非数字值：视为计数丢失，由调用方按 0 重计，不抛异常
+            self.client.delete(key)
+            return None
+
     def exists(self, key: str) -> bool:
         """检查键是否存在"""
         if not self._check():
@@ -104,6 +160,8 @@ class RedisCache:
 
     def expire(self, key: str, ttl: int) -> None:
         """为键设置过期时间"""
+        if ttl is None:
+            return   # 无 ttl 无意义，直接返回（避免向 Redis 发送非法 EXPIRE 误判降级）
         if not self._check():
             return
         try:

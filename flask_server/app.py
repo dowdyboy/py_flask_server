@@ -177,7 +177,11 @@ def clear_request_id(exc=None):
 @app.errorhandler(HTTPException)
 @json_response
 def http_exception_handler(e):
-    Logger.error(f'http_exception_handler : {e}')
+    # 4xx（404/405 等）多为客户端/扫描器行为，记 WARNING 避免刷屏；5xx 才记 ERROR
+    if e.code is not None and 400 <= e.code < 500:
+        Logger.warn(f'http_exception_handler : {e}')
+    else:
+        Logger.error(f'http_exception_handler : {e}')
     if e.code == 404:
         return GraceResult.error(data='资源不存在'), 404
     return GraceResult.error(data=str(e)), e.code

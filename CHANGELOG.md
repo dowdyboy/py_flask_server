@@ -3,6 +3,45 @@
 本模板项目的变更记录。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.3.2] - 2026-08-08
+
+### 修复
+
+- **雪花 ID 配置兜底**：`SNOWFLAKE_WORKER_ID` 非数字/越界（非 0-31）不再导致启动崩溃，
+  告警后回退按 PID 派生
+- **认证原子化**：refresh 轮换改 GETDEL（并发复用同一 refresh_token 仅一次成功）、
+  防爆破计数改 INCR（多实例一致），消除先查后删竞态
+- **登录时序均衡**：用户名不存在时也执行等价 PBKDF2 校验（防用户名枚举时序侧信道）
+- **登录入参限长**：username 与注册对齐限 3-64、refresh_token 限 ≤256
+  （防超大缓存 key/日志行 DoS）
+- `verify_pbkdf2` 防御：盐值非合法 hex（数据损坏）返回 False 而非登录 500；
+  iterations 超上限（>100 万）拒绝校验（防 DB 中毒 CPU DoS）
+- **认证存储配置校验**：`AUTH_STORE=sqlalchemy` 未配置 `SQLALCHEMY_URI` 时启动即报清晰错误
+  （修复前运行期 AttributeError 500）；修正占位模型说明（加载顺序保证真实 ORM 模型，无 reload）
+- **缓存计数损坏值防御**：`incr` 遇到非数字值（内存/Redis）按 0 重计或清理，不再抛异常
+  （防登录 500）
+- **`/api` 精确路径 404**：修复前 `GET /api` 落入 SPA 回退返回 index.html（/api/xxx 才 404）
+- `APP_ENV` 未知值（如拼写错误）打印告警并回退 development 预设（修复前静默）
+- **Docker 生产默认入口**：镜像默认 `APP_ENV=production` + waitress（`python wsgi.py`），
+  开发调试由 docker-compose.yml 显式覆盖（server.py + development）
+- **metrics 运行时开关**：`METRICS_ENABLED=false` 时 before/after_request 零开销
+- **健康检查尊重 Redis 冷却**：`RedisCache.ping()` 冷却期内快速返回，不真实连接
+- 404/405 等 4xx 日志降级 WARNING（不再刷 ERROR）
+- 移除 SQLite 未转义字面量拼接死代码 `_parse_value/_parse_values`（统一占位符参数化）；
+  `SQLITE_DB_PATH` 目录不存在时自动创建
+- CHANGELOG 移除真实云服务器 IP（公开仓库信息脱敏）
+
+### 新增
+
+- `RedisCache`/`SimpleMemoryCache` 原子操作 `getdel`/`incr`（refresh 轮换、防爆破计数专用）
+- CI **deps-sync** job：pyproject.toml 与 requirements.txt 依赖清单一致性检查
+  （CI 四 → 七流水线）
+
+### 测试
+
+- 用例 283 → **291**，覆盖率 92.98% → **93.36%**（配置校验、损坏值防御、/api 边界、
+  redis 未覆盖分支、APP_ENV 告警补测）
+
 ## [0.3.1] - 2026-08-08
 
 ### 新增
@@ -41,7 +80,7 @@
 
 ### 验证
 
-- 真实 MySQL 8.4 + Redis 7.4（云服务器 111.231.77.164）全链路 20 项通过：迁移建表、
+- 真实 MySQL 8.4 + Redis 7.4（云服务器）全链路 20 项通过：迁移建表、
   auth 全流程、token 落 Redis、Redis 限流、防爆破锁定、反射容错、healthz/readyz/health
 
 ## [0.3.0] - 2026-08-08

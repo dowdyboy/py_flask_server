@@ -81,9 +81,14 @@ class DataEncryptUtil:
                 iterations = 100000
             else:
                 return False
-        except (ValueError, AttributeError):
+            # 盐必须是合法 hex；损坏/遗留数据直接视为校验失败，不抛异常（否则登录 500）
+            salt_bytes = bytes.fromhex(salt)
+            # iterations 上限防御：防止 DB 中存储的哈希被写入超大迭代数（CPU DoS）
+            if iterations < 1 or iterations > 1_000_000:
+                return False
+        except (ValueError, AttributeError, TypeError):
             return False
         derived = hashlib.pbkdf2_hmac(
-            'sha256', text.encode('utf-8'), bytes.fromhex(salt), iterations
+            'sha256', text.encode('utf-8'), salt_bytes, iterations
         )
         return derived.hex() == hash_hex

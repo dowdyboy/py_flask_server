@@ -131,6 +131,21 @@ def test_login_oversized_password_rejected(client, fresh_store):
     assert r.get_json()['code'] == 1001
 
 
+def test_login_oversized_username_rejected(client, fresh_store):
+    """R 回归：登录用户名超长（>64）返回 422，避免超大缓存 key/日志行 DoS"""
+    r = client.post('/api/v1/auth/login',
+                    json={'username': 'x' * 10000, 'password': 'secret123'})
+    assert r.status_code == 422
+    assert r.get_json()['code'] == 1001
+
+
+def test_refresh_oversized_token_rejected(client, fresh_store):
+    """R 回归：refresh_token 超长返回 422，避免超大缓存 key 查询"""
+    r = client.post('/api/v1/auth/refresh', json={'refresh_token': 'x' * 10000})
+    assert r.status_code == 422
+    assert r.get_json()['code'] == 1001
+
+
 def test_auth_exempt_path_exact_match(fresh_store):
     """P8 回归：豁免路径为整段匹配，前缀相似路径不得被误豁免"""
     from flask_server.component.auth import _is_exempt_path
@@ -273,6 +288,17 @@ def test_auth_sqlalchemy_register_login(auth_db_env):
     assert user.username == 'liam'
 
 
+def test_sqlalchemy_store_requires_db_uri(monkeypatch):
+    """R 回归：AUTH_STORE=sqlalchemy 未配置 SQLALCHEMY_URI 时给出清晰报错（而非 500）"""
+    from flask_server import config
+    monkeypatch.setattr(config, 'auth_store', 'sqlalchemy')
+    monkeypatch.setattr(config, 'sqlalchemy_uri', None)
+    AuthService._store = None
+    with pytest.raises(RuntimeError, match='AUTH_STORE=sqlalchemy 需要配置 SQLALCHEMY_URI'):
+        AuthService._get_store()
+    AuthService._store = None
+
+
 def test_auth_sqlalchemy_wrong_password(auth_db_env):
     """sqlalchemy 存储：密码错误登录失败"""
     db, app = auth_db_env
@@ -320,6 +346,17 @@ class _FakeRedisClient:
     def get(self, key):
         return self.store.get(key)
 
+    def getdel(self, key):
+        return self.store.pop(key, None)
+
+    def incr(self, key):
+        new = int(self.store.get(key, 0)) + 1
+        self.store[key] = str(new)
+        return new
+
+    def pipeline(self):
+        return _FakePipeline(self)
+
     def delete(self, key):
         self.store.pop(key, None)
 
@@ -328,6 +365,32 @@ class _FakeRedisClient:
 
     def expire(self, key, ttl):
         pass
+
+
+class _FakePipeline:
+    """极简 pipeline 假实现：入队 incr/expire，execute 依序执行"""
+
+    def __init__(self, client):
+        self._client = client
+        self._cmds = []
+
+    def incr(self, key):
+        self._cmds.append(('incr', key))
+        return self
+
+    def expire(self, key, ttl):
+        self._cmds.append(('expire', key, ttl))
+        return self
+
+    def execute(self):
+        results = []
+        for cmd in self._cmds:
+            if cmd[0] == 'incr':
+                results.append(self._client.incr(cmd[1]))
+            else:
+                self._client.expire(cmd[1], cmd[2])
+                results.append(True)
+        return results
 
 
 class _FailingRedisClient:
@@ -343,6 +406,15 @@ class _FailingRedisClient:
         raise ConnectionError('mock redis down')
 
     def get(self, key):
+        raise ConnectionError('mock redis down')
+
+    def getdel(self, key):
+        raise ConnectionError('mock redis down')
+
+    def incr(self, key):
+        raise ConnectionError('mock redis down')
+
+    def pipeline(self):
         raise ConnectionError('mock redis down')
 
     def delete(self, key):
@@ -441,5 +513,46 @@ def test_brute_force_still_works_when_redis_down(client, fresh_store, monkeypatc
     for _ in range(3):
         client.post('/api/v1/auth/login', json={'username': 'lockfail', 'password': 'wrong-pass'})
     r = client.post('/api/v1/auth/login', json={'username': 'lockfail', 'password': 'secret123'})
+    assert r.status_code == 429
+    assert r.get_json()['code'] == 4003
+
+
+def test_refresh_consumed_atomically_in_redis(client, fresh_store, monkeypatch):
+    """C1 回归：Redis 主存储时 refresh token 经 GETDEL 原子作废（单次使用）"""
+    from flask_server.component import auth as auth_module
+
+    fake = _FakeRedisClient()
+    monkeypatch.setattr(auth_module.config, 'redis_url', 'redis://fake:6379/0')
+    monkeypatch.setattr(auth_module, 'redis_cache', _fake_redis_cache(fake))
+
+    client.post('/api/v1/auth/register', json={'username': 'rotuser', 'password': 'secret123'})
+    login_data = client.post('/api/v1/auth/login', json={'username': 'rotuser', 'password': 'secret123'}).get_json()['data']
+    old_refresh = login_data['refresh_token']
+    refresh_key = f'auth:refresh:{old_refresh}'
+    assert refresh_key in fake.store, 'refresh token 应落 Redis'
+
+    r = client.post('/api/v1/auth/refresh', json={'refresh_token': old_refresh})
+    assert r.status_code == 200
+    assert refresh_key not in fake.store, '旧 refresh 应被 GETDEL 原子删除'
+    r = client.post('/api/v1/auth/refresh', json={'refresh_token': old_refresh})
+    assert r.status_code == 401
+
+
+def test_brute_force_counter_atomic_in_redis(client, fresh_store, monkeypatch):
+    """C1 回归：Redis 主存储时防爆破计数走 INCR（原子自增，多实例一致）"""
+    from flask_server import config
+    from flask_server.component import auth as auth_module
+
+    monkeypatch.setattr(config, 'auth_login_max_fails', 3)
+    monkeypatch.setattr(auth_module.config, 'redis_url', 'redis://fake:6379/0')
+    fake = _FakeRedisClient()
+    monkeypatch.setattr(auth_module, 'redis_cache', _fake_redis_cache(fake))
+
+    client.post('/api/v1/auth/register', json={'username': 'incruser', 'password': 'secret123'})
+    for _ in range(3):
+        client.post('/api/v1/auth/login', json={'username': 'incruser', 'password': 'wrong-pass'})
+    # 失败计数以 Redis 整数存储（非 JSON），且达阈值后触发锁定
+    assert any(k.startswith('auth:login_lock:') for k in fake.store), '锁定标记应写入 Redis'
+    r = client.post('/api/v1/auth/login', json={'username': 'incruser', 'password': 'secret123'})
     assert r.status_code == 429
     assert r.get_json()['code'] == 4003

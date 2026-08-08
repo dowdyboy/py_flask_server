@@ -17,7 +17,9 @@ class AuthRegisterSchema(Schema):
 
 class AuthLoginSchema(Schema):
     """登录入参"""
-    username = fields.String(required=True, metadata={'description': '用户名'})
+    # 与注册保持一致的长度限制，防止超大 username 撑爆缓存 key 与日志行（DoS 面）
+    username = fields.String(required=True, validate=validate.Length(min=3, max=64),
+                             metadata={'description': '用户名（3-64 字符）'})
     # 与注册保持一致的密码长度上下限，防止超大密码拖慢 PBKDF2 校验（CPU DoS 面）
     password = fields.String(required=True, validate=validate.Length(min=6, max=128),
                              metadata={'description': '密码（6-128 字符）'})
@@ -25,7 +27,9 @@ class AuthLoginSchema(Schema):
 
 class AuthRefreshSchema(Schema):
     """刷新令牌入参"""
-    refresh_token = fields.String(required=True, metadata={'description': '登录返回的 refresh_token'})
+    # 限长：防止超大 token 造成超大缓存 key 查询
+    refresh_token = fields.String(required=True, validate=validate.Length(max=256),
+                                  metadata={'description': '登录返回的 refresh_token'})
 
 
 class AuthUserResponseSchema(Schema):

@@ -47,10 +47,15 @@ if _METRICS_AVAILABLE:
 
     @app.before_request
     def metrics_start_timer():
+        # METRICS_ENABLED=false 时零开销（仅 /metrics 返回 503，不再统计请求）
+        if not config.metrics_enabled:
+            return None
         request._metrics_start_time = time.perf_counter()
 
     @app.after_request
     def metrics_record(resp):
+        if not config.metrics_enabled:
+            return resp
         route = _route_label()
         status = resp.status_code
         _REQUESTS.labels(method=request.method, status=status, route=route).inc()

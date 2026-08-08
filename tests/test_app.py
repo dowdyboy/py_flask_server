@@ -323,12 +323,9 @@ def test_readyz_redis_failure_returns_503(client, monkeypatch):
     """Redis 依赖故障时就绪探针返回 503"""
     from flask_server import config
 
-    class _FakeClient:
+    class _FakeCache:
         def ping(self):
             raise ConnectionError('mock redis down')
-
-    class _FakeCache:
-        client = _FakeClient()
 
     # 默认 redis_cache 包属性为 None（未配置），此处注入假实例触发故障路径
     monkeypatch.setattr('flask_server.module.redis_cache', _FakeCache())
@@ -367,12 +364,11 @@ class _FakeDbOk:
 
 
 class _FakeRedisOk:
-    class _Client:
-        @staticmethod
-        def ping():
-            return True
+    """ping 正常的假 redis_cache（模拟 RedisCache.ping 返回 True）"""
 
-    client = _Client()
+    @staticmethod
+    def ping():
+        return True
 
 
 def _patch_db(monkeypatch, fake):
@@ -419,13 +415,9 @@ def test_health_redis_failure(client, monkeypatch):
     """health 的 Redis 检查故障分支：data.redis 含 error"""
     _patch_db(monkeypatch, _FakeDbOk())
 
-    class _BrokenClient:
-        @staticmethod
-        def ping():
-            raise ConnectionError('mock redis down')
-
     class _BrokenCache:
-        client = _BrokenClient()
+        def ping(self):
+            raise ConnectionError('mock redis down')
 
     monkeypatch.setattr('flask_server.module.redis_cache', _BrokenCache())
     resp = client.get('/api/v1/health')

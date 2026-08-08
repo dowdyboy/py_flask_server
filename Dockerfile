@@ -10,6 +10,9 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt \
 
 FROM python:3.12-slim
 
+# 生产预设：关闭 debug、监听 0.0.0.0；开发调试请用 docker-compose.yml（覆盖为 development）
+ENV APP_ENV=production
+
 WORKDIR /app
 
 # 仅复制运行时依赖（不包含构建工具链）
@@ -29,7 +32,7 @@ USER appuser
 # 暴露端口
 EXPOSE 5000
 
-# 默认开发入口
-# 生产环境请改用: CMD ["python", "wsgi.py"]（waitress WSGI 服务器）
-# Linux 生产多进程/WebSocket: CMD ["python", "wsgi_gunicorn.py"]（需安装 gunicorn）
-CMD ["python", "server.py"]
+# 默认生产入口：waitress WSGI 服务器（单进程多线程，零额外依赖）
+# WebSocket 场景请改用: CMD ["python", "server.py"]（Flask-SocketIO，需安装 Flask-SocketIO）
+# Linux 生产多进程: CMD ["python", "wsgi_gunicorn.py"]（需安装 gunicorn）
+CMD ["python", "wsgi.py"]

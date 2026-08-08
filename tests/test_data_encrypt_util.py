@@ -66,3 +66,21 @@ def test_verify_pbkdf2_invalid_format():
     assert DataEncryptUtil.verify_pbkdf2('x', 'invalid') is False
     assert DataEncryptUtil.verify_pbkdf2('x', None) is False
     assert DataEncryptUtil.verify_pbkdf2('x', 'a$b$c$d') is False
+
+
+def test_verify_pbkdf2_corrupted_salt_returns_false():
+    """R 回归：盐非合法 hex（数据损坏）应返回 False，而非抛 ValueError（登录 500）"""
+    assert DataEncryptUtil.verify_pbkdf2('x', 'zz$100000$' + '0' * 64) is False
+    assert DataEncryptUtil.verify_pbkdf2('x', 'not-hex$100000$' + '0' * 64) is False
+
+
+def test_verify_pbkdf2_oversized_iterations_returns_false():
+    """R 回归：存储哈希中 iterations 超大（CPU DoS 面）应拒绝校验"""
+    salt = '0' * 32
+    assert DataEncryptUtil.verify_pbkdf2('x', f'{salt}$999999999${"0" * 64}') is False
+
+
+def test_verify_pbkdf2_non_numeric_iterations_returns_false():
+    """iterations 非数字（损坏数据）应返回 False"""
+    salt = '0' * 32
+    assert DataEncryptUtil.verify_pbkdf2('x', f'{salt}$abc${"0" * 64}') is False

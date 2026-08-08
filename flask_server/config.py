@@ -22,12 +22,15 @@ def _parse_int(name: str, default: int) -> int:
 
 
 # APP_ENV 预设档：development / staging / production
-_APP_ENV = os.environ.get('APP_ENV', 'development').lower()
+_APP_ENV = (os.environ.get('APP_ENV', 'development') or 'development').strip().lower()
 _ENV_PRESETS = {
     'development': {'debug': True, 'host': '127.0.0.1', 'log_level': logging.DEBUG, 'log_to_console': True},
     'staging': {'debug': False, 'host': '0.0.0.0', 'log_level': logging.INFO, 'log_to_console': False},
     'production': {'debug': False, 'host': '0.0.0.0', 'log_level': logging.INFO, 'log_to_console': False},
 }
+if _APP_ENV not in _ENV_PRESETS:
+    print(f'[Config WARNING] APP_ENV={_APP_ENV!r} is unknown '
+          '(development/staging/production), falling back to development preset')
 _preset = _ENV_PRESETS.get(_APP_ENV, _ENV_PRESETS['development'])
 
 
@@ -124,8 +127,18 @@ class Config:
         self.metrics_enabled = os.environ.get('METRICS_ENABLED', 'true').lower() in ('1', 'true', 'yes')
 
         # 雪花 ID 机器标识（多进程部署时每进程应配置不同值；未配置时按 PID 自动派生）
+        # 非法（非数字）或越界（非 0-31）时告警并视为未配置，避免 KeyGenerator 初始化崩溃
         _worker_id_raw = os.environ.get('SNOWFLAKE_WORKER_ID')
-        self.snowflake_worker_id = _parse_int('SNOWFLAKE_WORKER_ID', -1) if _worker_id_raw else None
+        if _worker_id_raw:
+            _parsed_worker_id = _parse_int('SNOWFLAKE_WORKER_ID', -1)
+            if 0 <= _parsed_worker_id <= 31:
+                self.snowflake_worker_id = _parsed_worker_id
+            else:
+                print(f'[Config WARNING] SNOWFLAKE_WORKER_ID={_worker_id_raw!r} is invalid '
+                      '(must be 0-31), falling back to PID-derived worker id')
+                self.snowflake_worker_id = None
+        else:
+            self.snowflake_worker_id = None
 
         # 可信代理配置（get_real_ip 仅在来自可信代理时才信任 X-Forwarded-For）
         _trusted_raw = os.environ.get('TRUSTED_PROXIES', '127.0.0.1,::1')

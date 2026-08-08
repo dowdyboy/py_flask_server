@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+import os
 from ..config import config
 from ..util import Logger
 
@@ -14,29 +15,18 @@ class SQLite:
     # 判断是否使用sqlite3数据库，如果使用，则初始化连接，否则为None
     if config.db_file_path is not None:
         Logger.info(f"Initializing SQLite : {config.db_file_path}")
+        # 自动创建数据库文件所在目录，避免目录不存在时 import 即崩溃
+        _db_dir = os.path.dirname(config.db_file_path)
+        if _db_dir:
+            os.makedirs(_db_dir, exist_ok=True)
         conn = sqlite3.connect(config.db_file_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
     else:
         conn = None
 
     # 将值转换为字符串，用于sql语句中
-    @staticmethod
-    def _parse_value(value):
-        if value is None:
-            return 'NULL'
-        if isinstance(value, str):
-            return f"'{value}'"
-        elif isinstance(value, int):
-            return f"{value}"
-        elif isinstance(value, float):
-            return f"{value}"
-        else:
-            raise Exception(f"Unsupported value type: {type(value)}")
-
-    # 将值列表转换为字符串，用于sql语句中
-    @staticmethod
-    def _parse_values(values):
-        return ','.join([SQLite._parse_value(v) for v in values])
+    # 注意：仅支持 ? 占位符参数化查询，禁止将值直接拼接进 SQL（防注入）
+    # （_parse_value 曾被用于拼接字面量且未转义，已移除）
 
     # 转换表名为sqlite3语法，用于sql语句中
     @staticmethod

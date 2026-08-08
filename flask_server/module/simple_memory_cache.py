@@ -50,6 +50,39 @@ class SimpleMemoryCache:
         with self._lock:
             self._delete(key)
 
+    def getdel(self, key):
+        """原子读取并删除（供 refresh token 轮换等单次使用场景）"""
+        with self._lock:
+            if self._is_expired(key):
+                self._delete(key)
+                return None
+            if key not in self.cache:
+                return None
+            value = self.cache.pop(key)
+            self.expiry_times.pop(key, None)
+            try:
+                return pickle.loads(value)
+            except Exception as e:
+                Logger.warn(f'SimpleMemoryCache getdel failed key={key}: {e}')
+                return None
+
+    def incr(self, key, ttl=None):
+        """原子自增计数（供防爆破计数等场景；值不存在时从 1 开始），返回新值"""
+        with self._lock:
+            if self._is_expired(key):
+                self._delete(key)
+            try:
+                cur = int(pickle.loads(self.cache[key])) if key in self.cache else 0
+            except Exception:
+                cur = 0   # 损坏/非数字值：按 0 重新计数，不抛异常
+            new = cur + 1
+            self.cache[key] = pickle.dumps(new)
+            if ttl:
+                self.expiry_times[key] = time.time() + ttl
+            else:
+                self.expiry_times.pop(key, None)
+            return new
+
     def _delete(self, key):
         """内部删除方法（调用方需持有锁）"""
         if key in self.cache:

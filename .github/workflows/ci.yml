@@ -84,6 +84,35 @@ jobs:
       - name: Ruff check
         run: ruff check flask_server/ tests/ examples/ server.py wsgi.py
 
+  deps-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check requirements.txt matches pyproject.toml
+        run: |
+          python - <<'EOF'
+          import tomllib
+
+          req = set()
+          for line in open('requirements.txt', encoding='utf-8'):
+              line = line.strip()
+              if not line or line.startswith('#'):
+                  continue
+              req.add(line)
+          with open('pyproject.toml', 'rb') as f:
+              deps = set(tomllib.load(f)['project']['dependencies'])
+          missing = deps - req
+          extra = req - deps
+          assert not missing and not extra, (
+              f'依赖清单不一致: 仅 pyproject: {sorted(missing)}, 仅 requirements: {sorted(extra)}'
+          )
+          print(f'deps in sync: {len(deps)} packages')
+          EOF
+
   security:
     runs-on: ubuntu-latest
     steps:

@@ -1,5 +1,6 @@
 import threading
 import time
+import pickle
 from flask_server.module.simple_memory_cache import SimpleMemoryCache
 
 
@@ -75,3 +76,44 @@ def test_corrupted_value_self_heals():
     c.cache['bad'] = b'\x80\x05not-a-valid-pickle'
     assert c.get('bad') is None
     assert 'bad' not in c.cache
+
+
+def test_getdel_consumes_once():
+    """getdel 原子读取并删除（refresh 轮换单次使用语义）"""
+    c = SimpleMemoryCache()
+    c.set('k', {'uid': 'u1'})
+    assert c.getdel('k') == {'uid': 'u1'}
+    assert c.getdel('k') is None
+    assert 'k' not in c.cache
+
+
+def test_getdel_expired_returns_none():
+    """getdel 对已过期键返回 None 并清理"""
+    c = SimpleMemoryCache()
+    c.set('k', 'v', ttl=-10)
+    assert c.getdel('k') is None
+    assert 'k' not in c.cache
+
+
+def test_incr_atomic_counter():
+    """incr 原子自增：不存在从 1 开始，连续自增累计"""
+    c = SimpleMemoryCache()
+    assert c.incr('cnt', ttl=60) == 1
+    assert c.incr('cnt', ttl=60) == 2
+    assert c.incr('cnt') == 3
+    assert c.get('cnt') == 3
+
+
+def test_incr_expired_restarts():
+    """incr 对已过期键从 1 重新计数"""
+    c = SimpleMemoryCache()
+    c.set('cnt', 5, ttl=-10)
+    assert c.incr('cnt', ttl=60) == 1
+
+
+def test_incr_corrupted_value_restarts():
+    """R 回归：incr 遇到损坏/非数字值按 0 重计，不抛异常（防登录 500）"""
+    c = SimpleMemoryCache()
+    c.cache['cnt'] = pickle.dumps('not-a-number')
+    assert c.incr('cnt') == 1
+    assert c.get('cnt') == 1
