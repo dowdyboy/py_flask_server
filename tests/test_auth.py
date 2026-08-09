@@ -112,6 +112,11 @@ def test_auth_interceptor_blocks_unexempt_api(client, monkeypatch, fresh_store):
             'Access-Control-Request-Headers': 'X-AUTH-TOKEN',
         })
         assert r.status_code == 200
+        # 路径大小写变体（/API/...）不应绕过认证拦截（防御纵深）
+        r = client.get('/API/v1/echo')
+        assert r.status_code == 401
+        r = client.get('/API/v1/echo', headers={'X-AUTH-TOKEN': token})
+        assert r.status_code == 404   # 已授权但大写变体不命中真实路由
     finally:
         app.before_request_funcs[None].remove(auth_interceptor)
 

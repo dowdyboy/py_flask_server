@@ -354,13 +354,14 @@ def login_required(func):
 
 
 def _is_exempt_path(path):
-    """豁免路径精确匹配：整段路径匹配或子路径（exempt/xxx）匹配。
+    """豁免路径精确匹配：整段路径匹配或子路径（exempt/xxx）匹配（大小写不敏感）。
 
     修复前用 startswith 前缀匹配，`/docsanything`、`/api/v1/authx/...` 也会被误豁免。
     """
+    path_lower = path.lower()
     for exempt in AUTH_EXEMPT_PATHS:
-        e = exempt.rstrip('/')
-        if path == e or path.startswith(e + '/'):
+        e = exempt.rstrip('/').lower()
+        if path_lower == e or path_lower.startswith(e + '/'):
             return True
     return False
 
@@ -372,8 +373,9 @@ def auth_interceptor():
     # 否则跨域前端的所有 API 调用都会在 preflight 阶段被 401 拦截
     if request.method == 'OPTIONS':
         return None
+    # 前缀匹配大小写不敏感：防止 /API/... 之类变体绕过全局认证
     path = request.path
-    if not path.startswith('/api/'):
+    if not path.lower().startswith('/api/'):
         return None
     if _is_exempt_path(path):
         return None

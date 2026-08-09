@@ -53,8 +53,9 @@ def _is_path_safe(filename):
 @app.route('/', methods=['GET'], defaults={'filename': 'index.html'})
 @app.route('/<path:filename>', methods=['GET'])
 def webui(filename):
-    # API 路径不走 SPA 回退，直接 404（含精确 /api 与 /api/xxx 子路径）
-    if filename == 'api' or filename.startswith('api/'):
+    # API 路径不走 SPA 回退，直接 404（含精确 /api 与 /api/xxx 子路径；大小写不敏感）
+    _filename_lower = filename.lower()
+    if _filename_lower == 'api' or _filename_lower.startswith('api/'):
         abort(404)
     # 路径穿越防护：防止 .. 探测服务器任意文件是否存在
     if not _is_path_safe(filename):

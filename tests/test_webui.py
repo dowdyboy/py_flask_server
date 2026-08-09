@@ -90,6 +90,13 @@ def test_api_exact_path_not_swallowed(client):
     assert resp.status_code == 404
 
 
+def test_api_case_variants_not_swallowed(client):
+    """大小写变体（/API、/Api/...）同样返回 404（修复前落入 SPA 回退返回 index.html）"""
+    for path in ('/API', '/API/some/unknown', '/Api/v1/nonexistent', '/aPi/x'):
+        resp = client.get(path)
+        assert resp.status_code == 404, f'{path} -> {resp.status_code}'
+
+
 def test_path_traversal_returns_404(client):
     """路径穿越请求被拦截返回 404（_is_path_safe 分支）"""
     resp = client.get('/../etc/passwd')
