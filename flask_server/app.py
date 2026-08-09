@@ -123,7 +123,13 @@ _BODY_METHODS = ('POST', 'PUT', 'PATCH', 'DELETE')
 @app.before_request
 def parse_request_json():
     if request.method in _BODY_METHODS and request.is_json:
-        request.payload = request.get_json()
+        data = request.get_json()
+        # 顶层 JSON 必须为对象：数组/字符串等非 dict 会被视图按字段访问
+        # （payload['x']）抛 TypeError → 500，归一为 {} 后走 KeyError → 400 参数错误
+        if data is not None and not isinstance(data, dict):
+            Logger.warn(f'non-dict JSON payload ignored: {type(data).__name__}')
+            data = {}
+        request.payload = data
 
 
 @app.before_request

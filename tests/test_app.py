@@ -250,6 +250,28 @@ def test_put_json_payload(client):
         teardown()
 
 
+def test_non_dict_json_payload_normalized(client, monkeypatch):
+    """顶层 JSON 为数组/字符串时应归一为空 dict（视图字段访问走 KeyError → 400 而非 500）"""
+    from flask_server import app
+    monkeypatch.setitem(app.config, 'TESTING', False)   # 让 500 走 errorhandler
+
+    def missing_key():
+        return request.payload['username']
+
+    teardown = _probe(app, missing_key)
+    try:
+        r = client.post('/api/v1/echo', data='[1, 2, 3]', content_type='application/json')
+        assert r.status_code == 400
+        assert r.get_json()['code'] == 1001
+
+        r = client.post('/api/v1/echo', data='"hello"', content_type='application/json')
+        assert r.status_code == 400
+        assert r.get_json()['code'] == 1001
+    finally:
+        teardown()
+        monkeypatch.setitem(app.config, 'TESTING', True)
+
+
 def test_json_response_decorator():
     """json_response 装饰器：None / tuple / 普通对象 三个分支"""
     from flask_server.app import json_response

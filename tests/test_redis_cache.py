@@ -321,11 +321,12 @@ def test_incr_without_ttl_skips_expire():
 
 
 def test_getdel_parse_failure_returns_none():
-    """getdel 对非 JSON 值返回 None（不抛异常，键已被 GETDEL 消费）"""
+    """getdel 对非 JSON 值返回 None，并清除损坏键（与 get 自愈行为一致）"""
     client = _FakeClient()
     c = _make_cache(client)
     client.store['bad'] = 'not-json{{{'
     assert c.getdel('bad') is None
+    assert 'bad' not in client.store   # 损坏值已清除，调用方按 miss 处理
 
 
 def test_expire_none_ttl_noop():
