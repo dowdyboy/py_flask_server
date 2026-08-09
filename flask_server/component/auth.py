@@ -368,6 +368,10 @@ def _is_exempt_path(path):
 def auth_interceptor():
     """全局认证拦截（AUTH_ENABLED=true 时注册为 before_request）：
     对 /api/ 下未豁免路径要求有效 token"""
+    # CORS 预检（OPTIONS）不携带凭据，必须放行由 CORS 层处理，
+    # 否则跨域前端的所有 API 调用都会在 preflight 阶段被 401 拦截
+    if request.method == 'OPTIONS':
+        return None
     path = request.path
     if not path.startswith('/api/'):
         return None

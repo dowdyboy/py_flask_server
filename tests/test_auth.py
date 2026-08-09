@@ -105,6 +105,13 @@ def test_auth_interceptor_blocks_unexempt_api(client, monkeypatch, fresh_store):
         assert r.status_code == 200
         r = client.get('/docs')
         assert r.status_code == 200
+        # CORS 预检（OPTIONS）不带凭据也应放行（修复跨域 preflight 401）
+        r = client.options('/api/v1/echo', headers={
+            'Origin': 'http://app.example.com',
+            'Access-Control-Request-Method': 'POST',
+            'Access-Control-Request-Headers': 'X-AUTH-TOKEN',
+        })
+        assert r.status_code == 200
     finally:
         app.before_request_funcs[None].remove(auth_interceptor)
 

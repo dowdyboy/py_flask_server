@@ -63,6 +63,13 @@
   deployment.md 补 gunicorn 多 worker 下 `/metrics` 进程级计数说明
 - Redis 降级路径去除逐请求重复 warn（冷却期内刷屏；故障开始/恢复仍由 RedisCache 告警）
 - scaffold.py 移除未使用的 `STORAGE_EXCLUDE_NAMES` 常量
+- **认证拦截放行 CORS 预检**：`auth_interceptor` 对 `OPTIONS` 请求不再要求 token
+  （修复 AUTH_ENABLED=true 时跨域前端 preflight 被 401 拦截、所有 API 调用失败的缺陷）；
+  api-conventions.md 同步说明
+- **异步命令超时**：`async_run_command` 支持 timeout（默认 600s），超时 kill 子进程并走
+  on_error 回调（修复挂死命令永久占用有界线程池工作线程）
+- `RedisCache.getdel` 解析损坏 JSON 时清除该键（与 get 的自愈行为一致）
+- 限流：`OPTIONS` 预检豁免计数；`remote_addr` 为空时用 `unknown` 兜底（防 `rate:None` 键）
 
 ## [0.3.2] - 2026-08-08
 

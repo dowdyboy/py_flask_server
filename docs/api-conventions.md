@@ -93,9 +93,12 @@ class ProfileView(MethodView):
 ```
 
 **全局保护**：`AUTH_ENABLED=true` 时，`/api/` 下除 auth/文档/健康检查外的路径
-都需要 `X-AUTH-TOKEN` 请求头。
+都需要 `X-AUTH-TOKEN` 请求头（CORS 预检 `OPTIONS` 请求自动放行，不影响跨域前端）。
 
 > 安全提示：响应绝不含密码哈希；生产环境务必修改 SECRET_KEY 并配置 HTTPS。
+
+> ⚠️ `AUTH_STORE=sqlalchemy` 时，数据库故障会导致全部受保护 `/api/` 请求返回 500
+> （用户数据源不可用时无法降级为 401）；数据库可用性由 `readyz` 探针监测。
 
 ## 分页与 ETag
 

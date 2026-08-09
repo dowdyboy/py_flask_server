@@ -12,6 +12,10 @@ from ..config import config
 from .logger import Logger
 
 
+# 子进程命令默认超时（秒）：挂死的命令不应永久占用有界线程池的工作线程
+DEFAULT_CMD_TIMEOUT = 600
+
+
 # 异步任务工具类，用于执行异步任务
 
 
@@ -43,7 +47,7 @@ def do_run_func(func, **kwargs):
     asyncio.run(async_run_func(func, **kwargs))
 
 
-async def async_run_command(cmd, extra_param, on_success, on_error):
+async def async_run_command(cmd, extra_param, on_success, on_error, timeout=DEFAULT_CMD_TIMEOUT):
     """
     异步执行系统命令并处理结果
 
@@ -52,6 +56,8 @@ async def async_run_command(cmd, extra_param, on_success, on_error):
         extra_param: 传递给回调函数的额外参数
         on_success: 成功回调函数，接收参数 (extra_param, [stdout])
         on_error: 错误回调函数，接收参数 (extra_param, [returncode, stderr] 或 [exception])
+        timeout: 命令执行超时（秒），默认 DEFAULT_CMD_TIMEOUT（600s）。
+            超时后终止子进程并走 on_error 回调，避免挂死命令永久占用工作线程
 
     Raises:
         不会直接抛出异常，所有异常将通过on_error回调处理
@@ -60,7 +66,14 @@ async def async_run_command(cmd, extra_param, on_success, on_error):
         proc = await asyncio.create_subprocess_exec(*cmd,
                                                     stdout=asyncio.subprocess.PIPE,
                                                     stderr=asyncio.subprocess.PIPE)
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()   # 回收管道，避免僵尸/管道泄漏
+            if on_error is not None:
+                on_error(extra_param, ['timeout', f'command timed out after {timeout}s'])
+            return
         if proc.returncode == 0:
             if on_success is not None:
                 on_success(extra_param, [stdout.decode()])

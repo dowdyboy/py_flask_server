@@ -61,8 +61,11 @@ def rate_limit_check():
     # 探针/监控端点豁免（见 RATE_LIMIT_EXEMPT_PATHS 注释：防 429 雪崩）
     if request.path in RATE_LIMIT_EXEMPT_PATHS:
         return None
+    # CORS 预检（OPTIONS）不承载业务，豁免避免大量 preflight 挤占配额
+    if request.method == 'OPTIONS':
+        return None
     cache = _get_store()
-    ip = CommonUtil.get_real_ip(request, config.trusted_proxies)
+    ip = CommonUtil.get_real_ip(request, config.trusted_proxies) or 'unknown'
 
     # 路径级配额（可被随机路径绕过，仅防单端点滥用）
     path_count = _incr(cache, f'rate:{ip}:{request.path}')

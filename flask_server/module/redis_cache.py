@@ -122,6 +122,11 @@ class RedisCache:
             return json.loads(data)
         except Exception as e:
             Logger.warn(f'RedisCache getdel parse failed key={key}: {e}')
+            # 与 get 一致：损坏值视为脏数据，清除后由调用方按 miss 处理
+            try:
+                self.client.delete(key)
+            except Exception:
+                pass
             return None
 
     def incr(self, key: str, ttl: Optional[int] = None) -> Optional[int]:

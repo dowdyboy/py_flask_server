@@ -121,6 +121,29 @@ def test_rate_limit_exempts_probes(client, monkeypatch):
                 memory_cache.delete(k)
 
 
+def test_rate_limit_exempts_options(client, monkeypatch):
+    """CORS 预检（OPTIONS）不计数，避免大量 preflight 挤占配额"""
+    from flask_server.component import rate_limit as rl
+    monkeypatch.setattr(config, 'rate_limit_enabled', True)
+    monkeypatch.setattr(config, 'rate_limit_per_minute', 2)
+    monkeypatch.setattr(rl, 'redis_cache', None)
+    try:
+        for _ in range(5):
+            r = client.options('/api/v1/echo', headers={
+                'Origin': 'http://app.example.com',
+                'Access-Control-Request-Method': 'POST',
+            })
+            assert r.status_code == 200
+        # 非 OPTIONS 请求仍被限流
+        for _ in range(2):
+            assert client.get('/hello').status_code == 200
+        assert client.get('/hello').status_code == 429
+    finally:
+        for k in list(memory_cache.cache.keys()):
+            if k.startswith('rate:'):
+                memory_cache.delete(k)
+
+
 def test_rate_limit_ip_quota_and_path_quota_independent(client, monkeypatch):
     """路径级配额先于 IP 级配额触发（同一路径高频滥用仍被拦截）"""
     from flask_server.component import rate_limit as rl

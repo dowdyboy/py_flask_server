@@ -115,6 +115,29 @@ def test_cmd_task_error_callback():
     assert code == 3
 
 
+def test_cmd_task_timeout_kills_process():
+    """命令超时（timeout 参数）应终止子进程并触发 on_error 回调"""
+    import asyncio
+    import sys
+    import queue
+    from flask_server.util.async_task_util import async_run_command
+
+    q = queue.Queue()
+
+    def on_error(param, result):
+        q.put(('err', param, result[0], result[1]))
+
+    asyncio.run(async_run_command(
+        [sys.executable, '-c', 'import time; time.sleep(30)'],
+        'p', on_success=None, on_error=on_error, timeout=1,
+    ))
+    kind, param, reason, detail = q.get_nowait()
+    assert kind == 'err'
+    assert param == 'p'
+    assert reason == 'timeout'
+    assert 'timed out after' in detail
+
+
 def test_safe_thread_on_crash():
     """SafeThread：目标抛异常时 on_crash 回调收到异常，且 exception 属性被设置"""
     fired = {}
