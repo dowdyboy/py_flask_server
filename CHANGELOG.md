@@ -44,7 +44,7 @@
   feeder 线程刷新竞态（带超时轮询，消除 CI/本机偶发失败）
 - `SQLite._get_conn` 未配置 `SQLITE_DB_PATH` 时工作线程复用模块级连接（修复注入场景 TypeError）
 - CI lint job 覆盖 `wsgi_gunicorn.py`/`scripts/`（与 Makefile 一致）
-- README/docs 用例数与覆盖率数字同步（309 用例 / 91.90%）
+- README/docs 用例数与覆盖率数字同步（312 用例 / 91.76%）
 - **探针端点豁免限流**：`/metrics`、`/api/v1/healthz`、`/api/v1/readyz`、`/api/v1/health`
   不再计数（修复 readyz 被 429 导致编排系统摘除实例 → 流量集中 → 更 429 的雪崩循环）
 - `get_real_ip` 跳过 `X-Forwarded-For` 空条目（修复 `, 1.2.3.4` 首项为空时 IP 归一为空串，
@@ -73,6 +73,9 @@
 - **非 dict JSON body 归一化**：顶层数组/字符串 body 归一为 `{}`（修复视图按字段访问
   payload['x'] 抛 TypeError 导致 500 的问题，统一走 KeyError → 400 参数错误）
 - `RedisCache.getdel` 损坏值自愈删除行为补测试断言
+- `SimpleMemoryCache.expire(ttl=None)` 直接返回（与 RedisCache 行为一致，修复 TypeError 隐患）
+- `sqlalchemy_trans`/`in_app_context` 对 `_app` 未初始化给出清晰 RuntimeError（替代 AttributeError）
+- 文档：deployment.md 提示 bind mount `storage/`/`server.log` 在 Linux 宿主的 appuser 写入权限要求
 
 ## [0.3.2] - 2026-08-08
 

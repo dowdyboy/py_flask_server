@@ -68,6 +68,12 @@ prod 编排与开发版的差异：
 - `SECRET_KEY` / `MYSQL_ROOT_PASSWORD` 必填校验（缺失直接拒绝启动）
 - `server.log` 挂载到宿主便于日志采集
 
+> ⚠️ 镜像内以非 root 用户（`appuser`，uid 1000）运行，compose 将宿主目录
+> `./storage`（文件上传落盘）与 `./server.log` 以 bind mount 挂载进容器。
+> **Linux 宿主上若这些目录/文件属 root 且权限不足（如 755），appuser 无法写入**，
+> 文件上传/日志写入会报错。请确保宿主目录可写：
+> `chmod -R a+w storage`（或改属主 `chown 1000:1000`），或改用 named volume。
+
 ### 单独构建镜像
 
 ```bash

@@ -14,7 +14,7 @@ pytest tests/ --cov=flask_server --cov-report=term
 测试覆盖：HTTP 集成（统一响应/422/404/request_id/安全头/探针/限流/健康检查故障分支）、
 认证模块（Redis 存储降级与内存兜底、防爆破、refresh 轮换、入参限长）、Prometheus 指标、
 缓存降级恢复（含故障/脏数据自愈）、事务提交/回滚（CI 含真实 MySQL）、
-路径穿越防护、雪花 ID 并发、SubprocessTask 哨兵停止等 **309 个用例**（覆盖率 91.90%）。
+路径穿越防护、雪花 ID 并发、SubprocessTask 哨兵停止等 **312 个用例**（覆盖率 91.76%）。
 
 真实环境自检（云服务器 MySQL/Redis 全链路验证）：
 

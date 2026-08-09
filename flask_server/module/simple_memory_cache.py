@@ -100,6 +100,8 @@ class SimpleMemoryCache:
 
     def expire(self, key, ttl):
         """为键设置过期时间"""
+        if ttl is None:
+            return   # 无 ttl 无意义，直接返回（与 RedisCache.expire 行为一致）
         with self._lock:
             self.expiry_times[key] = time.time() + ttl
 

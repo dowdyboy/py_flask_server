@@ -46,6 +46,14 @@ def test_expire():
     assert c.get('k') is None
 
 
+def test_expire_none_ttl_noop():
+    """expire(ttl=None) 直接返回，不抛异常（与 RedisCache 行为一致）"""
+    c = SimpleMemoryCache()
+    c.set('k', 'v')
+    c.expire('k', None)
+    assert c.get('k') == 'v'   # 未设置过期时间，值仍可读
+
+
 def test_clear_expired():
     c = SimpleMemoryCache()
     c.set('a', 1, ttl=0.01)

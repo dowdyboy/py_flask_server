@@ -52,6 +52,30 @@ def test_sqlalchemy_trans_raises_when_db_none(monkeypatch):
         op()
 
 
+def test_sqlalchemy_trans_raises_when_app_none(monkeypatch):
+    """db 已注入但 _app 未初始化时 sqlalchemy_trans 给出明确报错（而非 AttributeError）"""
+    import pytest
+    from flask_sqlalchemy import SQLAlchemy
+    monkeypatch.setattr(sa_module, 'db', SQLAlchemy())
+    monkeypatch.setattr(sa_module, '_app', None)
+
+    @sa_module.sqlalchemy_trans
+    def op():
+        pass
+
+    with pytest.raises(RuntimeError, match='未绑定 Flask app'):
+        op()
+
+
+def test_in_app_context_raises_when_app_none(monkeypatch):
+    """_app 未初始化时 in_app_context 给出明确报错（而非 AttributeError）"""
+    import pytest
+    monkeypatch.setattr(sa_module, '_app', None)
+
+    with pytest.raises(RuntimeError, match='未绑定 Flask app'):
+        sa_module.in_app_context(lambda: 'ok')
+
+
 def test_get_migrate_returns_none_when_disabled(monkeypatch):
     """未启用 Flask-Migrate 时 get_migrate 返回 None"""
     monkeypatch.setattr(sa_module, 'migrate', None)

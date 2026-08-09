@@ -72,6 +72,8 @@ def sqlalchemy_trans(func):
     def wrapper(*args, **kwargs):
         if db is None:
             raise RuntimeError('SQLAlchemy 未初始化，请配置 SQLALCHEMY_URI')
+        if _app is None:
+            raise RuntimeError('SQLAlchemy 未绑定 Flask app（init_SQLAlchemy 未执行）')
         from flask import has_app_context
         # 自动管理 app context：业务函数内无需再手动 with app.app_context()
         if has_app_context():
@@ -95,6 +97,8 @@ def _run_trans(func, *args, **kwargs):
 def in_app_context(func, *args, **kwargs):
     """在 app context 中执行函数（当前无 context 时自动创建），
     供非请求线程/独立调用场景访问 db.session / Model.query 使用"""
+    if _app is None:
+        raise RuntimeError('SQLAlchemy 未绑定 Flask app（init_SQLAlchemy 未执行）')
     from flask import has_app_context
     if has_app_context():
         return func(*args, **kwargs)
