@@ -18,6 +18,8 @@ for _key, _val in {
     'AUTH_ENABLED': 'false',
     'AUTH_STORE': 'memory',
     'RATE_LIMIT_ENABLED': 'false',
+    'TCP_ENABLED': 'false',
+    'UDP_ENABLED': 'false',
     'DB_REFLECT_ON_START': 'false',
     'APP_ENV': 'development',
     # 测试日志不写项目根 server.log（LOG_FILE_PATH 为空 = 禁用文件 handler）

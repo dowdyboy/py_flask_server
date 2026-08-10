@@ -38,6 +38,10 @@ WORKER_NUM=4 python wsgi_gunicorn.py
    计数（轮询任一 worker 都会漏掉其他 worker 的数据）。需要全局准确指标时：
    配置 `prometheus_multiproc_dir` 共享目录 + `PROMETHEUS_MULTIPROC_DIR` 环境变量，
    并部署 prometheus-client 多进程模式（或用独立采集端聚合）
+8. **TCP/UDP 协议服务器**：为每进程独立实例，多 worker 会重复绑定同一端口导致冲突。
+   启用时需 `WORKER_NUM=1`，或将协议服务器独立进程部署（启动 banner 会告警）；
+   同时需在防火墙放行 TCP/UDP 监听端口（默认 9000 / 9001）。详见
+   [protocol-servers.md](protocol-servers.md)
 
 waitress（wsgi.py）与 gunicorn（wsgi_gunicorn.py）均支持优雅退出：
 waitress 由 `wsgi.py` 注册的 SIGTERM/SIGINT 处理器释放 DB 连接池、Redis 连接、线程池；

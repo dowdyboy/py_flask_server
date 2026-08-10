@@ -37,6 +37,13 @@ def _worker_class():
     return 'sync'
 
 
+def _start_protocol_servers_in_worker(worker):
+    """gunicorn worker 内启动 TCP/UDP 协议服务器（每个 worker 一个独立实例；
+    多 worker 时会端口冲突，需 WORKER_NUM=1 或将协议服务器独立进程部署）"""
+    from flask_server.module import start_protocol_servers
+    start_protocol_servers()
+
+
 def _build_options():
     from flask_server.config import _parse_int
     worker_num = _parse_int('WORKER_NUM', 4)
@@ -49,6 +56,7 @@ def _build_options():
         'accesslog': '-',
         'errorlog': '-',
         'capture_output': False,
+        'post_worker_init': _start_protocol_servers_in_worker,
     }
 
 

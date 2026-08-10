@@ -33,6 +33,13 @@ def test_worker_class_eventlet_when_socketio(monkeypatch):
     assert mod._worker_class() == 'sync'
 
 
+def test_build_options_includes_post_worker_init(monkeypatch):
+    """协议服务器由 post_worker_init 钩子在每个 worker 内启动"""
+    mod = _load_module(monkeypatch)
+    options = mod._build_options()
+    assert callable(options.get('post_worker_init'))
+
+
 def test_win32_guard_exits(monkeypatch):
     """Windows 平台守卫：调用 _check_platform 应退出并给出指引"""
     mod = _load_module(monkeypatch)

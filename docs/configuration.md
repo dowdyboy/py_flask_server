@@ -26,6 +26,21 @@
 | `SOCKETIO_ENABLED` | `false` | 是否启用 WebSocket（需安装 Flask-SocketIO） |
 | `SOCKETIO_ASYNC_MODE` | `threading` | SocketIO 异步模式：`threading`(默认) / `eventlet` |
 | `SOCKETIO_MAX_HTTP_BUFFER_SIZE` | `1000000` | WebSocket 单条消息大小上限（字节，默认 1MB） |
+| `TCP_ENABLED` | `false` | 是否启用 TCP 协议服务器（处理器见 `flask_server/handler/`，详见 [protocol-servers.md](protocol-servers.md)） |
+| `TCP_HOST` | `0.0.0.0` | TCP 监听地址 |
+| `TCP_PORT` | `9000` | TCP 监听端口 |
+| `TCP_FRAMING` | `line` | TCP 消息定界：`line`（分隔符切分，默认）/ `fixed`（固定长度）/ `head_tail`（帧头帧尾）/ `raw`（原始 recv 流，自行拆包）；非法值回退 `line` |
+| `TCP_FRAME_SEPARATOR` | `\n` | TCP 行帧分隔符（支持转义写法，如 `\r\n`） |
+| `TCP_FRAME_LENGTH` | `1024` | TCP 固定长度帧长（`fixed` 模式，需 > 0，否则回退 `line`） |
+| `TCP_FRAME_HEAD` | _空_ | TCP 帧头字节串（`head_tail` 模式，支持二进制转义如 `\xaa\x55`；缺任一帧头/帧尾回退 `line`） |
+| `TCP_FRAME_TAIL` | _空_ | TCP 帧尾字节串（`head_tail` 模式） |
+| `TCP_MAX_MESSAGE_LENGTH` | `65536` | TCP 单条消息上限（字节，超限视为协议错误断开连接，防内存 DoS） |
+| `TCP_MAX_CONNECTIONS` | `256` | TCP 并发连接上限（每连接一线程，超限拒绝新连接，防线程耗尽 DoS；`≤0` 表示不限制） |
+| `UDP_ENABLED` | `false` | 是否启用 UDP 协议服务器（处理器返回 bytes 自动回发） |
+| `UDP_HOST` | `0.0.0.0` | UDP 监听地址 |
+| `UDP_PORT` | `9001` | UDP 监听端口 |
+| `UDP_MAX_MESSAGE_LENGTH` | `65536` | UDP 单数据报大小上限（字节；超过此大小的数据报会被操作系统静默截断） |
+| `UDP_MAX_CONCURRENCY` | `256` | UDP 并发处理数据报上限（每数据报一线程，超限丢弃数据报，防洪泛线程爆炸 DoS；`≤0` 表示不限制） |
 | `CORS_ORIGINS` | `*` | CORS 允许来源，`*` 或逗号分隔列表 |
 | `SECRET_KEY` | _默认值_ | Flask 密钥，生产环境必须修改 |
 | `MAX_CONTENT_LENGTH` | `16777216` | 请求体最大字节数（默认 16MB） |

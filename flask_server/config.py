@@ -21,6 +21,26 @@ def _parse_int(name: str, default: int) -> int:
         return default
 
 
+def _parse_bytes_env(name: str, default: bytes) -> bytes:
+    """安全解析字节串环境变量（支持转义写法：\\n / \\r\\n / \\xaa\\x55）。
+
+    使用 latin-1 往返解码，保证 \\x80-\\xff 等二进制字节保持单字节不变
+    （unicode_escape 会先把 \\xaa 解码为码点 U+00AA，再经 utf-8 编码会变成两字节）。
+    空值或非法转义回退默认值并告警。
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = raw.encode('latin-1').decode('unicode_escape').encode('latin-1')
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        value = b''
+    if not value:
+        print(f'[Config WARNING] {name}={raw!r} is empty/invalid, using default {default!r}')
+        return default
+    return value
+
+
 # APP_ENV 预设档：development / staging / production
 _APP_ENV = (os.environ.get('APP_ENV', 'development') or 'development').strip().lower()
 _ENV_PRESETS = {
@@ -54,6 +74,62 @@ class Config:
         self.socketio_async_mode = os.environ.get('SOCKETIO_ASYNC_MODE', 'threading')
         # WebSocket 单条消息大小上限（默认 1MB，防止超大消息内存 DoS）
         self.socketio_max_http_buffer_size = _parse_int('SOCKETIO_MAX_HTTP_BUFFER_SIZE', 1_000_000)
+
+        # TCP 协议服务器配置（默认关闭；处理器注册见 flask_server/handler/）
+        self.tcp_enabled = os.environ.get('TCP_ENABLED', 'false').lower() in ('1', 'true', 'yes')
+        self.tcp_host = os.environ.get('TCP_HOST', '0.0.0.0')
+        self.tcp_port = _parse_int('TCP_PORT', 9000)
+        # 消息定界：line（分隔符）/ fixed（固定长度）/ head_tail（帧头帧尾）/ raw（原始流，自行拆包）
+        self.tcp_framing = (os.environ.get('TCP_FRAMING', 'line') or 'line').strip().lower()
+        if self.tcp_framing not in ('line', 'fixed', 'head_tail', 'raw'):
+            print(f'[Config WARNING] TCP_FRAMING={self.tcp_framing!r} is invalid '
+                  '(line/fixed/head_tail/raw), falling back to line')
+            self.tcp_framing = 'line'
+        # 行帧分隔符（line 模式）：支持转义写法（\n / \r\n）
+        self.tcp_frame_separator = _parse_bytes_env('TCP_FRAME_SEPARATOR', b'\n')
+        # 固定长度帧长（fixed 模式）：非法值（≤0）告警并回退 line
+        self.tcp_frame_length = _parse_int('TCP_FRAME_LENGTH', 1024)
+        if self.tcp_framing == 'fixed' and self.tcp_frame_length <= 0:
+            print(f'[Config WARNING] TCP_FRAME_LENGTH={self.tcp_frame_length!r} is invalid '
+                  '(must be > 0), falling back to line framing')
+            self.tcp_framing = 'line'
+        # 帧头/帧尾（head_tail 模式）：支持二进制转义写法（如 \xaa\x55）；
+        # 配置不完整（缺任一）告警并回退 line
+        self.tcp_frame_head = _parse_bytes_env('TCP_FRAME_HEAD', b'')
+        self.tcp_frame_tail = _parse_bytes_env('TCP_FRAME_TAIL', b'')
+        if self.tcp_framing == 'head_tail' and (not self.tcp_frame_head or not self.tcp_frame_tail):
+            print('[Config WARNING] TCP_FRAME_HEAD / TCP_FRAME_TAIL must be set for '
+                  'head_tail framing, falling back to line')
+            self.tcp_framing = 'line'
+        # 单条消息上限（超限视为协议错误断开连接，防内存 DoS；≤0 非法回退默认，
+        # 否则 max=0 时 line/head_tail 每条消息都"超长"断开、raw 模式 recv(0) 秒断连接）
+        self.tcp_max_message_length = _parse_int('TCP_MAX_MESSAGE_LENGTH', 64 * 1024)
+        if self.tcp_max_message_length <= 0:
+            print(f'[Config WARNING] TCP_MAX_MESSAGE_LENGTH={self.tcp_max_message_length!r} '
+                  'is invalid (must be > 0), using default 65536')
+            self.tcp_max_message_length = 64 * 1024
+        # 每连接一线程：并发连接上限（超限拒绝新连接，防线程耗尽 DoS；≤0 表示不限制）
+        self.tcp_max_connections = _parse_int('TCP_MAX_CONNECTIONS', 256)
+        # fixed 模式帧长与消息上限的语义提示（固定帧可以合法地大于消息上限，
+        # 但若大于默认 64KB 大概率是配置失误，给出告警）
+        if self.tcp_framing == 'fixed' and self.tcp_frame_length > self.tcp_max_message_length:
+            print(f'[Config WARNING] TCP_FRAME_LENGTH={self.tcp_frame_length} > '
+                  f'TCP_MAX_MESSAGE_LENGTH={self.tcp_max_message_length}：固定帧可超过消息上限，'
+                  '请确认配置是否符合预期')
+
+        # UDP 协议服务器配置（默认关闭；处理器注册见 flask_server/handler/）
+        self.udp_enabled = os.environ.get('UDP_ENABLED', 'false').lower() in ('1', 'true', 'yes')
+        self.udp_host = os.environ.get('UDP_HOST', '0.0.0.0')
+        self.udp_port = _parse_int('UDP_PORT', 9001)
+        # 单数据报大小上限（recvfrom 缓冲大小；数据报超过此大小会被操作系统截断；
+        # ≤0 非法回退默认，否则 recvfrom(0) 收到空数据报）
+        self.udp_max_message_length = _parse_int('UDP_MAX_MESSAGE_LENGTH', 64 * 1024)
+        if self.udp_max_message_length <= 0:
+            print(f'[Config WARNING] UDP_MAX_MESSAGE_LENGTH={self.udp_max_message_length!r} '
+                  'is invalid (must be > 0), using default 65536')
+            self.udp_max_message_length = 64 * 1024
+        # 每数据报一线程：并发上限（超限丢弃数据报，防洪泛线程爆炸 DoS；≤0 表示不限制）
+        self.udp_max_concurrency = _parse_int('UDP_MAX_CONCURRENCY', 256)
 
         # CORS 允许的来源
         _cors_raw = os.environ.get('CORS_ORIGINS', '*')

@@ -21,6 +21,8 @@ def build_banner():
         f'  METRICS    : {_status(config.metrics_enabled, "/metrics")}',
         f'  RATE LIMIT : {_status(config.rate_limit_enabled, f"{config.rate_limit_per_minute}/min per IP+path")}',
         f'  SOCKETIO   : {_status(config.socketio_enabled, f"async={config.socketio_async_mode}")}',
+        f'  TCP        : {_status(config.tcp_enabled, f"{config.tcp_host}:{config.tcp_port}")}',
+        f'  UDP        : {_status(config.udp_enabled, f"{config.udp_host}:{config.udp_port}")}',
         '└────────────────────────────────────────────────────────────────────────┘',
     ]
     return lines
@@ -51,6 +53,9 @@ def check_production_config():
     if _multi_worker() and config.redis_url is None:
         warnings.append('多 worker 部署未配置 REDIS_URL：memory_cache/限流计数/认证 token 为进程内，'
                         '多实例间数据不一致（如登录后 token 在另一 worker 失效），建议配置 REDIS_URL')
+    if _multi_worker() and (config.tcp_enabled or config.udp_enabled):
+        warnings.append('TCP/UDP 协议服务器每进程绑定同一端口：多 worker 部署会端口冲突，'
+                        '请设置 WORKER_NUM=1 或将协议服务器独立进程部署')
     return warnings
 
 

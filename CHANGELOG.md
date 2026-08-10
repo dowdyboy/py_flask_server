@@ -5,6 +5,64 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **TCP / UDP 协议服务器**：零新依赖（stdlib socketserver 线程模型，Windows/Linux 可用），
+  在 `flask_server/handler/` 下新建文件用装饰器注册处理器即接收消息（复用 controller
+  自动发现模式，建文件即出接口）
+  - TCP：每连接一线程，`on_connect` / `on_message` / `on_disconnect` / `on_error` 钩子；
+    消息定界支持 `line`（默认，分隔符可配如 `\n`/`\r\n`，自动处理粘包/拆包，纯空帧跳过）、
+    `fixed`（固定长度 `TCP_FRAME_LENGTH`）、`head_tail`（帧头帧尾定界，回调负载；
+    帧头前垃圾自动丢弃、帧尾缺失时以新帧头重同步、超限断开）与 `raw`（原始 recv 流）；
+    单条消息超限（`TCP_MAX_MESSAGE_LENGTH`）视为协议错误断开连接（防内存 DoS）
+  - UDP：每数据报一线程，`on_message(data, addr)` 返回 bytes 自动回发到来源地址
+    （返回 None 可用 `udp_server.send` 主动发送）
+  - 配置默认关闭（`TCP_ENABLED` / `UDP_ENABLED`），三个入口（server.py / wsgi.py /
+    wsgi_gunicorn.py）启动时自动拉起，优雅关闭时停止（atexit 兜底）；启用但未注册
+    处理器时告警不启动，端口占用直接报错不静默
+  - banner 新增 TCP/UDP 状态行；gunicorn 多 worker 部署会端口冲突，启动告警提示
+    （`WORKER_NUM=1` 或独立进程部署）
+  - 配置解析新增 `_parse_bytes_env`（latin-1 保真的字节串转义解析，`\xaa\x55` 二进制可用）
+  - **并发防护**：`TCP_MAX_CONNECTIONS`（默认 256，超限拒绝新连接）/ `UDP_MAX_CONCURRENCY`
+    （默认 256，超限丢弃数据报）信号量限流，防线程耗尽 DoS；`≤0` 表示不限制；
+    超限告警带冷却窗口（10s 内仅首次告警并累计拒绝计数，冷却结束输出摘要，
+    防洪泛场景日志刷屏）
+  - **帧硬上限**：line/head_tail 切帧后校验负载长度，分隔符/帧尾与超长帧同包到达时
+    同样断开（修复 max 判定存在 recv 块粒度窗口的问题）；head_tail 重同步次数超限
+    （256 次）断开连接（防"帧头+垃圾"反复重同步无限持有连接）
+  - **stop() 关闭活动连接**：TCP 服务器停止时统一关闭已建立的连接（热重启无残留）；
+    连接登记竞态闭合——stop 置 `_server=None` 后到达的 handler 线程在登记时即被
+    拒绝并关闭，不会成为 close_all 的漏网之鱼
+  - **dev reloader 修复**：`server.py` 在 debug+reloader 模式下仅子进程（真实服务进程）
+    启动协议服务器，父进程（监督者）不绑定端口——修复子进程二次绑定 EADDRINUSE
+    崩溃循环（应用永远起不来）
+  - handler 自动发现导入容错：单个模块导入失败记录 ERROR 后跳过，不中断其他模块
+  - **UDP 非 bytes 返回值告警**：`on_message` 返回 `str` 等非 bytes 类型时 WARN 提示
+    且不回发（修复前静默忽略，类型错误难排查）
+  - **优雅关闭顺序**：wsgi.py 先停止协议服务器再关闭 DB/Redis 连接池
+    （修复前先关依赖，处理中的消息可能因 DB 已关而失败）
+  - 文档补充：fixed 模式内存与帧长成正比、协议 handler 内 DB 访问需 app context、
+    TCP/UDP 默认 0.0.0.0 暴露面、UDP 在途数据报说明
+  - **帧解析异常兜底**：TCP 读帧循环捕获意外异常统一进 Logger 后断开
+    （修复前 socketserver 把裸 traceback 打到 stderr，绕过统一日志）；
+    `frame_head`/`frame_tail` 增加 bytes 类型校验（str 等非 bytes 回退 line，
+    修复 `buffer.find(str)` TypeError 断连）
+  - **消息上限范围校验**：`TCP_MAX_MESSAGE_LENGTH` / `UDP_MAX_MESSAGE_LENGTH` ≤0
+    告警回退默认 65536（修复 max=0 时 line/head_tail 全部帧"超长"断开、
+    raw 模式 recv(0) 秒断连接、UDP recvfrom(0) 收到空数据报）
+  - **并发槽位前置检查**：TCP/UDP 槽位检查上移到 `verify_request`（spawn 线程前），
+    超限连接/数据报被直接拒绝/丢弃且不创建线程——修复洪泛场景下被拒请求仍消耗
+    线程创建成本的 CPU 放大（10 万数据报/秒 ≈ 数倍 CPU 开销）；
+    `process_request` 线程 spawn 失败时释放槽位（防泄漏）
+  - **重同步计数语义修正**：head_tail 重同步计数在成功切帧后重置（"连续未完成帧"
+    语义）——修复合法长连接累计 256 次偶发损坏被误断；"帧头+垃圾"攻击永不完成帧，
+    上限照常生效
+  - **start() 线程启动失败回滚**：serve 线程启动异常时重置状态并关闭 socket
+    （修复 is_running 误报 True 与端口泄漏）
+  - 测试 26+ 例（行帧拆包/粘包/超长断开/raw 模式/多客户端/多来源回发/异常钩子/生命周期/
+    并发上限/stop 关连接/告警冷却）；文档 `docs/protocol-servers.md` +
+    `examples/protocol/` 教学样例与客户端
+
 ### 修复
 
 - **异常日志携带 traceback**：`Logger.error/warn` 新增 `exc_info` 参数；

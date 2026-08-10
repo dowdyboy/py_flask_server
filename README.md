@@ -6,6 +6,7 @@
 
 - 📐 **分层架构**：Controller-Service-Model-Module，目录即约定
 - ⚡ **零注册接口**：在 `controller/` 新建文件定义 `blp`，路由自动注册
+- 🔌 **TCP/UDP 协议服务器**：在 `handler/` 新建文件注册装饰器处理器即接收 TCP/UDP 消息（分隔符/固定长度/帧头帧尾/raw 四种定界、自动回发）
 - ✅ **参数校验 + Swagger**：flask-smorest 自动校验入参并生成 `/docs` 文档
 - 🔐 **认证骨架**：注册/登录/Token 开箱可用（默认关闭，一键开启）
 - 📊 **可观测性**：request_id 全链路、JSON 日志、Prometheus `/metrics`、healthz/readyz 探针
@@ -45,14 +46,15 @@ py_flask_server/
 │   ├── config.py              # 配置（环境变量 + .env 自动加载）
 │   ├── component/             # 组件：认证 / 限流 / Prometheus / 拦截器
 │   ├── controller/            # 路由层（★ 新建文件即自动注册）
+│   ├── handler/               # 协议处理器层（★ 新建文件即接收 TCP/UDP 消息）
 │   ├── schema/                # marshmallow 校验 Schema
 │   ├── service/               # 业务层（简单业务可省略）
 │   ├── model/po/              # ORM 模型
-│   ├── module/                # 基础设施：DB / 缓存 / 文件存储
+│   ├── module/                # 基础设施：DB / 缓存 / 文件存储 / TCP·UDP 服务器
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 开发启动脚本
-├── tests/                     # 313 个用例（覆盖率门槛 85%，实测 91.90%）
+├── tests/                     # 384 个用例（覆盖率门槛 85%，实测 91.51%）
 ├── docs/                      # 详细文档
 ├── Makefile                   # 统一命令入口
 ├── Dockerfile / docker-compose*.yml
@@ -77,6 +79,7 @@ python scripts/scaffold.py my_project   # 生成新项目
 |---|---|
 | [快速上手与教程](docs/getting-started.md) | 从零创建第一个完整接口（DB/校验/文档全流程） |
 | [配置说明](docs/configuration.md) | 环境变量表、APP_ENV 预设档、依赖说明 |
+| [TCP/UDP 协议服务器](docs/protocol-servers.md) | 在 handler/ 注册处理器接收 TCP/UDP 消息（帧格式/回发/部署注意） |
 | [部署指南](docs/deployment.md) | Docker、生产入口选型、健康检查、安全建议 |
 | [API 约定](docs/api-conventions.md) | 统一响应、错误码表、分页/ETag、认证、限流 |
 | [开发与 FAQ](docs/development.md) | 测试、lint、常见问题 |

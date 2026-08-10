@@ -1,5 +1,6 @@
 import signal
 from flask_server import app, config, socketio
+from flask_server.module import start_protocol_servers, stop_protocol_servers
 from flask_server.util.banner import print_startup_banner
 from waitress import serve
 
@@ -12,9 +13,17 @@ if socketio is not None:
 
 
 def _graceful_shutdown(signum, frame):
-    """优雅关闭：清理 DB 连接池、Redis 连接、线程池"""
+    """优雅关闭：停止协议服务器（先停消息入口）→ 清理 DB 连接池、Redis 连接、线程池"""
     from flask_server.util import Logger
     Logger.info('Graceful shutdown initiated (SIGTERM received)')
+
+    # 先停止 TCP/UDP 协议服务器：处理中的 on_message 可能用到 DB/Redis，
+    # 必须在关闭依赖之前停止消息入口，给在途消息一个完成窗口
+    try:
+        stop_protocol_servers()
+        Logger.info('Protocol servers stopped')
+    except Exception as e:
+        Logger.warn(f'Protocol servers stop error: {e}')
 
     # 关闭 SQLAlchemy 连接池
     try:
@@ -57,6 +66,8 @@ signal.signal(signal.SIGINT, _graceful_shutdown)
 
 if __name__ == '__main__':
     print_startup_banner()
+    # 启动 TCP/UDP 协议服务器（TCP_ENABLED / UDP_ENABLED 为 true 时生效）
+    start_protocol_servers()
     serve(
         app,
         host=config.host,

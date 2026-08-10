@@ -13,6 +13,8 @@ from . import model  # noqa: F401
 from .component import *
 from .controller import *
 from .service import *
+# 5、再加载handler（协议消息处理器：注册 TCP/UDP 处理器，不启动 socket）
+from . import handler  # noqa: F401
 
 
 __all__ = [

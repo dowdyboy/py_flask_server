@@ -193,3 +193,110 @@ def test_unknown_app_env_warns_and_falls_back():
     assert result.returncode == 0, f'stderr:\n{result.stderr}'
     assert 'DONE' in result.stdout
     assert '[Config WARNING] APP_ENV' in result.stdout, '应打印未知 APP_ENV 告警'
+
+
+# ---------------- TCP 帧定界配置（line/fixed/head_tail/raw） ----------------
+
+
+def test_parse_bytes_env_escapes(monkeypatch):
+    """字节串转义解析：\\xaa\\x55 保持单字节（latin-1 保真）、\\r\\n 正常解析"""
+    monkeypatch.setenv('TCP_FRAME_HEAD', r'\xaa\x55')
+    monkeypatch.setenv('TCP_FRAME_TAIL', r'\r\n')
+    cfg = config_module.Config()
+    assert cfg.tcp_frame_head == b'\xaa\x55'
+    assert cfg.tcp_frame_tail == b'\r\n'
+
+
+def test_parse_bytes_env_missing_uses_default(monkeypatch):
+    """未配置时使用默认值（分隔符 \\n）"""
+    monkeypatch.delenv('TCP_FRAME_SEPARATOR', raising=False)
+    assert config_module.Config().tcp_frame_separator == b'\n'
+
+
+def test_parse_bytes_env_empty_falls_back(monkeypatch, capsys):
+    """空字符串回退默认值并告警"""
+    monkeypatch.setenv('TCP_FRAME_SEPARATOR', '')
+    cfg = config_module.Config()
+    assert cfg.tcp_frame_separator == b'\n'
+    assert 'TCP_FRAME_SEPARATOR' in capsys.readouterr().out
+
+
+def test_tcp_framing_fixed_and_head_tail_accepted(monkeypatch):
+    """fixed / head_tail 为合法 TCP_FRAMING 值"""
+    monkeypatch.setenv('TCP_FRAMING', 'fixed')
+    assert config_module.Config().tcp_framing == 'fixed'
+    monkeypatch.setenv('TCP_FRAMING', 'head_tail')
+    monkeypatch.setenv('TCP_FRAME_HEAD', r'\xaa\x55')
+    monkeypatch.setenv('TCP_FRAME_TAIL', r'\x0d\x0a')
+    assert config_module.Config().tcp_framing == 'head_tail'
+
+
+def test_tcp_framing_invalid_falls_back(monkeypatch, capsys):
+    """非法 TCP_FRAMING 值告警并回退 line"""
+    monkeypatch.setenv('TCP_FRAMING', 'weird')
+    cfg = config_module.Config()
+    assert cfg.tcp_framing == 'line'
+    assert 'TCP_FRAMING' in capsys.readouterr().out
+
+
+def test_tcp_frame_length_invalid_falls_back(monkeypatch, capsys):
+    """fixed 模式 + TCP_FRAME_LENGTH≤0 → 告警回退 line"""
+    monkeypatch.setenv('TCP_FRAMING', 'fixed')
+    monkeypatch.setenv('TCP_FRAME_LENGTH', '0')
+    cfg = config_module.Config()
+    assert cfg.tcp_framing == 'line'
+    assert 'TCP_FRAME_LENGTH' in capsys.readouterr().out
+
+
+def test_head_tail_incomplete_config_falls_back(monkeypatch, capsys):
+    """head_tail 模式缺帧尾 → 告警回退 line"""
+    monkeypatch.setenv('TCP_FRAMING', 'head_tail')
+    monkeypatch.setenv('TCP_FRAME_HEAD', r'\xaa\x55')
+    monkeypatch.delenv('TCP_FRAME_TAIL', raising=False)
+    cfg = config_module.Config()
+    assert cfg.tcp_framing == 'line'
+    assert 'TCP_FRAME_HEAD / TCP_FRAME_TAIL' in capsys.readouterr().out
+
+
+def test_tcp_udp_concurrency_defaults(monkeypatch):
+    """并发上限默认 256（TCP 连接 / UDP 数据报）"""
+    monkeypatch.delenv('TCP_MAX_CONNECTIONS', raising=False)
+    monkeypatch.delenv('UDP_MAX_CONCURRENCY', raising=False)
+    cfg = config_module.Config()
+    assert cfg.tcp_max_connections == 256
+    assert cfg.udp_max_concurrency == 256
+
+
+def test_tcp_udp_concurrency_custom(monkeypatch):
+    """并发上限可配置（≤0 表示不限制，由服务器层处理）"""
+    monkeypatch.setenv('TCP_MAX_CONNECTIONS', '0')
+    monkeypatch.setenv('UDP_MAX_CONCURRENCY', '32')
+    cfg = config_module.Config()
+    assert cfg.tcp_max_connections == 0
+    assert cfg.udp_max_concurrency == 32
+
+
+def test_tcp_frame_length_exceeds_max_warns(monkeypatch, capsys):
+    """fixed 模式帧长大于消息上限：告警但不改变模式（语义提示）"""
+    monkeypatch.setenv('TCP_FRAMING', 'fixed')
+    monkeypatch.setenv('TCP_FRAME_LENGTH', '200000')
+    monkeypatch.delenv('TCP_MAX_MESSAGE_LENGTH', raising=False)
+    cfg = config_module.Config()
+    assert cfg.tcp_framing == 'fixed'
+    assert 'TCP_FRAME_LENGTH' in capsys.readouterr().out
+
+
+def test_tcp_max_message_length_zero_falls_back(monkeypatch, capsys):
+    """TCP_MAX_MESSAGE_LENGTH≤0 告警回退默认（防 max=0 全部帧"超长"断开/recv(0) 秒断）"""
+    monkeypatch.setenv('TCP_MAX_MESSAGE_LENGTH', '0')
+    cfg = config_module.Config()
+    assert cfg.tcp_max_message_length == 65536
+    assert 'TCP_MAX_MESSAGE_LENGTH' in capsys.readouterr().out
+
+
+def test_udp_max_message_length_zero_falls_back(monkeypatch, capsys):
+    """UDP_MAX_MESSAGE_LENGTH≤0 告警回退默认（防 recvfrom(0) 收到空数据报）"""
+    monkeypatch.setenv('UDP_MAX_MESSAGE_LENGTH', '-5')
+    cfg = config_module.Config()
+    assert cfg.udp_max_message_length == 65536
+    assert 'UDP_MAX_MESSAGE_LENGTH' in capsys.readouterr().out
