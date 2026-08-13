@@ -117,8 +117,10 @@ docker run -p 5000:5000 --env-file .env flask-server
    ⚠️ 使用 CIDR（如 Docker 的 `172.16.0.0/12`）时，该网段内**任何**主机（含同网络下
    其他容器）都能伪造 `X-Forwarded-For`（绕过限流、污染日志 IP）。请确保网段内仅含
    可信服务；如需严格隔离，应改为信任具体网关 IP。
-7. **认证与监控**：`AUTH_ENABLED=true` 时 `/metrics` 等未豁免端点需要 `X-AUTH-TOKEN`
-   请求头，Prometheus 抓取需配置该头（或按需加入豁免）。
+7. **认证与监控**：`AUTH_ENABLED=true` 时全局认证仅拦截 `/api/` 前缀路径——
+   `/metrics` 不在 `/api/` 下，**不需要 `X-AUTH-TOKEN`**（Prometheus 可直接抓取）。
+   如需保护指标端点，请将服务仅绑定内网（防火墙/编排网络策略），或在
+   `flask_server/component/interceptor.py` 自行添加鉴权。
 
 ## Swagger UI 内网/离线部署
 

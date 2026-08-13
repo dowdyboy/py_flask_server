@@ -53,6 +53,10 @@ def check_production_config():
     if _multi_worker() and config.redis_url is None:
         warnings.append('多 worker 部署未配置 REDIS_URL：memory_cache/限流计数/认证 token 为进程内，'
                         '多实例间数据不一致（如登录后 token 在另一 worker 失效），建议配置 REDIS_URL')
+    if _multi_worker() and config.auth_enabled and config.auth_store == 'memory':
+        warnings.append('AUTH_ENABLED=true 且 AUTH_STORE=memory：用户表为进程内，多 worker 下'
+                        '注册/登录数据不一致（A worker 注册的用户在 B worker 登录失败），'
+                        '建议 AUTH_STORE=sqlalchemy 持久化用户数据')
     if _multi_worker() and (config.tcp_enabled or config.udp_enabled):
         warnings.append('TCP/UDP 协议服务器每进程绑定同一端口：多 worker 部署会端口冲突，'
                         '请设置 WORKER_NUM=1 或将协议服务器独立进程部署')
@@ -64,8 +68,8 @@ def check_production_config():
 
 def _multi_worker():
     """是否多 worker 部署（gunicorn WORKER_NUM>1 或 socketio 多进程场景）"""
-    from flask_server.config import _parse_int
-    return _parse_int('WORKER_NUM', 1) > 1
+    from flask_server.config import _parse_worker_num
+    return _parse_worker_num(default=1) > 1
 
 
 def print_startup_banner():

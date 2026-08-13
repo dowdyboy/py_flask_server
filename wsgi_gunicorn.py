@@ -45,8 +45,8 @@ def _start_protocol_servers_in_worker(worker):
 
 
 def _build_options():
-    from flask_server.config import _parse_int
-    worker_num = _parse_int('WORKER_NUM', 4)
+    from flask_server.config import _parse_worker_num
+    worker_num = _parse_worker_num(default=4)
     return {
         'bind': f'{config.host}:{config.port}',
         'workers': worker_num,

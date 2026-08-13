@@ -302,6 +302,26 @@ def test_udp_max_message_length_zero_falls_back(monkeypatch, capsys):
     assert 'UDP_MAX_MESSAGE_LENGTH' in capsys.readouterr().out
 
 
+# ---------------- WORKER_NUM 范围校验 ----------------
+
+
+def test_parse_worker_num_valid(monkeypatch):
+    monkeypatch.setenv('WORKER_NUM', '8')
+    assert config_module._parse_worker_num(default=4) == 8
+
+
+def test_parse_worker_num_missing_uses_default(monkeypatch):
+    monkeypatch.delenv('WORKER_NUM', raising=False)
+    assert config_module._parse_worker_num(default=4) == 4
+
+
+def test_parse_worker_num_invalid_falls_back(monkeypatch, capsys):
+    """WORKER_NUM≤0 告警回退默认（gunicorn workers 传负数/0 会直接崩溃）"""
+    monkeypatch.setenv('WORKER_NUM', '-2')
+    assert config_module._parse_worker_num(default=4) == 4
+    assert 'WORKER_NUM' in capsys.readouterr().out
+
+
 # ---------------- 限流/认证计数参数范围校验 ----------------
 
 

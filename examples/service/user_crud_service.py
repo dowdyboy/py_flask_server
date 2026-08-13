@@ -28,7 +28,7 @@ class UserCrudService:
         user = UserPO()
         user.uid = uid
         user.username = username
-        user.passwd = DataEncryptUtil.sha256(password)
+        user.passwd = DataEncryptUtil.pbkdf2_hmac(password)
         user.create_time = datetime.now()
         sqlalchemy().session.add(user)
         Logger.info(f'UserCrudService create: uid={uid}, username={username}')
@@ -71,7 +71,7 @@ class UserCrudService:
         if username is not None:
             user.username = username
         if password is not None:
-            user.passwd = DataEncryptUtil.sha256(password)
+            user.passwd = DataEncryptUtil.pbkdf2_hmac(password)
         return True
 
     @staticmethod

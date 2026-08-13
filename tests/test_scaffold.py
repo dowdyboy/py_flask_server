@@ -22,6 +22,8 @@ def test_copy_template_excludes_git_and_caches(tmp_path):
     # .env 排除、.env.example 保留
     assert not os.path.exists(os.path.join(dst, '.env'))
     assert os.path.exists(os.path.join(dst, '.env.example'))
+    # 内部评估报告不随模板分发
+    assert not os.path.exists(os.path.join(dst, 'PROJECT_EVALUATION.md'))
 
 
 def test_copy_template_replaces_license_author(tmp_path):

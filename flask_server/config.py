@@ -21,6 +21,15 @@ def _parse_int(name: str, default: int) -> int:
         return default
 
 
+def _parse_worker_num(default: int = 1) -> int:
+    """解析 WORKER_NUM 并校验 >0（gunicorn workers 传负数/0 会直接崩溃）"""
+    val = _parse_int('WORKER_NUM', default)
+    if val <= 0:
+        print(f'[Config WARNING] WORKER_NUM={val!r} is invalid (must be > 0), using default {default}')
+        return default
+    return val
+
+
 def _parse_bytes_env(name: str, default: bytes) -> bytes:
     """安全解析字节串环境变量（支持转义写法：\\n / \\r\\n / \\xaa\\x55）。
 

@@ -18,10 +18,14 @@ _TEST_DB_URI = os.environ.get('TEST_DB_URI')
 
 def _ensure_mysql_database(uri):
     """SQLAlchemy 不自动建库：经 pymysql 直连（不指定库）创建目标数据库"""
+    import re
     import pymysql
     from sqlalchemy.engine import make_url
 
     url = make_url(uri)
+    # CREATE DATABASE 不支持参数化：校验库名为合法标识符（防标识符注入，与 verify_real_env 一致）
+    if not re.fullmatch(r'[A-Za-z0-9_]+', url.database or ''):
+        raise ValueError(f'illegal database name: {url.database!r}')
     conn = pymysql.connect(
         host=url.host, port=url.port or 3306,
         user=url.username, password=url.password or '',
