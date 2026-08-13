@@ -134,3 +134,28 @@ def test_cache_hit_false_without_index_returns_404(client, monkeypatch, tmp_path
     wc._cache_set(missing, False)
     resp = client.get('/ghost')
     assert resp.status_code == 404
+
+
+def test_trailing_slash_registered_route_redirects(client):
+    """尾斜杠路径命中已注册路由时 308 重定向，不被 SPA 回退吞掉
+    （修复前 Prometheus 抓 /metrics/ 拿到 200 index.html）"""
+    for path, target in (
+        ('/metrics/', '/metrics'),
+        ('/hello/', '/hello'),
+        ('/docs/', '/docs'),
+    ):
+        resp = client.get(path)
+        assert resp.status_code == 308, f'{path} -> {resp.status_code}'
+        assert resp.headers.get('Location') == target
+
+
+def test_trailing_slash_unknown_route_spa_fallback(client, monkeypatch, tmp_path):
+    """未知路径带尾斜杠仍走 SPA 回退（不误重定向）"""
+    fake_dir = tmp_path / 'webui_slash'
+    fake_dir.mkdir()
+    (fake_dir / 'index.html').write_text('<html>idx</html>', encoding='utf-8')
+    monkeypatch.setattr(config, 'webui_dir', str(fake_dir))
+    monkeypatch.setattr(wc, 'path_exist_cache', OrderedDict())
+    resp = client.get('/some/spa/route/')
+    assert resp.status_code == 200
+    assert resp.get_data(as_text=True) == '<html>idx</html>'

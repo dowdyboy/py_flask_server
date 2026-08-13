@@ -12,10 +12,8 @@ from examples.service.user_crud_service import UserCrudService
 # 接入工程前需：
 #   1. 将 user_schema.py 放入 flask_server/schema/ 并在 __init__.py 导出
 #   2. 将 user_crud_service.py 放入 flask_server/service/ 并在 __init__.py 导出
-#   3. 将本文件放入 flask_server/controller/
-#   4. 在 controller/__init__.py 中注册：
-#        from .user_crud_controller import blp as user_crud_blp
-#        api.register_blueprint(user_crud_blp)
+#   3. 将本文件放入 flask_server/controller/ 即自动注册
+#      （controller/ 目录扫描自动注册 Blueprint，无需修改任何 __init__.py）
 
 Logger.info("user_crud_controller.py loaded")
 

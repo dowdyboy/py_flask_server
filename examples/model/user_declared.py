@@ -12,7 +12,8 @@ if db is not None:
 
         uid = db.Column(db.String(64), primary_key=True)
         username = db.Column(db.String(128), unique=True, nullable=False)
-        passwd = db.Column(db.String(128), nullable=False)
+        # PBKDF2 存储格式 salt$iterations$hash（约 168 字符），256 足够
+        passwd = db.Column(db.String(256), nullable=False)
         last_login_time = db.Column(db.DateTime, nullable=True)
         create_time = db.Column(db.DateTime, nullable=False)
 else:

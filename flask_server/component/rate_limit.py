@@ -23,12 +23,26 @@ RATE_LIMIT_WINDOW = 60   # 固定窗口大小（秒）
 # 豁免限流的端点：监控抓取与探针高频轮询不应被限流。
 # 若 readyz 被 429，编排系统会判实例不健康并摘除流量，导致剩余实例流量更集中、
 # 更易触发 429 —— 形成雪崩循环，故探针必须豁免。
+# 豁免判定对尾斜杠归一（/metrics/ 与 /metrics 同豁免），防 Prometheus 等
+# 采集端配置尾斜杠 URL 时被误限流。
 RATE_LIMIT_EXEMPT_PATHS = (
     '/metrics',
     '/api/v1/healthz',
     '/api/v1/readyz',
     '/api/v1/health',
 )
+
+# 限流缓存键中路径部分的最大长度：超长 URL（MAX_CONTENT_LENGTH 不管 URL 长度）
+# 会直接撑爆缓存键内存（每键 TTL 60s 存活），超限时改用 SHA-256 哈希截断
+_PATH_KEY_MAX_LEN = 512
+
+
+def _path_key(path):
+    """限流计数键的路径部分：超长路径哈希截断，防超长 URL 内存放大"""
+    if len(path) <= _PATH_KEY_MAX_LEN:
+        return path
+    import hashlib
+    return hashlib.sha256(path.encode('utf-8')).hexdigest()
 
 
 def _get_store():
@@ -58,8 +72,9 @@ def _over_limit(count):
 def rate_limit_check():
     if not config.rate_limit_enabled:
         return None
-    # 探针/监控端点豁免（见 RATE_LIMIT_EXEMPT_PATHS 注释：防 429 雪崩）
-    if request.path in RATE_LIMIT_EXEMPT_PATHS:
+    # 探针/监控端点豁免（见 RATE_LIMIT_EXEMPT_PATHS 注释：防 429 雪崩）；
+    # 尾斜杠归一（/metrics/ == /metrics），防采集端尾斜杠 URL 被误限流
+    if request.path.rstrip('/') in RATE_LIMIT_EXEMPT_PATHS:
         return None
     # CORS 预检（OPTIONS）不承载业务，豁免避免大量 preflight 挤占配额
     if request.method == 'OPTIONS':
@@ -67,8 +82,8 @@ def rate_limit_check():
     cache = _get_store()
     ip = CommonUtil.get_real_ip(request, config.trusted_proxies) or 'unknown'
 
-    # 路径级配额（可被随机路径绕过，仅防单端点滥用）
-    path_count = _incr(cache, f'rate:{ip}:{request.path}')
+    # 路径级配额（可被随机路径绕过，仅防单端点滥用；超长路径哈希截断防内存放大）
+    path_count = _incr(cache, f'rate:{ip}:{_path_key(request.path)}')
     if _over_limit(path_count):
         Logger.warn(f'rate limit exceeded (path): rate:{ip}:{request.path}')
         abort(429)

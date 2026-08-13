@@ -67,6 +67,8 @@
 - 登录返回 `{token, refresh_token}`：`token` 用于请求头 `X-AUTH-TOKEN`（有效期 `AUTH_TOKEN_TTL`），
   `refresh_token` 用于续期
 - `POST /api/v1/auth/refresh`（body `{"refresh_token": "..."}`）换取新令牌——**旧 refresh 作废（单次使用）**
+- `POST /api/v1/auth/logout` 使 access token 失效；body 可选携带 `{"refresh_token": "..."}`
+  一并吊销 refresh（彻底结束会话），不携带则 refresh 到期自然失效（向后兼容）
 
 **防爆破**：同一用户名连续登录失败 `AUTH_LOGIN_MAX_FAILS`（默认 5）次后锁定
 `AUTH_LOGIN_LOCK_SECONDS`（默认 300）秒，锁定期间正确密码也拒绝（code 4003，HTTP 429）。
@@ -150,6 +152,8 @@ class ArticleView(MethodView):
 
 **豁免端点**（不计数，防编排系统误伤）：`/metrics`、`/api/v1/healthz`、`/api/v1/readyz`、
 `/api/v1/health`（探针被 429 会导致实例被摘除 → 流量集中 → 更 429 的雪崩循环）。
+豁免判定对尾斜杠归一（`/metrics/` 与 `/metrics` 同豁免），防采集端尾斜杠 URL 被误限流；
+超长路径（>512 字符）的计数键自动哈希截断，防超长 URL 撑爆缓存键内存。
 
 **存储与降级**：
 

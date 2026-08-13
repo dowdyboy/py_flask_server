@@ -1,5 +1,4 @@
 from flask_server.module import sqlalchemy, sqlalchemy_trans
-from sqlalchemy import and_
 from flask_server.util import DataEncryptUtil, RandomGenerator, Logger
 from flask_server.module import memory_cache
 from datetime import datetime
@@ -26,12 +25,10 @@ class UserService:
     @sqlalchemy_trans
     def login(username, password):
         UserPO = _get_user_po()
-        password = DataEncryptUtil.sha256(password)
         Logger.info(f'UserService login: username({username})')
-        user = UserPO.query.filter(and_(
-            UserPO.username == username, UserPO.passwd == password
-        )).first()
-        if user is None:
+        # 密码按用户名查询后逐个校验（PBKDF2 盐值每用户不同，无法在 SQL 中比对）
+        user = UserPO.query.filter(UserPO.username == username).first()
+        if user is None or not DataEncryptUtil.verify_pbkdf2(password, user.passwd):
             return None
         user.last_login_time = datetime.now()
         token = RandomGenerator.secrets_token(32)
@@ -54,7 +51,7 @@ class UserService:
         u = UserPO()
         u.uid = '1'
         u.username = 'admin'
-        u.passwd = DataEncryptUtil.sha256('change-this-password')
+        u.passwd = DataEncryptUtil.pbkdf2_hmac('change-this-password')
         u.last_login_time = datetime.now()
         u.create_time = datetime.now()
         sqlalchemy().session.add(u)

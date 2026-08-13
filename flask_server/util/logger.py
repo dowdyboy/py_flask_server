@@ -1,5 +1,6 @@
 import logging
 import json
+import os
 import time
 from logging.handlers import RotatingFileHandler
 from ..config import config
@@ -25,6 +26,9 @@ class JsonFormatter(logging.Formatter):
         rid = Logger._request_id_ctx.get()
         if rid:
             log_entry['request_id'] = rid
+        # exc_info=True 时附带完整堆栈，否则 JSON 日志排查生产故障时拿不到 traceback
+        if record.exc_info:
+            log_entry['exception'] = self.formatException(record.exc_info)
         return json.dumps(log_entry, ensure_ascii=False)
 
 
@@ -86,12 +90,22 @@ class Logger:
             if filename is None:
                 filename = time.strftime("%Y_%m_%d_%H_%M_%S", time.localtime())
                 filename = f'log_{filename}.log'
-            file_handler = RotatingFileHandler(
-                filename, maxBytes=max_bytes, backupCount=backup_count,
-                encoding='utf-8',
-            )
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
+            try:
+                # 目录不存在时自动创建（与 SQLite 自动建目录一致）；创建/打开失败
+                # （权限不足、路径非法等）降级为控制台日志，不因日志路径问题导致启动崩溃
+                _log_dir = os.path.dirname(os.path.abspath(filename))
+                if _log_dir and not os.path.isdir(_log_dir):
+                    os.makedirs(_log_dir, exist_ok=True)
+                file_handler = RotatingFileHandler(
+                    filename, maxBytes=max_bytes, backupCount=backup_count,
+                    encoding='utf-8',
+                )
+                file_handler.setFormatter(formatter)
+                logger.addHandler(file_handler)
+            except OSError as e:
+                print(f'[Logger WARNING] cannot create log file {filename}: {e}; '
+                      'falling back to console logging')
+                to_console = True   # 文件日志失败时保证日志仍有一处可写（不静默丢失）
         if to_console:
             console_handler = logging.StreamHandler()
             console_handler.setFormatter(formatter)

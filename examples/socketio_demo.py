@@ -12,27 +12,31 @@
 # 接入工程：将下方 handler 合并到 flask_server/app.py（socketio 初始化之后）。
 
 from flask_server import socketio
+from flask_server.util import Logger
 
+# SOCKETIO_ENABLED=false（默认）时 socketio 为 None：跳过注册并告警，
+# 避免直接 @socketio.on 触发 AttributeError（本文件仅教学，不在工程运行路径内）
+if socketio is None:
+    Logger.warn('SOCKETIO_ENABLED=false, socketio demo handlers skipped '
+                '(set SOCKETIO_ENABLED=true and install Flask-SocketIO to enable)')
+else:
 
-@socketio.on('connect')
-def handle_connect():
-    """客户端连接时触发"""
-    print(f'[socketio] client connected: {socketio.get_environ().get("REMOTE_ADDR")}')
+    @socketio.on('connect')
+    def handle_connect():
+        """客户端连接时触发"""
+        print(f'[socketio] client connected: {socketio.get_environ().get("REMOTE_ADDR")}')
 
+    @socketio.on('disconnect')
+    def handle_disconnect():
+        print('[socketio] client disconnected')
 
-@socketio.on('disconnect')
-def handle_disconnect():
-    print('[socketio] client disconnected')
+    @socketio.on('client_msg')
+    def handle_client_msg(data):
+        """回显消息：客户端发送 {'message': 'hello'} → 服务端回 {'echo': 'hello'}"""
+        message = (data or {}).get('message', '')
+        socketio.emit('server_msg', {'echo': message})
 
-
-@socketio.on('client_msg')
-def handle_client_msg(data):
-    """回显消息：客户端发送 {'message': 'hello'} → 服务端回 {'echo': 'hello'}"""
-    message = (data or {}).get('message', '')
-    socketio.emit('server_msg', {'echo': message})
-
-
-# 若在 app.py 合并，还需：
-# @socketio.on('message')
-# def handle_message(message):
-#     socketio.send(f'echo: {message}')
+    # 若在 app.py 合并，还需：
+    # @socketio.on('message')
+    # def handle_message(message):
+    #     socketio.send(f'echo: {message}')

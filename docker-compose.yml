@@ -29,6 +29,9 @@ services:
     volumes:
       - ./storage:/app/storage
       - ./webui:/app/webui
+      # 注意：未挂载代码目录（./:/app）——Werkzeug reloader 监听的是容器内 /app，
+      # 宿主上的代码编辑不会触发热更新；仅 storage/webui 的改动可热生效。
+      # 需要代码热更新时追加挂载：- ./flask_server:/app/flask_server
     restart: unless-stopped
     stop_grace_period: 10s
 

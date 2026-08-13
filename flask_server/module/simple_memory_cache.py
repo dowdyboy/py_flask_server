@@ -21,7 +21,8 @@ class SimpleMemoryCache:
         self._lock = threading.Lock()
 
     def set(self, key, value, ttl=None):
-        """设置键值对，并可选地设置TTL（生存时间）"""
+        """设置键值对，并可选地设置TTL（生存时间）；返回 True 表示写入成功
+        （与 RedisCache.set 契约一致，供调用方判断缓存可用性/降级）"""
         with self._lock:
             self.cache[key] = pickle.dumps(value)
             if ttl:
@@ -29,6 +30,7 @@ class SimpleMemoryCache:
             else:
                 # 清除可能存在的过期时间
                 self.expiry_times.pop(key, None)
+        return True
 
     def get(self, key):
         """获取键对应的值，如果键已过期则返回None"""

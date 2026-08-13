@@ -190,6 +190,36 @@ def test_http_exception_custom_code(client):
         teardown()
 
 
+def test_4xx_echoes_description_only(client):
+    """4xx 响应只回显 description，不含 "405 Method Not Allowed:" 英文前缀长句"""
+    resp = client.post('/hello')   # GET-only 路由 → 405
+    assert resp.status_code == 405
+    body = resp.get_json()
+    assert body['code'] == -1
+    data = body.get('data') or ''
+    assert 'Method Not Allowed' not in data
+    assert data == 'The method is not allowed for the requested URL.'
+
+
+def test_request_id_truncated(client):
+    """超长 X-Request-Id 截断到 64 字符（防超长值撑大日志与响应头）"""
+    resp = client.get('/hello', headers={'X-Request-Id': 'A' * 200})
+    rid = resp.headers.get('X-Request-Id')
+    assert rid is not None
+    assert rid == 'A' * 64
+
+
+def test_request_id_control_chars_stripped(client):
+    """X-Request-Id 中的控制字符被清洗（防日志格式污染）；全控制字符回退自动生成"""
+    resp = client.get('/hello', headers={'X-Request-Id': 'evil\tctrl\x01rid'})
+    rid = resp.headers.get('X-Request-Id')
+    assert rid == 'evilctrlrid'
+    resp = client.get('/hello', headers={'X-Request-Id': '\t\x01'})
+    rid = resp.headers.get('X-Request-Id')
+    assert rid is not None
+    assert len(rid) == 32   # 清洗后为空 → 自动生成 32 位 hex
+
+
 def test_form_urlencoded_payload(client):
     """application/x-www-form-urlencoded 的 body 应解析到 request.payload"""
     from flask_server import app
@@ -292,6 +322,54 @@ def test_json_response_decorator():
     assert returns_none() == {'code': 0, 'msg': '成功', 'data': None}
     assert returns_tuple()[1] == 201
     assert returns_ok()['data'] == {'x': 1}
+
+
+def test_json_response_str_normalized_to_json():
+    """视图返回 str/bytes 时归一为 GraceResult（修复前会被 Flask 渲染成 text/html）"""
+    from flask_server.app import json_response
+
+    @json_response
+    def returns_str():
+        return 'plain-string'
+
+    @json_response
+    def returns_bytes():
+        return b'raw-bytes'
+
+    @json_response
+    def returns_str_tuple():
+        return 'created', 201
+
+    data = returns_str()
+    assert data['code'] == 0
+    assert data['data'] == 'plain-string'
+
+    data = returns_bytes()
+    assert data['code'] == 0
+    assert data['data'] == "b'raw-bytes'"   # bytes 经 obj_to_dict 转字符串表示
+
+    data, status = returns_str_tuple()
+    assert status == 201
+    assert data['code'] == 0
+    assert data['data'] == 'created'
+
+
+def test_json_response_str_served_as_json(client):
+    """HTTP 层：@json_response 返回 str 时响应为 application/json（dict 输出由 Flask 序列化）"""
+    from flask_server import app
+    from flask_server.app import json_response
+
+    hook = json_response(lambda: 'plain-string')
+    teardown = _probe(app, hook)
+    try:
+        resp = client.get('/_probe_any_path')
+        assert resp.status_code == 200
+        assert resp.mimetype == 'application/json'
+        body = resp.get_json()
+        assert body['code'] == 0
+        assert body['data'] == 'plain-string'
+    finally:
+        teardown()
 
 
 def test_json_response_passes_through_response():

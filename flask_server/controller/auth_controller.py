@@ -72,8 +72,12 @@ class RefreshView(MethodView):
 class LogoutView(MethodView):
     @blp.response(200, GraceResultSchema)
     def post(self):
-        """登出（使当前 access token 失效；refresh token 到期自然失效）"""
-        AuthService.logout(request.headers.get('X-AUTH-TOKEN'))
+        """登出（使当前 access token 失效；body 可选携带 refresh_token 一并吊销，
+        否则 refresh token 到期自然失效）"""
+        # 使用 request.payload（框架已归一为非 dict JSON → {}），body 可不传保持向后兼容
+        payload = request.payload if isinstance(request.payload, dict) else {}
+        AuthService.logout(request.headers.get('X-AUTH-TOKEN'),
+                           refresh_token=payload.get('refresh_token'))
         return GraceResult.ok()
 
 

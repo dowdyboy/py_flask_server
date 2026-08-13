@@ -10,6 +10,12 @@ def test_set_get():
     assert c.get('k') == 'v'
 
 
+def test_set_returns_true():
+    """set 返回 True（与 RedisCache 契约一致，供认证降级逻辑判断写入成功）"""
+    c = SimpleMemoryCache()
+    assert c.set('k', 'v') is True
+
+
 def test_get_missing():
     c = SimpleMemoryCache()
     assert c.get('nope') is None

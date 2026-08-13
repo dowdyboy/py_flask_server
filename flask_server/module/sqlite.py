@@ -183,8 +183,17 @@ def init_sqlite_db():
         Logger.info('init_sqlite_db doing ... ... ... ')
         conn = SQLite.conn
         cur = conn.cursor()
-        cur.executescript(config.db_init_sql)
-        conn.commit()
+        try:
+            cur.executescript(config.db_init_sql)
+            conn.commit()
+        except sqlite3.Error as e:
+            # 初始化脚本有误（语法错误/表已存在等）不应导致应用 import 即崩溃：
+            # 回滚残留事务后告警继续，由业务按需修复脚本
+            Logger.error(f'init_sqlite_db failed: {e}', exc_info=True)
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
 
 
 init_sqlite_db()

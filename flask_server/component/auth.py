@@ -308,10 +308,16 @@ class AuthService:
         return access, new_refresh
 
     @classmethod
-    def logout(cls, token):
-        """登出：删除 access token（refresh token 到期自然失效）"""
+    def logout(cls, token, refresh_token=None):
+        """登出：删除 access token；传入 refresh_token 时一并吊销（否则其到期自然失效）。
+
+        方案 A：logout 请求可携带可选 refresh_token，吊销后旧 refresh 无法再换取新令牌——
+        "登出"后会话真正结束（设备丢失/账号被盗场景可踢下线）。
+        """
         if token:
             _cache_delete(f'{_TOKEN_KEY_PREFIX}{token}')
+        if refresh_token:
+            _cache_delete(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
 
     @classmethod
     def get_user_by_token(cls, token):

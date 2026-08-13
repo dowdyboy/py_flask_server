@@ -158,3 +158,43 @@ def test_rate_limit_ip_quota_and_path_quota_independent(client, monkeypatch):
         for k in list(memory_cache.cache.keys()):
             if k.startswith('rate:'):
                 memory_cache.delete(k)
+
+
+def test_rate_limit_exempts_trailing_slash(client, monkeypatch):
+    """尾斜杠探针路径同样豁免（/metrics/ /api/v1/healthz/），防采集端尾斜杠 URL 被误限流"""
+    from flask_server.component import rate_limit as rl
+    monkeypatch.setattr(config, 'rate_limit_enabled', True)
+    monkeypatch.setattr(config, 'rate_limit_per_minute', 2)
+    monkeypatch.setattr(rl, 'redis_cache', None)
+    try:
+        for _ in range(5):
+            assert client.get('/metrics/').status_code in (200, 308)
+        for _ in range(5):
+            assert client.get('/api/v1/healthz/').status_code in (200, 308)
+        # 非豁免端点仍被限流
+        for _ in range(2):
+            assert client.get('/hello').status_code == 200
+        assert client.get('/hello').status_code == 429
+    finally:
+        for k in list(memory_cache.cache.keys()):
+            if k.startswith('rate:'):
+                memory_cache.delete(k)
+
+
+def test_rate_limit_long_path_key_truncated(client, monkeypatch):
+    """超长路径的限流键被哈希截断，不会以原始超长 path 撑爆缓存键内存"""
+    from flask_server.component import rate_limit as rl
+    monkeypatch.setattr(config, 'rate_limit_enabled', True)
+    monkeypatch.setattr(config, 'rate_limit_per_minute', 100)
+    monkeypatch.setattr(rl, 'redis_cache', None)
+    long_path = '/' + 'a' * 3000
+    try:
+        assert client.get(long_path).status_code == 200
+        rate_keys = [k for k in memory_cache.cache.keys() if k.startswith('rate:')]
+        assert rate_keys
+        assert all(len(k) < 600 for k in rate_keys), f'cache key too long: {max(len(k) for k in rate_keys)}'
+        assert all(long_path not in k for k in rate_keys)
+    finally:
+        for k in list(memory_cache.cache.keys()):
+            if k.startswith('rate:'):
+                memory_cache.delete(k)

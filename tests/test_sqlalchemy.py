@@ -3,7 +3,6 @@
 from importlib import import_module
 
 from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
 
 from flask_server import config
 
@@ -20,10 +19,12 @@ def test_init_sqlalchemy_reflect_failure_tolerated(monkeypatch, tmp_path):
     monkeypatch.setattr(config, 'db_reflect_on_start', True)
     monkeypatch.setattr(sa_module, 'db', None)
 
-    def boom(self):
+    from sqlalchemy import MetaData
+
+    def boom(self, bind=None, **kwargs):
         raise RuntimeError('mock reflect failure')
 
-    monkeypatch.setattr(SQLAlchemy, 'reflect', boom)
+    monkeypatch.setattr(MetaData, 'reflect', boom)
 
     app = Flask(__name__)
     sa_module.init_SQLAlchemy(app)
@@ -58,7 +59,6 @@ def test_sqlalchemy_trans_raises_when_app_none(monkeypatch):
     from flask_sqlalchemy import SQLAlchemy
     monkeypatch.setattr(sa_module, 'db', SQLAlchemy())
     monkeypatch.setattr(sa_module, '_app', None)
-
     @sa_module.sqlalchemy_trans
     def op():
         pass
@@ -91,3 +91,48 @@ def test_in_app_context_creates_context_when_missing(monkeypatch, tmp_path):
     app = Flask(__name__)
     sa_module.init_SQLAlchemy(app)
     assert sa_module.in_app_context(lambda: 'ok') == 'ok'
+
+
+def test_reflect_with_existing_user_table_imports_ok(tmp_path):
+    """subprocess 回归：DB 已含 user 表（迁移建表后重启）+ 默认 DB_REFLECT_ON_START=true →
+    导入 flask_server 不再抛 InvalidRequestError（修复前"建表后第二次启动必崩"）；
+    声明式 user 表与反射的旧表共存于 metadata。
+    """
+    import os
+    import sqlite3
+    import subprocess
+    import sys
+
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    db_file = tmp_path / 'restart.db'
+    conn = sqlite3.connect(str(db_file))
+    conn.execute('CREATE TABLE user (uid VARCHAR(64) PRIMARY KEY, username VARCHAR(128), '
+                 'passwd VARCHAR(256), create_time DATETIME)')
+    conn.execute('CREATE TABLE legacy_orders (id INTEGER PRIMARY KEY, note TEXT)')
+    conn.commit()
+    conn.close()
+
+    uri = f'sqlite:///{db_file.as_posix()}'
+    code = (
+        "import os, sys\n"
+        f"os.environ['SQLALCHEMY_URI'] = {uri!r}\n"
+        "os.environ['DB_REFLECT_ON_START'] = 'true'\n"
+        "os.environ['REDIS_URL'] = ''\n"
+        "os.environ['AUTH_ENABLED'] = 'false'\n"
+        "os.environ['AUTH_STORE'] = 'memory'\n"
+        "os.environ['LOG_FILE_PATH'] = ''\n"
+        f"sys.path.insert(0, {PROJECT_ROOT!r})\n"
+        "import flask_server\n"
+        "from flask_server.module import sqlalchemy\n"
+        "tables = set(sqlalchemy().metadata.tables.keys())\n"
+        "assert 'user' in tables, tables\n"
+        "assert 'legacy_orders' in tables, tables\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', code], capture_output=True, text=True,
+        cwd=PROJECT_ROOT, timeout=120,
+    )
+    assert result.returncode == 0, f'import crashed, stderr:\n{result.stderr}'
+    assert 'OK' in result.stdout

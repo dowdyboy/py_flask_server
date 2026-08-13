@@ -187,6 +187,20 @@ def test_mask_uri_no_password():
     assert CommonUtil.mask_uri('redis://host:6379/0') == 'redis://host:6379/0'
 
 
+def test_mask_uri_password_with_at():
+    """密码含 @（如 p@ssw0rd）时应完整脱敏到凭据分隔符（修复前泄漏 @ 后残段）"""
+    assert CommonUtil.mask_uri(
+        'mysql+pymysql://user:p@ss@host:3306/db'
+    ) == 'mysql+pymysql://user:***@host:3306/db'
+
+
+def test_mask_uri_at_in_query_untouched():
+    """@ 出现在 query 中时（不在密码段内）不应影响脱敏结果"""
+    assert CommonUtil.mask_uri(
+        'mysql+pymysql://user:pass@host/db?email=a@b.com'
+    ) == 'mysql+pymysql://user:***@host/db?email=a@b.com'
+
+
 def test_dict_map_no_mutation_of_mapper():
     """传入 mapper_list 时不应修改调用方传入的 mapper"""
     mapper = {'a': 'x'}

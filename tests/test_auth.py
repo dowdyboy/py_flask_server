@@ -83,6 +83,33 @@ def test_logout_invalidates_token(client, fresh_store):
     assert client.get('/api/v1/auth/me', headers={'X-AUTH-TOKEN': token}).status_code == 401
 
 
+def test_logout_revokes_refresh_token_when_provided(client, fresh_store):
+    """登出携带 refresh_token 时一并吊销：旧 refresh 无法再换取新令牌（会话真正结束）"""
+    client.post('/api/v1/auth/register', json={'username': 'logoutfull', 'password': 'secret123'})
+    data = client.post('/api/v1/auth/login', json={
+        'username': 'logoutfull', 'password': 'secret123'}).get_json()['data']
+    tok, rt = data['token'], data['refresh_token']
+    r = client.post('/api/v1/auth/logout', headers={'X-AUTH-TOKEN': tok},
+                    json={'refresh_token': rt})
+    assert r.status_code == 200
+    # access 与 refresh 均失效
+    assert client.get('/api/v1/auth/me', headers={'X-AUTH-TOKEN': tok}).status_code == 401
+    r = client.post('/api/v1/auth/refresh', json={'refresh_token': rt})
+    assert r.status_code == 401
+    assert r.get_json()['code'] == 4002
+
+
+def test_logout_without_refresh_token_keeps_refresh(client, fresh_store):
+    """向后兼容：body 不携带 refresh_token 时登出不吊销 refresh（到期自然失效）"""
+    client.post('/api/v1/auth/register', json={'username': 'logoutcompat', 'password': 'secret123'})
+    data = client.post('/api/v1/auth/login', json={
+        'username': 'logoutcompat', 'password': 'secret123'}).get_json()['data']
+    tok, rt = data['token'], data['refresh_token']
+    client.post('/api/v1/auth/logout', headers={'X-AUTH-TOKEN': tok})
+    assert client.get('/api/v1/auth/me', headers={'X-AUTH-TOKEN': tok}).status_code == 401
+    assert client.post('/api/v1/auth/refresh', json={'refresh_token': rt}).status_code == 200
+
+
 def test_auth_interceptor_blocks_unexempt_api(client, monkeypatch, fresh_store):
     """全局拦截：未豁免 /api/ 路径无 token → 401；豁免路径放行"""
     from flask_server import app
@@ -390,6 +417,16 @@ def test_sqlalchemy_store_integrity_error_maps_to_duplicate(monkeypatch):
 
 
 # ------------------------- P3: token 存储自动降级 -------------------------
+
+
+def test_cache_set_returns_true_in_memory_mode(monkeypatch):
+    """_cache_set 契约：内存模式写入成功应返回 True（修复前恒为 False，误导降级判断）"""
+    from flask_server.component import auth as auth_module
+    monkeypatch.setattr(auth_module.config, 'redis_url', None)
+    monkeypatch.setattr(auth_module, 'redis_cache', None)
+    assert auth_module._cache_set('auth:contract:test', 'uid-1', ttl=60) is True
+    assert auth_module._cache_get('auth:contract:test') == 'uid-1'
+    auth_module._cache_delete('auth:contract:test')
 
 
 class _FakeRedisClient:

@@ -5,6 +5,59 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **反射与声明式模型共存**：`DB_REFLECT_ON_START=true`（默认）+ 已建表（如
+  `flask db upgrade` 建好的 user 表）+ 声明式 UserPO 时，二次启动不再崩溃
+  （修复前 reflect 先于模型导入执行，`Table 'user' is already defined`
+  InvalidRequestError）；现在先导入声明式模型占据表名，仅反射未声明的表
+- **auth token TTL 校验**：`AUTH_TOKEN_TTL` / `AUTH_REFRESH_TOKEN_TTL` ≤0 告警回退默认
+  （修复前 0=永久 token、负数=Redis setex 报错降级与内存立即过期的分裂行为）
+- **SQLite 初始化脚本容错**：`INIT_SQL_PATH` 脚本语法错误时告警降级继续启动，
+  不再因 `executescript` 异常导致应用 import 即崩溃
+- **`@json_response` 统一 JSON**：视图返回 str/bytes（含元组首元素）时归一为
+  `GraceResult.ok(data=值)`，修复前被 Flask 渲染为 text/html 破坏统一响应格式
+- **socketio 示例 None 保护**：`SOCKETIO_ENABLED=false`（默认）时跳过注册并告警，
+  修复前直接 `@socketio.on` 触发 AttributeError
+- **登出吊销 refresh token**：`POST /api/v1/auth/logout` 支持可选 body `{"refresh_token"}`，
+  传入即一并吊销（旧 refresh 无法再换取新令牌，会话真正结束；不携带保持向后兼容，
+  refresh 到期自然失效）
+- **限流/认证计数参数范围校验**：`RATE_LIMIT_PER_MINUTE`（≤0 时计数 1 即全量 429）、
+  `AUTH_LOGIN_MAX_FAILS`（≤0 时首次失败即锁定）、`AUTH_LOGIN_LOCK_SECONDS`（≤0 时
+  ttl=0 写成永久锁定键）非法值告警并回退默认
+- **CORS 空配置兜底**：`CORS_ORIGINS` 显式设为空字符串时告警并回退 `*`
+  （修复前解析为 `[]` 导致 CORS 静默失效）
+- **4xx 响应体精简**：HTTP 异常 4xx 只回显 `description`，去掉
+  `"405 Method Not Allowed:"` 这类英文前缀长句（保持响应文案简洁一致）
+- **X-Request-Id 清洗**：透传的 `X-Request-Id` 清洗控制字符并截断至 64 字符
+  （防日志格式污染/超长日志行与响应头），全控制字符回退自动生成
+- **`LocalFileStorage.resolve_path` 公开接口**：对外提供经路径穿越校验的路径解析
+  （examples 文件样例不再调用私有 `_gen_final_path`）
+- **examples 教学修正**：`user_service.py` 密码存储改 PBKDF2（原 sha256 违背安全最佳
+  实践，配套 `user_declared.py` passwd 列宽 128→256）；`article_service.modify_by_aid`
+  补 None 判空；`user_crud_controller.py` 注册说明改为自动注册（原注释与机制矛盾）
+- **`verify_real_env.py` 加固**：限流步骤显式开启 `RATE_LIMIT_ENABLED`（不再依赖 .env
+  是否启用，修复前未启用时限流步骤必然 FAIL）；`CREATE/DROP DATABASE` 增加库名标识符
+  校验（MySQL 不支持参数化 DDL，防标识符注入）
+- **日志路径兜底**：`LOG_FILE_PATH` 指向不存在的目录时自动创建；创建/打开失败
+  （权限不足、父路径为文件等）降级为控制台日志并告警，不再因日志路径问题导致
+  应用 import 即崩溃
+- **JSON 日志补堆栈**：`LOG_FORMAT=json` 时 `exc_info=True` 的日志附带 `exception`
+  字段（完整 traceback），修复前 JSON 模式下堆栈被丢弃、ELK 排查生产故障困难
+- **密码脱敏完整性**：`mask_uri` 对含 `@` 的密码（如 `p@ssw0rd`）完整脱敏到凭据
+  分隔符，修复前 `user:p@ss@host` 会泄漏 `@` 后残段；`@` 出现在 query 中不受影响
+- **探针尾斜杠豁免**：限流豁免路径判定对尾斜杠归一（`/metrics/` 与 `/metrics`
+  同豁免），防 Prometheus 等采集端配置尾斜杠 URL 时被误限流 429
+- **webui 尾斜杠重定向**：带尾斜杠的路径命中已注册路由（`/metrics/` `/docs/`
+  `/hello/` 等）时返回 308 重定向到规范路径，修复前落入 SPA 回退被吞掉
+  （Prometheus 抓 `/metrics/` 拿到 200 index.html，指标解析失败且无感知）
+- **内存缓存写契约**：`SimpleMemoryCache.set` 返回 `True`（与 RedisCache 一致），
+  修复认证 `_cache_set` 在内存模式下恒返回 False 的契约误导
+- **限流键截断**：限流计数键的路径部分超长（>512 字符）时改用 SHA-256 哈希，
+  防超长 URL（`MAX_CONTENT_LENGTH` 不管 URL 长度）撑爆缓存键内存
+- **多 worker 日志告警**：生产自检新增多 worker 写同一日志文件轮转竞态告警
+  （建议 `LOG_FILE_PATH=` 改用容器日志采集），与 Redis/token/TCP 告警风格一致
+
 ### 新增
 
 - **TCP / UDP 协议服务器**：零新依赖（stdlib socketserver 线程模型，Windows/Linux 可用），

@@ -56,6 +56,9 @@ def check_production_config():
     if _multi_worker() and (config.tcp_enabled or config.udp_enabled):
         warnings.append('TCP/UDP 协议服务器每进程绑定同一端口：多 worker 部署会端口冲突，'
                         '请设置 WORKER_NUM=1 或将协议服务器独立进程部署')
+    if _multi_worker() and config.log_to_file:
+        warnings.append('多 worker 写同一日志文件存在轮转竞态（可能丢行/损坏），'
+                        '建议 LOG_FILE_PATH= 禁用文件日志改用容器日志采集')
     return warnings
 
 

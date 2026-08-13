@@ -25,6 +25,22 @@ class LocalFileStorage:
             )
         return final_path
 
+    # 公开的路径解析接口：将存储相对路径解析为受校验的绝对路径（供外部按路径取用文件）
+    def resolve_path(self, path, create_dirs=False):
+        """解析相对路径为绝对路径（校验在存储根目录内，防路径穿越）。
+
+        Args:
+            path (str): 存储根目录内的相对路径
+            create_dirs (bool): 是否自动创建父目录（默认 False，无副作用）
+
+        Returns:
+            str: 校验通过的绝对路径
+
+        Raises:
+            ValueError: 路径穿越（逃逸存储根目录）
+        """
+        return self._gen_final_path(path, create_dirs=create_dirs)
+
     # 存储到所配置的目录中
     def save(self, path, obj):
         final_path = self._gen_final_path(path)

@@ -134,6 +134,11 @@ class Config:
         # CORS 允许的来源
         _cors_raw = os.environ.get('CORS_ORIGINS', '*')
         self.cors_origins = _cors_raw if _cors_raw == '*' else [o.strip() for o in _cors_raw.split(',') if o.strip()]
+        # 显式设为空字符串（CORS_ORIGINS=）会解析为 [] → CORS 静默失效，告警并回退 *
+        if not self.cors_origins:
+            print('[Config WARNING] CORS_ORIGINS is empty (parsed to []), '
+                  'CORS would be silently disabled, falling back to *')
+            self.cors_origins = '*'
 
         # API 文档配置（flask-smorest）
         self.api_title = os.environ.get('API_TITLE', 'Flask Server API')
@@ -196,17 +201,41 @@ class Config:
         # 限流配置（默认关闭）
         self.rate_limit_enabled = os.environ.get('RATE_LIMIT_ENABLED', 'false').lower() in ('1', 'true', 'yes')
         self.rate_limit_per_minute = _parse_int('RATE_LIMIT_PER_MINUTE', 60)
+        # ≤0 非法：计数 1 即超限（所有非豁免请求 429），告警并回退默认
+        if self.rate_limit_per_minute <= 0:
+            print(f'[Config WARNING] RATE_LIMIT_PER_MINUTE={self.rate_limit_per_minute!r} '
+                  'is invalid (must be > 0), using default 60')
+            self.rate_limit_per_minute = 60
         # 限流存储：memory（默认，进程内）/ redis（多实例准确，需配置 REDIS_URL）
         self.rate_limit_store = os.environ.get('RATE_LIMIT_STORE', 'memory')
 
         # 认证模块配置（默认关闭；AUTH_STORE=sqlalchemy 时需配置 SQLALCHEMY_URI 并迁移建表）
         self.auth_enabled = os.environ.get('AUTH_ENABLED', 'false').lower() in ('1', 'true', 'yes')
         self.auth_token_ttl = _parse_int('AUTH_TOKEN_TTL', 7 * 24 * 3600)   # token 有效期（秒，默认 7 天）
+        # ≤0 非法：0 → 永久 token；负数 → Redis setex 报错降级 / 内存缓存立即过期（行为分裂），告警回退默认
+        if self.auth_token_ttl <= 0:
+            print(f'[Config WARNING] AUTH_TOKEN_TTL={self.auth_token_ttl!r} '
+                  'is invalid (must be > 0), using default 604800')
+            self.auth_token_ttl = 7 * 24 * 3600
         self.auth_refresh_token_ttl = _parse_int('AUTH_REFRESH_TOKEN_TTL', 30 * 24 * 3600)   # refresh token 有效期（秒，默认 30 天）
+        if self.auth_refresh_token_ttl <= 0:
+            print(f'[Config WARNING] AUTH_REFRESH_TOKEN_TTL={self.auth_refresh_token_ttl!r} '
+                  'is invalid (must be > 0), using default 2592000')
+            self.auth_refresh_token_ttl = 30 * 24 * 3600
         self.auth_store = os.environ.get('AUTH_STORE', 'memory')             # memory / sqlalchemy
         # 登录防爆破：连续失败 N 次锁定 M 秒
         self.auth_login_max_fails = _parse_int('AUTH_LOGIN_MAX_FAILS', 5)
+        # ≤0 非法：首次失败即锁定（=0/负数），告警并回退默认
+        if self.auth_login_max_fails <= 0:
+            print(f'[Config WARNING] AUTH_LOGIN_MAX_FAILS={self.auth_login_max_fails!r} '
+                  'is invalid (must be > 0), using default 5')
+            self.auth_login_max_fails = 5
         self.auth_login_lock_seconds = _parse_int('AUTH_LOGIN_LOCK_SECONDS', 300)
+        # ≤0 非法：ttl=0 会写成永久键（锁定永不解除），告警并回退默认
+        if self.auth_login_lock_seconds <= 0:
+            print(f'[Config WARNING] AUTH_LOGIN_LOCK_SECONDS={self.auth_login_lock_seconds!r} '
+                  'is invalid (must be > 0), using default 300')
+            self.auth_login_lock_seconds = 300
 
         # Prometheus 指标（/metrics，依赖 prometheus-client，未安装或关闭时自动降级）
         self.metrics_enabled = os.environ.get('METRICS_ENABLED', 'true').lower() in ('1', 'true', 'yes')

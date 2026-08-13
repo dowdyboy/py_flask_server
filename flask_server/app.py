@@ -73,6 +73,13 @@ init_Migrate(app)
 # Common Annotation ########
 
 def json_response(func):
+    """统一 JSON 响应装饰器。
+
+    - GraceResult/自定义对象 → {code, msg, data} JSON
+    - None → GraceResult.ok()；str/bytes → GraceResult.ok(data=值)（保证始终 application/json，
+      避免视图返回字符串时被 Flask 当作 text/html 渲染，破坏统一响应格式）
+    - 返回 (data, status[, headers]) 元组 / Response 对象时透传
+    """
     @wraps(func)
     def wrapper(*args, **kwargs):
         resp = func(*args, **kwargs)
@@ -85,6 +92,8 @@ def json_response(func):
                 return (obj, status, headers) if headers is not None else (obj, status)
             if obj is None:
                 obj = GraceResult.ok()
+            elif isinstance(obj, (str, bytes, bytearray)):
+                obj = GraceResult.ok(obj)
             data = CommonUtil.obj_to_dict(obj)
             return (data, status, headers) if headers is not None else (data, status)
         # 视图直接返回 Response（send_file/redirect 等）时原样透传
@@ -92,18 +101,33 @@ def json_response(func):
             return resp
         if resp is None:
             resp = GraceResult.ok()
+        elif isinstance(resp, (str, bytes, bytearray)):
+            resp = GraceResult.ok(resp)
         return CommonUtil.obj_to_dict(resp)
     return wrapper
 
 
 # Request Param Parser ########
 
+# X-Request-Id 清洗上限：控制字符会污染日志格式（log forging 面），
+# 超长值会撑大每条日志与响应头；截断 + 清洗后仅保留可打印字符
+_MAX_REQUEST_ID_LEN = 64
+
+
+def _sanitize_request_id(raw):
+    """清洗客户端传入的 X-Request-Id：去控制字符 + 截断；无效值回退自动生成"""
+    if not raw:
+        return None
+    cleaned = ''.join(ch for ch in raw if ch.isprintable())[:_MAX_REQUEST_ID_LEN]
+    return cleaned or None
+
+
 @app.before_request
 def init_request_info():
     if not hasattr(request, 'info'):
         request.info = {}
-    # request_id 链路追踪：从 header 透传或自动生成
-    request_id = request.headers.get('X-Request-Id') or uuid.uuid4().hex
+    # request_id 链路追踪：从 header 透传或自动生成（清洗防日志污染/超长行）
+    request_id = _sanitize_request_id(request.headers.get('X-Request-Id')) or uuid.uuid4().hex
     request.info['request_id'] = request_id
     g.request_id = request_id
     Logger.set_request_id(request_id)
@@ -205,8 +229,12 @@ def http_exception_handler(e):
         Logger.error(f'http_exception_handler : {e}', exc_info=True)
     if e.code == 404:
         return GraceResult.error(data='资源不存在'), 404
-    # 5xx 脱敏：只回显通用消息；4xx 客户端错误信息可安全回显
-    data = str(e) if (e.code is not None and e.code < 500) else _internal_error_detail(e)
+    # 5xx 脱敏：只回显通用消息；4xx 客户端错误信息可安全回显，
+    # 但只回显 description（去掉 "405 Method Not Allowed:" 这类英文前缀长句，保持响应文案简洁）
+    if e.code is not None and e.code < 500:
+        data = getattr(e, 'description', None) or str(e)
+    else:
+        data = _internal_error_detail(e)
     return GraceResult.error(data=data), e.code
 
 

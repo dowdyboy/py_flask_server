@@ -48,6 +48,8 @@ class ArticleService:
     def modify_by_aid(aid, title, content, secret_content, money, state):
         ArticlePO = _get_article_po()
         article = ArticlePO.query.filter(ArticlePO.aid == aid).first()
+        if article is None:
+            return False
         Logger.info(f'ArticleService modify_by_aid : <before> {article.__dict__}')
         article.title = title
         article.content = content

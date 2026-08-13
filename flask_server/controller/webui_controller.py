@@ -1,7 +1,7 @@
 import os
 import threading
 from collections import OrderedDict
-from flask import send_from_directory, abort
+from flask import send_from_directory, abort, redirect, request
 from flask_server import app, config
 from flask_server.util import Logger
 
@@ -50,9 +50,33 @@ def _is_path_safe(filename):
     return filepath_real.startswith(webui_real + os.sep) or filepath_real == webui_real
 
 
+def _redirect_to_registered_route(path):
+    """带尾斜杠的路径若对应已注册路由（如 /metrics/ → /metrics、/docs/ → /docs），
+    返回 308 重定向，避免落入本 catch-all 被 SPA 回退吞掉（修复前 Prometheus 抓
+    /metrics/ 拿到的是 200 index.html，解析指标失败且无感知）。
+    """
+    target = path.rstrip('/')
+    if not target or target == path:
+        return None
+    from werkzeug.exceptions import NotFound
+    from werkzeug.routing import RequestRedirect
+    adapter = app.url_map.bind('localhost')
+    try:
+        rule, _ = adapter.match(target, 'GET', return_rule=True)
+    except (NotFound, RequestRedirect):
+        return None
+    if rule.rule == '/<path:filename>':
+        return None   # 目标仍是本 catch-all（SPA 路由带尾斜杠），不回退重定向
+    return redirect(target, code=308)
+
+
 @app.route('/', methods=['GET'], defaults={'filename': 'index.html'})
 @app.route('/<path:filename>', methods=['GET'])
 def webui(filename):
+    # 尾斜杠路径命中已注册路由时重定向到规范路径（见 _redirect_to_registered_route）
+    _redirect = _redirect_to_registered_route(request.path)
+    if _redirect is not None:
+        return _redirect
     # API 路径不走 SPA 回退，直接 404（含精确 /api 与 /api/xxx 子路径；大小写不敏感）
     _filename_lower = filename.lower()
     if _filename_lower == 'api' or _filename_lower.startswith('api/'):

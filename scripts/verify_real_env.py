@@ -56,9 +56,16 @@ def step_fail(name, detail=''):
 
 
 def mask_uri(uri):
-    """脱敏连接串中的密码，避免输出泄漏"""
+    """脱敏连接串中的密码，避免输出泄漏（密码可含 @，脱敏到凭据分隔符）"""
     import re
-    return re.sub(r'(://[^:/@]*:)[^@]*(@)', r'\1***\2', uri)
+    return re.sub(r'(://[^:/@]*:)[^/?#]*(@)', r'\1***\2', uri)
+
+
+def check_db_identifier(name):
+    """校验库名是合法 MySQL 标识符（CREATE/DROP DATABASE 不支持参数化，防标识符注入）"""
+    import re
+    if not re.fullmatch(r'[A-Za-z0-9_]+', name or ''):
+        raise ValueError(f'illegal database name: {name!r}')
 
 
 # ------------------------- 连接与建库 -------------------------
@@ -70,6 +77,7 @@ def ensure_mysql(args):
     from sqlalchemy.engine import make_url
 
     url = make_url(args.mysql_uri)
+    check_db_identifier(url.database)
     conn = pymysql.connect(
         host=url.host, port=url.port or 3306,
         user=url.username, password=url.password or '',
@@ -186,7 +194,9 @@ def step_http_flow(args, redis_client, mysql_url):
     # 限流阈值说明：限流现为「路径级 + IP 级总配额」双层（IP 级兜底防随机路径绕过）。
     # 本流程共 ~31 个非探针请求（认证/防爆破），阈值必须大于该数才能让流程通过，
     # 再由后续 burst（>阈值）触发 429。100/min 下第 ~101 个总请求被 IP 级配额拦截。
-    # 必须在导入 flask_server（读配置）之前设置
+    # 必须在导入 flask_server（读配置）之前设置；RATE_LIMIT_ENABLED 显式开启，
+    # 不再依赖 .env 是否启用限流（修复前 .env 未开启时限流步骤必然 FAIL）
+    os.environ['RATE_LIMIT_ENABLED'] = 'true'
     os.environ['RATE_LIMIT_PER_MINUTE'] = '100'
     from flask_server import app
 
@@ -301,6 +311,7 @@ def step_reflect(args):
 
     url = make_url(args.mysql_uri)
     reflect_db = args.reflect_db
+    check_db_identifier(reflect_db)
     conn = pymysql.connect(
         host=url.host, port=url.port or 3306,
         user=url.username, password=url.password or '',

@@ -52,6 +52,24 @@ def test_exists_no_side_effect(storage):
     assert not os.path.exists(os.path.join(str(storage.root_path), 'sub'))
 
 
+def test_resolve_path_returns_abs_path(storage):
+    """resolve_path 公开接口：解析相对路径为根目录内的绝对路径"""
+    resolved = storage.resolve_path('sub/file.txt')
+    assert resolved == os.path.join(os.path.realpath(str(storage.root_path)), 'sub', 'file.txt')
+
+
+def test_resolve_path_no_side_effect(storage):
+    """resolve_path 默认不创建目录（create_dirs=False）"""
+    storage.resolve_path('ghost/dir/file.txt')
+    assert not os.path.exists(os.path.join(str(storage.root_path), 'ghost'))
+
+
+def test_resolve_path_traversal_blocked(storage):
+    """resolve_path 同样拦截路径穿越"""
+    with pytest.raises(ValueError, match='Path traversal'):
+        storage.resolve_path('../../etc/passwd')
+
+
 def test_exists_middle_component_is_file(storage):
     """中间路径组件是文件时 exists 返回 False 而非抛异常"""
     storage.save('afile.txt', b'x')

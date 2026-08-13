@@ -18,6 +18,10 @@ class CommonUtil:
             scheme://:password@host     (空用户名)
         无密码的 URI 原样返回
 
+        注意：密码本身可含 '@'（如 p@ssw0rd），用贪婪匹配脱敏到凭据分隔符
+        （user:pass 与 host 之间的最后一个 '@'）；'@' 出现在 path/query 中时
+        不受影响（密码段只到第一个 / ? # 为止）。
+
         Args:
             uri (str): 原始连接字符串，如 mysql+pymysql://user:pass@host/db 或 redis://:pass@host:6379/0
 
@@ -27,7 +31,7 @@ class CommonUtil:
         if uri is None:
             return None
         import re
-        return re.sub(r'(://[^:/@]*:)[^@]*(@)', r'\1***\2', uri)
+        return re.sub(r'(://[^:/@]*:)[^/?#]*(@)', r'\1***\2', uri)
 
     @staticmethod
     def dict_map(obj: dict,

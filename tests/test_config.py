@@ -300,3 +300,81 @@ def test_udp_max_message_length_zero_falls_back(monkeypatch, capsys):
     cfg = config_module.Config()
     assert cfg.udp_max_message_length == 65536
     assert 'UDP_MAX_MESSAGE_LENGTH' in capsys.readouterr().out
+
+
+# ---------------- 限流/认证计数参数范围校验 ----------------
+
+
+def test_rate_limit_per_minute_invalid_falls_back(monkeypatch, capsys):
+    """RATE_LIMIT_PER_MINUTE≤0 告警回退默认（防计数 1 即全量 429）"""
+    monkeypatch.setenv('RATE_LIMIT_PER_MINUTE', '0')
+    cfg = config_module.Config()
+    assert cfg.rate_limit_per_minute == 60
+    assert 'RATE_LIMIT_PER_MINUTE' in capsys.readouterr().out
+
+
+def test_auth_login_max_fails_invalid_falls_back(monkeypatch, capsys):
+    """AUTH_LOGIN_MAX_FAILS≤0 告警回退默认（防首次失败即锁定）"""
+    monkeypatch.setenv('AUTH_LOGIN_MAX_FAILS', '-1')
+    cfg = config_module.Config()
+    assert cfg.auth_login_max_fails == 5
+    assert 'AUTH_LOGIN_MAX_FAILS' in capsys.readouterr().out
+
+
+def test_auth_login_lock_seconds_invalid_falls_back(monkeypatch, capsys):
+    """AUTH_LOGIN_LOCK_SECONDS≤0 告警回退默认（防 ttl=0 写成永久锁定键）"""
+    monkeypatch.setenv('AUTH_LOGIN_LOCK_SECONDS', '0')
+    cfg = config_module.Config()
+    assert cfg.auth_login_lock_seconds == 300
+    assert 'AUTH_LOGIN_LOCK_SECONDS' in capsys.readouterr().out
+
+
+def test_auth_token_ttl_invalid_falls_back(monkeypatch, capsys):
+    """AUTH_TOKEN_TTL≤0 告警回退默认（0=永久 token；负数=Redis setex 报错/内存立即过期）"""
+    monkeypatch.setenv('AUTH_TOKEN_TTL', '0')
+    cfg = config_module.Config()
+    assert cfg.auth_token_ttl == 7 * 24 * 3600
+    assert 'AUTH_TOKEN_TTL' in capsys.readouterr().out
+
+
+def test_auth_refresh_token_ttl_invalid_falls_back(monkeypatch, capsys):
+    """AUTH_REFRESH_TOKEN_TTL≤0 告警回退默认"""
+    monkeypatch.setenv('AUTH_REFRESH_TOKEN_TTL', '-5')
+    cfg = config_module.Config()
+    assert cfg.auth_refresh_token_ttl == 30 * 24 * 3600
+    assert 'AUTH_REFRESH_TOKEN_TTL' in capsys.readouterr().out
+
+
+def test_bad_init_sql_does_not_crash_import(tmp_path):
+    """INIT_SQL_PATH 指向非法 SQL 时应用仍可导入（修复前 executescript 异常导致 import 崩溃）"""
+    sql = tmp_path / 'bad.sql'
+    sql.write_text('THIS IS NOT VALID SQL;', encoding='utf-8')
+    db_file = tmp_path / 'bad_init.db'
+    code = (
+        "import os\n"
+        f"os.environ['SQLITE_DB_PATH'] = {str(db_file)!r}\n"
+        f"os.environ['INIT_SQL_PATH'] = {str(sql)!r}\n"
+        "os.environ['SQLALCHEMY_URI'] = ''\n"
+        "os.environ['REDIS_URL'] = ''\n"
+        "os.environ['AUTH_ENABLED'] = 'false'\n"
+        "os.environ['LOG_FILE_PATH'] = ''\n"
+        "import flask_server\n"
+        "print('OK')\n"
+    )
+    result = _run_in_subprocess(code)
+    assert result.returncode == 0, f'import crashed, stderr:\n{result.stderr}'
+    assert 'OK' in result.stdout
+
+
+def test_cors_origins_empty_falls_back(monkeypatch, capsys):
+    """CORS_ORIGINS 为空字符串时告警回退 *（防 CORS 静默失效）"""
+    monkeypatch.setenv('CORS_ORIGINS', '')
+    cfg = config_module.Config()
+    assert cfg.cors_origins == '*'
+    assert 'CORS_ORIGINS' in capsys.readouterr().out
+
+
+def test_cors_origins_list_parsed(monkeypatch):
+    """CORS_ORIGINS 逗号分隔列表正常解析"""
+    monkeypatch.setenv('CORS_ORIGINS', 'https://a.example.com, https://b.example.com')
+    assert config_module.Config().cors_origins == ['https://a.example.com', 'https://b.example.com']

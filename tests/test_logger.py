@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sys
 import time
 import tempfile
 import os
@@ -41,6 +42,26 @@ def test_json_formatter_without_request_id():
     assert 'request_id' not in data
 
 
+def test_json_formatter_includes_exception():
+    """exc_info=True 时 JSON 日志应包含 exception 堆栈字段（否则 ELK 拿不到 traceback）"""
+    try:
+        raise ValueError('boom-for-json-log')
+    except ValueError:
+        record = _make_record('oops')
+        record.exc_info = sys.exc_info()
+        out = JsonFormatter().format(record)
+    data = json.loads(out)
+    assert 'exception' in data
+    assert 'ValueError' in data['exception']
+    assert 'boom-for-json-log' in data['exception']
+
+
+def test_json_formatter_no_exception_field_without_exc_info():
+    """无 exc_info 时 JSON 日志不含 exception 字段"""
+    out = JsonFormatter().format(_make_record('hello'))
+    assert 'exception' not in json.loads(out)
+
+
 def test_text_formatter_default():
     fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
     record = _make_record('hello')
@@ -72,3 +93,43 @@ def test_logger_init_creates_rotating_handler():
             h.close()   # 关闭文件句柄（Windows 下不关闭无法删除文件）
         if os.path.exists(log_file):
             os.remove(log_file)
+
+
+def test_logger_init_creates_missing_directory(tmp_path):
+    """LOG_FILE_PATH 指向不存在的目录时自动创建（修复前 import 即崩溃）"""
+    from logging.handlers import RotatingFileHandler
+    log_dir = tmp_path / 'nested' / 'logs'
+    log_file = log_dir / 'app.log'
+    Logger.init(filename=str(log_file), level=logging.INFO, to_console=False)
+    logger = logging.getLogger('flask_server')
+    try:
+        assert log_dir.is_dir()
+        handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+        assert len(handlers) == 1
+        Logger.info('dir auto-created')
+        handlers[0].flush()
+        assert 'dir auto-created' in log_file.read_text(encoding='utf-8')
+    finally:
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
+            h.close()
+
+
+def test_logger_init_falls_back_to_console_on_oserror(tmp_path):
+    """日志文件无法创建时（父路径是文件等）降级为控制台日志，不抛异常"""
+    blocker = tmp_path / 'blocker'
+    blocker.write_text('i am a file, not a dir', encoding='utf-8')
+    bad_log_file = blocker / 'sub' / 'app.log'
+    # 不应抛异常；文件 handler 缺失，控制台 handler 兜底
+    Logger.init(filename=str(bad_log_file), level=logging.INFO, to_console=False)
+    logger = logging.getLogger('flask_server')
+    try:
+        from logging import StreamHandler
+        from logging.handlers import RotatingFileHandler
+        handlers = logger.handlers
+        assert not [h for h in handlers if isinstance(h, RotatingFileHandler)]
+        assert [h for h in handlers if isinstance(h, StreamHandler)]
+    finally:
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
+            h.close()
