@@ -63,11 +63,18 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    # REDIS_PASSWORD 为空时不传 --requirepass（redis-server 拒绝空密码，直接启动失败）；
+    # 设置后自动启用认证。⚠️ 密码含 shell 特殊字符（空格/$/引号）时此写法不适用，请改用 secrets
+    command: >-
+      sh -c 'if [ -n "${REDIS_PASSWORD:-}" ]; then
+      exec redis-server --appendonly yes --requirepass "${REDIS_PASSWORD}";
+      else exec redis-server --appendonly yes; fi'
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # 认证开启时 redis-cli ping 会返回 NOAUTH（非 PONG），健康检查需带密码；
+      # 未设置 REDIS_PASSWORD 时条件展开为空（等价裸 ping）
+      test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a \"${REDIS_PASSWORD}\"} ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10

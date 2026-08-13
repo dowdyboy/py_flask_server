@@ -5,8 +5,23 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-13
+
 ### 修复
 
+- **文档事实修正**：`/metrics` 不在 `/api/` 下、不受全局认证拦截（无需 X-AUTH-TOKEN），
+  修正部署指南中的错误说法；教程模型 passwd 列宽 128→256（PBKDF2 存储约 168 字符，
+  128 列宽在 MySQL 严格模式下插入报 Data too long）
+- **examples 密码示例统一**：`user_crud_service.py` 的 create/update 改用
+  `pbkdf2_hmac`（与 `user_service.py` 一致，修复前两处仍用 sha256，教学样例自相矛盾）
+- **scaffold 排除内部评估报告**：生成新项目不再复制 `PROJECT_EVALUATION.md`
+  （内部评估/审查历史不应随模板分发）
+- **WORKER_NUM 校验**：≤0 告警回退默认（gunicorn workers 传负数/0 直接崩溃）；
+  新增 `_parse_worker_num` 统一 banner 与 gunicorn 入口的解析
+- **banner 多 worker 告警补全**：`AUTH_ENABLED=true` + `AUTH_STORE=memory` 多 worker
+  部署时告警（用户表进程内，注册/登录跨 worker 不一致）
+- **集成测试库名标识符校验**：`test_sqlalchemy_integration.py` 建库前校验库名为
+  合法标识符（与 verify_real_env 风格一致，防标识符注入）
 - **反射与声明式模型共存**：`DB_REFLECT_ON_START=true`（默认）+ 已建表（如
   `flask db upgrade` 建好的 user 表）+ 声明式 UserPO 时，二次启动不再崩溃
   （修复前 reflect 先于模型导入执行，`Table 'user' is already defined`

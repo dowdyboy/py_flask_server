@@ -61,7 +61,7 @@ def list_backend():
 def get_backend():
     article = ArticleService.get(request.params['aid'])
     if article is None:
-        return GraceResult.param_error()
+        return GraceResult.business_error(4004, '文章不存在'), 404
     article = CommonUtil.dict_map(article, mapper_list=[
         'aid', 'title', 'content', 'secret_content', 'money', 'state',
         'access_count', 'buy_count', 'update_time', 'create_time'

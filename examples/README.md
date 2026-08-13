@@ -46,6 +46,10 @@ examples/
 3. **导出注册**：把样例放回 `flask_server/` 对应目录后，需在各自的 `__init__.py` 中添加导入，才会被加载。
 4. **未完成代码**：`article_service.py` 的 `increase_access_count` 为空实现，需按需补全。
 5. **反射式 PO 的 import 时 DB IO**：`user.py`/`article.py` 在类定义体内执行 `db.Table(..., autoload_with=db.engine)`，import 即连库反射表结构。未配数据库或表不存在会启动报错；推荐使用声明式 `user_declared.py`。
+6. **拦截器依赖**：`user_controller.py` 的登出读 `request.info['token']`、`article_controller.py` 的前端
+   接口（get/list）读 `request.info['user_key']`——这些值由 `component/interceptor_example.py`
+   写入（并配置 `need_auth_path_list` / `need_user_key_path_list`）。未合并拦截器时这些
+   接口会因 KeyError 返回 400。
 
 ## 用法
 
