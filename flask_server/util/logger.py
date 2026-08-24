@@ -2,8 +2,12 @@ import logging
 import json
 import os
 import time
+import contextvars
 from logging.handlers import RotatingFileHandler
 from ..config import config
+
+# 请求 ID 上下文（模块级创建，线程安全，兼容 threading/eventlet/asyncio）
+_request_id_ctx = contextvars.ContextVar('request_id', default=None)
 
 # 日志工具类，用于输出日志
 # 支持 request_id 链路追踪：使用 contextvars 实现线程安全
@@ -22,8 +26,7 @@ class JsonFormatter(logging.Formatter):
             'message': record.getMessage(),
         }
         # 附带当前 request_id，便于链路追踪（ELK 场景按此字段聚合）
-        Logger._ensure_ctx()
-        rid = Logger._request_id_ctx.get()
+        rid = _request_id_ctx.get()
         if rid:
             log_entry['request_id'] = rid
         # exc_info=True 时附带完整堆栈，否则 JSON 日志排查生产故障时拿不到 traceback
@@ -34,31 +37,19 @@ class JsonFormatter(logging.Formatter):
 
 class Logger:
 
-    # contextvars 线程安全，兼容 threading/eventlet/asyncio
-    _request_id_ctx = None
-
-    @classmethod
-    def _ensure_ctx(cls):
-        if cls._request_id_ctx is None:
-            import contextvars
-            cls._request_id_ctx = contextvars.ContextVar('request_id', default=None)
-
     @staticmethod
     def set_request_id(rid):
         """设置当前请求 ID，后续日志会附带 [rid:xxx]"""
-        Logger._ensure_ctx()
-        Logger._request_id_ctx.set(rid)
+        _request_id_ctx.set(rid)
 
     @staticmethod
     def clear_request_id():
         """清除当前请求 ID（请求结束时调用）"""
-        Logger._ensure_ctx()
-        Logger._request_id_ctx.set(None)
+        _request_id_ctx.set(None)
 
     @staticmethod
     def _format_msg(txt):
-        Logger._ensure_ctx()
-        rid = Logger._request_id_ctx.get()
+        rid = _request_id_ctx.get()
         if rid:
             return f'[rid:{rid}] {txt}'
         return txt

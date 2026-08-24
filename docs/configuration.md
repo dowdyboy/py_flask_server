@@ -49,7 +49,7 @@
 | `LOG_MAX_BYTES` | `10485760` | 日志单文件最大字节数（默认 10MB） |
 | `LOG_BACKUP_COUNT` | `5` | 保留的历史日志文件数 |
 | `LOG_TO_CONSOLE` | _随 APP_ENV_ | 是否输出日志到控制台 |
-| `LOG_FILE_PATH` | `server.log` | 日志文件路径（默认项目根 `server.log`）；设为空字符串则禁用文件日志（仅控制台）。测试场景建议设空，避免测试运行污染日志。目录不存在时自动创建；创建失败（权限不足等）降级为控制台日志并告警，不影响启动 |
+| `LOG_FILE_PATH` | _未设置_ | 日志文件路径。**未设置（`.env.example` 中默认注释）或设为空字符串时仅控制台日志、不写文件**（容器/Docker logs 场景推荐）；设为非空路径则写文件（如项目根 `server.log`，按 `LOG_MAX_BYTES` 轮转）。测试场景建议保持未设置/置空，避免测试运行污染日志。目录不存在时自动创建；创建失败（权限不足等）降级为控制台日志并告警，不影响启动 |
 | `DEBUG_SQL` | `false` | 是否打印 SQL 语句（开发调试用） |
 | `SQLALCHEMY_URI` | _无_ | SQLAlchemy 数据库 URI |
 | `SQLITE_DB_PATH` | _无_ | SQLite 数据库文件路径 |
@@ -113,4 +113,5 @@ redis, python-dotenv, prometheus-client
 可选：`Flask-SocketIO` + `simple-websocket`（WebSocket）、`eventlet`（eventlet 模式）、
 `gunicorn`（Linux 生产多进程）。
 
-> 日志写入 `server.log`（按 `LOG_MAX_BYTES` 轮转）；文件存储于 `storage/` 目录。
+> 配置 `LOG_FILE_PATH`（非空）时日志写入对应文件（按 `LOG_MAX_BYTES` 轮转）；
+> 未配置时仅控制台输出（容器场景由 Docker logs 采集）。文件存储于 `storage/` 目录。

@@ -166,6 +166,35 @@ def test_check_production_config_no_memory_auth_warning_when_disabled(monkeypatc
     assert check_production_config() == []
 
 
+def test_check_production_config_worker_num_param(monkeypatch):
+    """显式传入 worker_num 时以其为准：worker_num=4 + 无 Redis → 多 worker 告警"""
+    monkeypatch.setattr(config, 'app_env', 'production')
+    monkeypatch.setattr(config, 'secret_key_is_default', False)
+    monkeypatch.setattr(config, 'cors_origins', ['https://app.example.com'])
+    monkeypatch.setattr(config, 'debug', False)
+    monkeypatch.setattr(config, 'host', '0.0.0.0')
+    monkeypatch.setattr(config, 'redis_url', None)
+    monkeypatch.setattr(config, 'log_to_file', False)
+    monkeypatch.setattr(config, 'auth_enabled', False)
+    monkeypatch.delenv('WORKER_NUM', raising=False)
+    warnings = check_production_config(worker_num=4)
+    assert any('REDIS_URL' in w for w in warnings)
+
+
+def test_check_production_config_worker_num_single_no_warnings(monkeypatch):
+    """显式传入 worker_num=1（waitress 单进程）时不触发多 worker 告警"""
+    monkeypatch.setattr(config, 'app_env', 'production')
+    monkeypatch.setattr(config, 'secret_key_is_default', False)
+    monkeypatch.setattr(config, 'cors_origins', ['https://app.example.com'])
+    monkeypatch.setattr(config, 'debug', False)
+    monkeypatch.setattr(config, 'host', '0.0.0.0')
+    monkeypatch.setattr(config, 'redis_url', 'redis://localhost:6379/0')
+    monkeypatch.setattr(config, 'log_to_file', True)
+    monkeypatch.setattr(config, 'auth_enabled', False)
+    monkeypatch.delenv('WORKER_NUM', raising=False)
+    assert check_production_config(worker_num=1) == []
+
+
 def test_print_startup_banner_outputs(capsys, monkeypatch):
     """print_startup_banner 打印 banner 行"""
     monkeypatch.setattr(config, 'app_env', 'development')

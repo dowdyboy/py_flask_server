@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **banner 多 worker 判定与 gunicorn 默认对齐**：`check_production_config` /
+  `print_startup_banner` 新增 `worker_num` 参数，gunicorn 入口（`wsgi_gunicorn.py`）
+  传入实际 worker 数（未设 `WORKER_NUM` 时默认 4），使 Redis/token/TCP/日志的多
+  worker 告警在默认配置下也能触发；waitress（wsgi.py）单进程不误报
+- **Logger request_id 上下文线程安全**：`_request_id_ctx` 改为模块级创建
+  `ContextVar`，移除惰性 `_ensure_ctx` 的并发竞态（多线程首个请求窗口个别日志
+  rid 关联错位）
+- **文档事实修正**：`LOG_FILE_PATH` 说明改为"未设置/为空时仅控制台、不写文件"
+  （此前文档称默认写 `server.log`，与代码行为不符）；测试用例数 422→424、
+  覆盖率更新为实测 91.77%
+
 ## [0.4.0] - 2026-08-13
 
 ### 修复

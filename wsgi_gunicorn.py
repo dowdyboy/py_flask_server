@@ -78,7 +78,9 @@ def run():
             return self.application
 
     options = _build_options()
-    print_startup_banner()
+    # 传入实际 worker 数：banner 的多 worker 自检（Redis/token/TCP/日志）与 gunicorn
+    # 默认（未设 WORKER_NUM 时为 4）保持一致，未显式配置时也能触发告警
+    print_startup_banner(worker_num=options['workers'])
     print(f'[gunicorn] starting on {options["bind"]} '
           f'workers={options["workers"]} worker_class={options["worker_class"]}')
     StandaloneApplication(app, options).run()
