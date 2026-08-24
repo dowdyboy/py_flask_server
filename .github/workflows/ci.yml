@@ -133,7 +133,7 @@ jobs:
       - name: Build image
         run: docker build -t flask-server:ci .
       - name: Show image size
-        run: docker images flask-server:ci --format "image size: {{ '{{' }}.Size{{ '}}' }}"
+        run: "docker images flask-server:ci --format 'image size: {{.Size}}'"
       - name: Verify image boots
         run: |
           docker run -d --name flask-server-smoke -p 5000:5000 flask-server:ci
