@@ -63,6 +63,13 @@ def check_production_config(worker_num=None):
         warnings.append('AUTH_ENABLED=true 且 AUTH_STORE=memory：用户表为进程内，多 worker 下'
                         '注册/登录数据不一致（A worker 注册的用户在 B worker 登录失败），'
                         '建议 AUTH_STORE=sqlalchemy 持久化用户数据')
+    if config.auth_enabled and not config.rate_limit_enabled:
+        # 防爆破锁定是按 (用户名, IP) 隔离的（避免他人故意打错密码锁死账号），
+        # 代价是单个 IP 可以换着用户名试探、每个用户名白试 N 次——没有全局限流时
+        # 撞库只受 PBKDF2 的 CPU 成本约束。此处提示补上限流或前置 WAF。
+        warnings.append('AUTH_ENABLED=true 但 RATE_LIMIT_ENABLED=false：登录接口没有全局限流'
+                        '（防爆破锁定按 用户名+IP 隔离，单个 IP 仍可轮换用户名试探），'
+                        '建议开启 RATE_LIMIT_ENABLED 或在前置网关做限流')
     if _multi_worker(worker_num) and (config.tcp_enabled or config.udp_enabled):
         warnings.append('TCP/UDP 协议服务器每进程绑定同一端口：多 worker 部署会端口冲突，'
                         '请设置 WORKER_NUM=1 或将协议服务器独立进程部署')

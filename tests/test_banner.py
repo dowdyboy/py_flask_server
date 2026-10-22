@@ -166,6 +166,40 @@ def test_check_production_config_no_memory_auth_warning_when_disabled(monkeypatc
     assert check_production_config() == []
 
 
+def test_check_production_config_warns_auth_without_rate_limit(monkeypatch):
+    """AUTH_ENABLED=true 但未开限流：登录没有全局限流（锁定按用户名+IP 隔离，可轮换试探）"""
+    monkeypatch.setattr(config, 'app_env', 'production')
+    monkeypatch.setattr(config, 'secret_key_is_default', False)
+    monkeypatch.setattr(config, 'cors_origins', ['https://app.example.com'])
+    monkeypatch.setattr(config, 'debug', False)
+    monkeypatch.setattr(config, 'host', '0.0.0.0')
+    monkeypatch.setattr(config, 'redis_url', 'redis://localhost:6379/0')
+    monkeypatch.setattr(config, 'log_to_file', False)
+    monkeypatch.setattr(config, 'auth_enabled', True)
+    monkeypatch.setattr(config, 'auth_store', 'sqlalchemy')
+    monkeypatch.setattr(config, 'rate_limit_enabled', False)
+    warnings = check_production_config()
+    assert any('RATE_LIMIT_ENABLED' in w for w in warnings)
+
+    # 开启限流后不再告警
+    monkeypatch.setattr(config, 'rate_limit_enabled', True)
+    assert not any('RATE_LIMIT_ENABLED' in w for w in check_production_config())
+
+
+def test_check_production_config_no_rate_limit_warning_when_auth_disabled(monkeypatch):
+    """AUTH_ENABLED=false（默认）时不产生限流告警"""
+    monkeypatch.setattr(config, 'app_env', 'production')
+    monkeypatch.setattr(config, 'secret_key_is_default', False)
+    monkeypatch.setattr(config, 'cors_origins', ['https://app.example.com'])
+    monkeypatch.setattr(config, 'debug', False)
+    monkeypatch.setattr(config, 'host', '0.0.0.0')
+    monkeypatch.setattr(config, 'redis_url', 'redis://localhost:6379/0')
+    monkeypatch.setattr(config, 'log_to_file', False)
+    monkeypatch.setattr(config, 'auth_enabled', False)
+    monkeypatch.setattr(config, 'rate_limit_enabled', False)
+    assert check_production_config() == []
+
+
 def test_check_production_config_worker_num_param(monkeypatch):
     """显式传入 worker_num 时以其为准：worker_num=4 + 无 Redis → 多 worker 告警"""
     monkeypatch.setattr(config, 'app_env', 'production')
