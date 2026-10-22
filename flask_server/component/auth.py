@@ -34,12 +34,39 @@ _TOKEN_KEY_PREFIX = 'auth:token:'
 _REFRESH_TOKEN_KEY_PREFIX = 'auth:refresh:'
 _LOGIN_FAIL_KEY_PREFIX = 'auth:login_fail:'
 _LOGIN_LOCK_KEY_PREFIX = 'auth:login_lock:'
+_LOGIN_FAIL_GLOBAL_PREFIX = 'auth:login_fail_global:'
+
+# 同一用户名跨 IP 的失败总数达到该值即告警（只观测不阻断）：
+# 按 (用户名, IP) 锁定可防止单点把账号锁死，但分布式撞库仍会绕过单 IP 阈值，
+# 这里给出可观测信号，真正的拦截交给限流/WAF
+_GLOBAL_FAIL_WARN_THRESHOLD = 50
 
 # 时序均衡：用户不存在时也执行一次 PBKDF2 校验（虚拟哈希），
 # 消除"用户名是否存在"的可观测时序差（防用户名枚举）
 _DUMMY_PASSWORD_HASH = DataEncryptUtil.pbkdf2_hmac(
-    'dummy-timing-equalizer', salt='0' * 32, iterations=100000,
+    'dummy-timing-equalizer', salt='0' * 32,
 )
+
+
+def _client_ip():
+    """当前请求的来源 IP（无请求上下文时返回 'unknown'）。
+
+    用于把登录失败计数/锁定按 (用户名, IP) 隔离：
+    若只按用户名计数，攻击者遍历已知用户名各打 N 次错误密码即可把账号逐个锁死
+    （锁定型 DoS）——受害者在自己 IP 上也会被 429 拒绝。
+    """
+    from flask import has_request_context
+    if not has_request_context():
+        return 'unknown'
+    return CommonUtil.get_real_ip(request, config.trusted_proxies) or 'unknown'
+
+
+def _login_fail_key(username, client_ip):
+    return f'{_LOGIN_FAIL_KEY_PREFIX}{username}:{client_ip}'
+
+
+def _login_lock_key(username, client_ip):
+    return f'{_LOGIN_LOCK_KEY_PREFIX}{username}:{client_ip}'
 
 
 def _token_cache():
@@ -235,55 +262,70 @@ class AuthService:
         return uid
 
     @classmethod
-    def _is_login_locked(cls, username):
-        """是否处于登录锁定状态（连续失败达阈值）"""
-        lock_until = _cache_get(f'{_LOGIN_LOCK_KEY_PREFIX}{username}')
+    def _is_login_locked(cls, username, client_ip):
+        """该 (用户名, IP) 是否处于登录锁定状态（连续失败达阈值）"""
+        lock_key = _login_lock_key(username, client_ip)
+        lock_until = _cache_get(lock_key)
         if lock_until is None:
             return False
         if time.time() < lock_until:
             return True
         # 锁定已过期，清除
-        _cache_delete(f'{_LOGIN_LOCK_KEY_PREFIX}{username}')
+        _cache_delete(lock_key)
         return False
 
     @classmethod
-    def _record_login_fail(cls, username):
-        """记录一次登录失败（原子自增，incr 已持久化并带 TTL），达阈值则锁定"""
-        fail_key = f'{_LOGIN_FAIL_KEY_PREFIX}{username}'
+    def _record_login_fail(cls, username, client_ip):
+        """记录一次登录失败（原子自增，incr 已持久化并带 TTL），达阈值则锁定该 (user, ip)"""
+        fail_key = _login_fail_key(username, client_ip)
         count = _cache_incr(fail_key, ttl=config.auth_login_lock_seconds)
         if count is None:
             count = 0   # 缓存不可用（不应发生）：跳过计数，不阻塞登录流程
+        # 全局（跨 IP）失败计数：仅用于观测分布式撞库，不参与阻断
+        global_count = _cache_incr(f'{_LOGIN_FAIL_GLOBAL_PREFIX}{username}',
+                                   ttl=config.auth_login_lock_seconds)
+        if global_count is not None and global_count == _GLOBAL_FAIL_WARN_THRESHOLD:
+            Logger.warn(f'AuthService: {username} accumulated {global_count} login failures '
+                        f'across different IPs in {config.auth_login_lock_seconds}s '
+                        '(possible distributed brute force; check RATE_LIMIT/WAF)')
         if count >= config.auth_login_max_fails:
-            _cache_set(f'{_LOGIN_LOCK_KEY_PREFIX}{username}',
+            _cache_set(_login_lock_key(username, client_ip),
                        time.time() + config.auth_login_lock_seconds,
                        ttl=config.auth_login_lock_seconds)
             _cache_delete(fail_key)
 
     @classmethod
-    def _clear_login_fail(cls, username):
-        _cache_delete(f'{_LOGIN_FAIL_KEY_PREFIX}{username}')
+    def _clear_login_fail(cls, username, client_ip):
+        _cache_delete(_login_fail_key(username, client_ip))
 
     @classmethod
-    def login(cls, username, password):
+    def login(cls, username, password, client_ip=None):
         """校验用户名密码，成功返回 (access_token, refresh_token)，失败返回 None。
 
-        防爆破：连续失败 AUTH_LOGIN_MAX_FAILS 次后锁定 AUTH_LOGIN_LOCK_SECONDS 秒，
-        锁定期间即使密码正确也拒绝。
+        防爆破：同一 (用户名, 来源 IP) 连续失败 AUTH_LOGIN_MAX_FAILS 次后锁定
+        AUTH_LOGIN_LOCK_SECONDS 秒，锁定期间即使密码正确也拒绝。
+        按 IP 隔离是为了避免"攻击者故意打错密码把受害者账号锁死"（锁定型 DoS）。
+
+        Args:
+            username (str): 用户名
+            password (str): 明文密码
+            client_ip (str, optional): 来源 IP。为 None 时从当前请求上下文取
         """
-        if cls._is_login_locked(username):
-            Logger.warn(f'AuthService login blocked (locked): {username}')
+        client_ip = client_ip or _client_ip()
+        if cls._is_login_locked(username, client_ip):
+            Logger.warn(f'AuthService login blocked (locked): {username} ip={client_ip}')
             return None, 'locked'
         store = cls._get_store()
         user = store.get_by_username(username)
         if user is None:
             # 时序均衡：用户不存在也执行等价 PBKDF2 校验（防用户名枚举时序侧信道）
             DataEncryptUtil.verify_pbkdf2(password, _DUMMY_PASSWORD_HASH)
-            cls._record_login_fail(username)
+            cls._record_login_fail(username, client_ip)
             return None, 'invalid'
         if not DataEncryptUtil.verify_pbkdf2(password, user.passwd):
-            cls._record_login_fail(username)
+            cls._record_login_fail(username, client_ip)
             return None, 'invalid'
-        cls._clear_login_fail(username)
+        cls._clear_login_fail(username, client_ip)
         access = RandomGenerator.secrets_token(32)
         refresh = RandomGenerator.secrets_token(32)
         _cache_set(f'{_TOKEN_KEY_PREFIX}{access}', user.uid, ttl=config.auth_token_ttl)
@@ -299,6 +341,11 @@ class AuthService:
         # 原子读取并删除（GETDEL）：并发使用同一 refresh_token 时仅一次成功
         uid = _cache_getdel(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
         if uid is None:
+            return None
+        # 用户已被删除（或存储被重置）时不再签发新令牌：否则调用方按 uid 查库得到 None，
+        # 会在取 user.uid 时抛 AttributeError → 500（历史缺陷）
+        if cls.get_user_by_uid(uid) is None:
+            Logger.warn(f'AuthService refresh rejected: uid={uid} no longer exists')
             return None
         access = RandomGenerator.secrets_token(32)
         new_refresh = RandomGenerator.secrets_token(32)

@@ -152,20 +152,45 @@ class CommonUtil:
 
         Returns:
             str: 客户端的真实IP地址
+
+        X-Forwarded-For 解析规则（从右往左，跳过可信代理）：
+            主流反向代理（nginx `$proxy_add_x_forwarded_for`、Traefik 等）采用**追加**
+            语义，头形如 `客户端伪造值, ..., 上游代理逐跳追加`。因此**最右项**才是最近
+            一跳代理真正看到的地址，**最左项由客户端提供、可任意伪造**。
+            历史实现取最左非空项，攻击者每个请求换一个假 XFF 即可绕过基于 IP 的限流、
+            污染审计日志；现改为从右向左取第一个"非可信代理且为合法 IP"的条目。
+            （仅当 XFF 全部为可信代理时回退到最左项；解析不出合法 IP 时回退 remote_addr）
         """
         if trusted_proxies is None:
             from ..config import config
             trusted_proxies = config.trusted_proxies
-        # 仅当请求确实来自可信代理时，才信任 X-Forwarded-For（取第一个非空条目，
-        # 防 `, 1.2.3.4` 这类空首项把 IP 归一为空串）
-        if _is_trusted_addr(request.remote_addr, trusted_proxies) and 'X-Forwarded-For' in request.headers:
-            xff = request.headers.get('X-Forwarded-For')
-            user_ip = next((p.strip() for p in xff.split(',') if p.strip()), None)
-            if user_ip is None:
-                user_ip = request.remote_addr
-        else:
-            user_ip = request.remote_addr
-        return user_ip
+        if not _is_trusted_addr(request.remote_addr, trusted_proxies) \
+                or 'X-Forwarded-For' not in request.headers:
+            return request.remote_addr
+        xff = request.headers.get('X-Forwarded-For') or ''
+        hops = [p.strip() for p in xff.split(',') if p.strip()]
+        if not hops:
+            return request.remote_addr
+        for hop in reversed(hops):
+            if _is_trusted_addr(hop, trusted_proxies):
+                continue   # 内层可信代理追加的条目，继续向左找真实客户端
+            if _is_ip_literal(hop):
+                return hop
+            # 非法 IP 字面量（脚本/扫描器注入的垃圾值）：跳过，不参与判定
+        # XFF 全部为可信代理（纯内网多级代理）或全部非法：回退最左/remote_addr
+        return hops[0] if all(_is_trusted_addr(h, trusted_proxies) for h in hops) else request.remote_addr
+
+
+def _is_ip_literal(value) -> bool:
+    """是否为合法的 IP 字面量（IPv4/IPv6）；用于过滤 X-Forwarded-For 中的垃圾值"""
+    if not value:
+        return False
+    import ipaddress
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
 
 
 def _is_trusted_addr(remote_addr, trusted_proxies) -> bool:

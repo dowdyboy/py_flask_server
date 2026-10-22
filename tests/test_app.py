@@ -135,6 +135,70 @@ def test_security_headers_csp_docs_vs_others(client):
     assert 'cdn.jsdelivr.net' in docs_csp
 
 
+def test_docs_csp_allows_stylesheet_from_swagger_cdn(client):
+    """P1 回归：Swagger UI 的 CSS 也来自 SWAGGER_UI_URL，style-src 必须放行该来源。
+
+    修复前 docs CSP 的 style-src 只有 'self' 'unsafe-inline'，导致 swagger-ui.css
+    被浏览器拦截 → /docs 无样式。
+    """
+    docs_csp = client.get('/docs').headers.get('Content-Security-Policy')
+    style_part = docs_csp.split('style-src')[1].split(';')[0]
+    assert 'cdn.jsdelivr.net' in style_part, f'style-src 未放行 CDN: {style_part}'
+
+
+def test_docs_csp_follows_custom_swagger_ui_url(client, monkeypatch):
+    """按文档把 SWAGGER_UI_URL 指向内网镜像后，CSP 应跟随放行（否则 /docs 白屏）"""
+    from flask_server import config
+    monkeypatch.setattr(config, 'swagger_ui_url', 'https://docs.internal.corp/swagger-ui-dist/')
+    docs_csp = client.get('/docs').headers.get('Content-Security-Policy')
+    assert 'https://docs.internal.corp' in docs_csp
+    assert 'cdn.jsdelivr.net' not in docs_csp
+    # 来源只取 scheme://host，不带路径（CSP 不接受带路径的来源）
+    assert '/swagger-ui-dist/' not in docs_csp
+
+
+def test_strict_csp_has_no_remote_origin(client, monkeypatch):
+    """非 /docs 路径保持收紧（不因自定义 Swagger 来源而放宽）"""
+    from flask_server import config
+    monkeypatch.setattr(config, 'swagger_ui_url', 'https://docs.internal.corp/')
+    csp = client.get('/hello').headers.get('Content-Security-Policy')
+    assert 'docs.internal.corp' not in csp
+    assert "script-src 'self'" in csp
+
+
+def test_swagger_origin_parsing(monkeypatch):
+    """_swagger_origin：只接受 http(s) 绝对地址，非法/相对路径返回空串"""
+    from flask_server.app import _swagger_origin
+
+    assert _swagger_origin('https://cdn.jsdelivr.net/npm/swagger-ui-dist/') == 'https://cdn.jsdelivr.net'
+    assert _swagger_origin('http://127.0.0.1:8080/swagger/') == 'http://127.0.0.1:8080'
+    assert _swagger_origin('') == ''
+    assert _swagger_origin('/local/swagger/') == ''
+    assert _swagger_origin('javascript:alert(1)') == ''
+
+
+def test_hsts_disabled_by_default(client):
+    """HSTS 默认关闭（HTTP 场景无意义，避免误伤本地开发）"""
+    assert client.get('/hello').headers.get('Strict-Transport-Security') is None
+
+
+def test_hsts_header_when_enabled(client, monkeypatch):
+    """HSTS_ENABLED=true 时注入 Strict-Transport-Security"""
+    from flask_server import config
+    monkeypatch.setattr(config, 'hsts_enabled', True)
+    monkeypatch.setattr(config, 'hsts_max_age', 600)
+    hsts = client.get('/hello').headers.get('Strict-Transport-Security')
+    assert hsts == 'max-age=600; includeSubDomains'
+
+
+def test_hsts_respects_security_headers_switch(client, monkeypatch):
+    """SECURITY_HEADERS_ENABLED=false 时 HSTS 也不注入（统一开关）"""
+    from flask_server import config
+    monkeypatch.setattr(config, 'hsts_enabled', True)
+    monkeypatch.setattr(config, 'security_headers_enabled', False)
+    assert client.get('/hello').headers.get('Strict-Transport-Security') is None
+
+
 def test_internal_error_500(client, monkeypatch):
     """未捕获异常 → 500 + 统一 GraceResult 格式"""
     from flask_server import app

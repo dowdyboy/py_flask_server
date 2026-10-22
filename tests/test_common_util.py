@@ -119,9 +119,43 @@ class _FakeReq:
 
 
 def test_get_real_ip_forwarded_from_trusted_proxy():
-    """来自可信代理时信任 X-Forwarded-For"""
+    """来自可信代理时，取**最右**（最近一跳代理追加的）地址作为真实客户端。
+
+    反向代理采用追加语义（nginx `$proxy_add_x_forwarded_for`），最左项由客户端提供、
+    可任意伪造；若取最左项，攻击者每次换一个假 XFF 即可绕过基于 IP 的限流。
+    """
     req = _FakeReq(_FakeHeaders({'X-Forwarded-For': '1.2.3.4, 5.6.7.8'}), remote_addr='127.0.0.1')
-    assert CommonUtil.get_real_ip(req) == '1.2.3.4'
+    assert CommonUtil.get_real_ip(req) == '5.6.7.8'
+
+
+def test_get_real_ip_ignores_client_supplied_xff():
+    """客户端伪造的 XFF 首项不应被采信（代理追加真实客户端地址在右侧）"""
+    req = _FakeReq(
+        _FakeHeaders({'X-Forwarded-For': '6.6.6.6, 7.7.7.7, 8.8.4.4'}),
+        remote_addr='127.0.0.1',
+    )
+    assert CommonUtil.get_real_ip(req) == '8.8.4.4'
+
+
+def test_get_real_ip_skips_trusted_hops_from_right():
+    """多级可信代理：从右向左跳过可信代理，返回第一个非可信地址"""
+    req = _FakeReq(
+        _FakeHeaders({'X-Forwarded-For': '1.2.3.4, 172.18.0.5, 127.0.0.1'}),
+        remote_addr='127.0.0.1',
+    )
+    assert CommonUtil.get_real_ip(req, ['127.0.0.1', '172.16.0.0/12']) == '1.2.3.4'
+
+
+def test_get_real_ip_all_hops_trusted_falls_back_to_leftmost():
+    """XFF 全部为可信代理（纯内网链路）时回退最左项，仍返回合法地址"""
+    req = _FakeReq(_FakeHeaders({'X-Forwarded-For': '127.0.0.1, 172.18.0.5'}), remote_addr='127.0.0.1')
+    assert CommonUtil.get_real_ip(req, ['127.0.0.1', '172.16.0.0/12']) == '127.0.0.1'
+
+
+def test_get_real_ip_garbage_xff_falls_back_to_remote():
+    """XFF 全是非法字面量（扫描器注入垃圾）时回退 remote_addr，不返回垃圾值"""
+    req = _FakeReq(_FakeHeaders({'X-Forwarded-For': 'not-an-ip, <script>'}), remote_addr='127.0.0.1')
+    assert CommonUtil.get_real_ip(req) == '127.0.0.1'
 
 
 def test_get_real_ip_forwarded_ignored_from_untrusted():

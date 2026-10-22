@@ -221,6 +221,84 @@ def test_parse_bytes_env_empty_falls_back(monkeypatch, capsys):
     assert 'TCP_FRAME_SEPARATOR' in capsys.readouterr().out
 
 
+def test_parse_bytes_env_empty_optional_not_warns(monkeypatch, capsys):
+    """P2 回归：.env.example 中 TCP_FRAME_HEAD/TAIL 默认留空，属"未配置"不告警。
+
+    修复前每次启动都会打印两条 [Config WARNING]（稀释真正的配置告警）。
+    """
+    monkeypatch.setenv('TCP_FRAME_HEAD', '')
+    monkeypatch.setenv('TCP_FRAME_TAIL', '')
+    cfg = config_module.Config()
+    assert cfg.tcp_frame_head == b''
+    assert cfg.tcp_frame_tail == b''
+    assert 'TCP_FRAME_HEAD' not in capsys.readouterr().out
+
+
+def test_parse_bytes_env_invalid_escape_still_warns(monkeypatch, capsys):
+    """非法转义（非空值）仍必须告警，不能因为可选配置就静默"""
+    monkeypatch.setenv('TCP_FRAME_HEAD', r'\xZZ')
+    cfg = config_module.Config()
+    assert cfg.tcp_frame_head == b''
+    assert 'TCP_FRAME_HEAD' in capsys.readouterr().out
+
+
+def test_tcp_idle_timeout_default_and_custom(monkeypatch):
+    """空闲超时默认 300s（防慢连接耗尽）；可配置，≤0 表示不设超时"""
+    monkeypatch.delenv('TCP_IDLE_TIMEOUT', raising=False)
+    assert config_module.Config().tcp_idle_timeout == 300
+    monkeypatch.setenv('TCP_IDLE_TIMEOUT', '0')
+    assert config_module.Config().tcp_idle_timeout == 0
+
+
+def test_auth_pbkdf2_iterations_default(monkeypatch):
+    """密码哈希迭代次数默认 600000（对齐 OWASP 建议）"""
+    monkeypatch.delenv('AUTH_PBKDF2_ITERATIONS', raising=False)
+    assert config_module.Config().auth_pbkdf2_iterations == 600000
+
+
+def test_auth_pbkdf2_iterations_too_low_falls_back(monkeypatch, capsys):
+    """迭代次数过低（<10000）告警并回退默认，避免误配弱化密码强度"""
+    monkeypatch.setenv('AUTH_PBKDF2_ITERATIONS', '100')
+    cfg = config_module.Config()
+    assert cfg.auth_pbkdf2_iterations == 600000
+    assert 'AUTH_PBKDF2_ITERATIONS' in capsys.readouterr().out
+
+
+def test_snowflake_datacenter_id(monkeypatch, capsys):
+    """SNOWFLAKE_DATACENTER_ID：合法值生效，越界回退 1 并告警"""
+    monkeypatch.setenv('SNOWFLAKE_DATACENTER_ID', '5')
+    assert config_module.Config().snowflake_datacenter_id == 5
+    monkeypatch.setenv('SNOWFLAKE_DATACENTER_ID', '99')
+    assert config_module.Config().snowflake_datacenter_id == 1
+    assert 'SNOWFLAKE_DATACENTER_ID' in capsys.readouterr().out
+    monkeypatch.delenv('SNOWFLAKE_DATACENTER_ID', raising=False)
+    assert config_module.Config().snowflake_datacenter_id == 1
+
+
+def test_hsts_config(monkeypatch, capsys):
+    """HSTS 默认关闭；显式开启后可配置 max-age，负数告警回退"""
+    monkeypatch.delenv('HSTS_ENABLED', raising=False)
+    assert config_module.Config().hsts_enabled is False
+    monkeypatch.setenv('HSTS_ENABLED', 'true')
+    monkeypatch.setenv('HSTS_MAX_AGE', '600')
+    cfg = config_module.Config()
+    assert cfg.hsts_enabled is True
+    assert cfg.hsts_max_age == 600
+    monkeypatch.setenv('HSTS_MAX_AGE', '-1')
+    assert config_module.Config().hsts_max_age == 31536000
+    assert 'HSTS_MAX_AGE' in capsys.readouterr().out
+
+
+def test_metrics_multiprocess_dir(monkeypatch):
+    """PROMETHEUS_MULTIPROC_DIR 为空视为未配置"""
+    monkeypatch.delenv('PROMETHEUS_MULTIPROC_DIR', raising=False)
+    assert config_module.Config().metrics_multiprocess_dir is None
+    monkeypatch.setenv('PROMETHEUS_MULTIPROC_DIR', '')
+    assert config_module.Config().metrics_multiprocess_dir is None
+    monkeypatch.setenv('PROMETHEUS_MULTIPROC_DIR', '/tmp/prom')
+    assert config_module.Config().metrics_multiprocess_dir == '/tmp/prom'
+
+
 def test_tcp_framing_fixed_and_head_tail_accepted(monkeypatch):
     """fixed / head_tail 为合法 TCP_FRAMING 值"""
     monkeypatch.setenv('TCP_FRAMING', 'fixed')

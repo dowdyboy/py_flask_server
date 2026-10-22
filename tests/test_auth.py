@@ -19,8 +19,10 @@ def fresh_store():
 def _clear_auth_cache():
     """清空内存缓存中的认证相关键（sqlalchemy 存储测试直接调用 login 会残留 token）"""
     from flask_server.module import memory_cache
+    prefixes = ('auth:token:', 'auth:refresh:', 'auth:login_fail:',
+                'auth:login_lock:', 'auth:login_fail_global:')
     for k in list(memory_cache.cache.keys()):
-        if k.startswith(('auth:token:', 'auth:refresh:', 'auth:login_fail:', 'auth:login_lock:')):
+        if k.startswith(prefixes):
             memory_cache.delete(k)
 
 
@@ -254,6 +256,35 @@ def test_login_success_clears_fail_count(client, fresh_store, monkeypatch):
     assert r.status_code == 200
 
 
+def test_login_lock_isolated_by_client_ip(client, fresh_store, monkeypatch):
+    """锁定型 DoS 防护：他人从别的 IP 打错密码，不应锁死受害者的账号。
+
+    测试客户端 remote_addr=127.0.0.1 属于 TRUSTED_PROXIES，因此 X-Forwarded-For
+    会被采信为真实来源 IP，可模拟"攻击者 IP"与"受害者 IP"。
+    """
+    from flask_server import config
+    monkeypatch.setattr(config, 'auth_login_max_fails', 2)
+    monkeypatch.setattr(config, 'auth_login_lock_seconds', 60)
+    client.post('/api/v1/auth/register', json={'username': 'victim', 'password': 'secret123'})
+
+    attacker = {'X-Forwarded-For': '9.9.9.9'}
+    for _ in range(2):
+        r = client.post('/api/v1/auth/login',
+                        json={'username': 'victim', 'password': 'bad-pass'},
+                        headers=attacker)
+        assert r.status_code == 401
+    # 攻击者 IP 已被锁定
+    r = client.post('/api/v1/auth/login',
+                    json={'username': 'victim', 'password': 'secret123'}, headers=attacker)
+    assert r.status_code == 429
+    # 受害者从自己的 IP 登录：仍然成功（旧实现按用户名锁定 → 这里会被 429 锁死）
+    r = client.post('/api/v1/auth/login',
+                    json={'username': 'victim', 'password': 'secret123'},
+                    headers={'X-Forwarded-For': '8.8.8.8'})
+    assert r.status_code == 200
+    assert r.get_json()['code'] == 0
+
+
 def test_refresh_token_rotation(client, fresh_store):
     """refresh_token 换取新令牌：旧 refresh 作废（单次使用）"""
     client.post('/api/v1/auth/register', json={'username': 'kate', 'password': 'secret123'})
@@ -281,6 +312,78 @@ def test_refresh_invalid_token(client, fresh_store):
     r = client.post('/api/v1/auth/refresh', json={'refresh_token': 'invalid-token'})
     assert r.status_code == 401
     assert r.get_json()['code'] == 4002
+
+
+def test_refresh_after_user_deleted_returns_401_not_500(client, fresh_store):
+    """用户被删除后旧 refresh 仍有效：应返回 401，而非对 None 取属性导致 500"""
+    client.post('/api/v1/auth/register', json={'username': 'ghost', 'password': 'secret123'})
+    data = client.post('/api/v1/auth/login',
+                       json={'username': 'ghost', 'password': 'secret123'}).get_json()['data']
+    store = AuthService._get_store()
+    store._users.clear()
+    store._by_uid.clear()
+    r = client.post('/api/v1/auth/refresh', json={'refresh_token': data['refresh_token']})
+    assert r.status_code == 401
+    assert r.get_json()['code'] == 4002
+
+
+def test_refresh_revokes_token_when_user_vanished(client, fresh_store):
+    """被拒的 refresh 也应被消费（单次使用语义，不留下可重放的 token）"""
+    client.post('/api/v1/auth/register', json={'username': 'ghost2', 'password': 'secret123'})
+    rt = client.post('/api/v1/auth/login',
+                     json={'username': 'ghost2', 'password': 'secret123'}).get_json()['data']['refresh_token']
+    store = AuthService._get_store()
+    store._users.clear()
+    store._by_uid.clear()
+    client.post('/api/v1/auth/refresh', json={'refresh_token': rt})
+    # 重新注册同名用户：旧 refresh 已作废，不能用于新用户
+    client.post('/api/v1/auth/register', json={'username': 'ghost2', 'password': 'secret123'})
+    assert client.post('/api/v1/auth/refresh', json={'refresh_token': rt}).status_code == 401
+
+
+def test_username_charset_restricted(client, fresh_store):
+    """注册用户名字符集白名单：阻止换行注入（log forging）与缓存键歧义"""
+    r = client.post('/api/v1/auth/register',
+                    json={'username': 'evil\nuser', 'password': 'secret123'})
+    assert r.status_code == 422
+    r = client.post('/api/v1/auth/register',
+                    json={'username': 'evil:key', 'password': 'secret123'})
+    assert r.status_code == 422
+    # 合法字符集（字母数字 _ . @ -）仍可通过
+    assert client.post('/api/v1/auth/register',
+                       json={'username': 'ok.user-1@corp', 'password': 'secret123'}).status_code == 200
+    assert client.post('/api/v1/auth/login',
+                       json={'username': 'ok.user-1@corp',
+                             'password': 'secret123'}).status_code == 200
+
+
+def test_login_accepts_legacy_username_charset(client, fresh_store):
+    """存量用户名（中文/空格）不能被登录校验拒掉——白名单只约束新注册。
+
+    这是一次向后兼容性回归防护：若登录与注册共用严格白名单，升级后老用户
+    （AUTH_STORE=sqlalchemy 中的中文名/带空格用户名）会直接 422 登录失败。
+    """
+    from datetime import datetime
+
+    from flask_server.component.auth import AuthService, AuthUser
+    from flask_server.util import DataEncryptUtil
+
+    store = AuthService._get_store()
+    legacy = AuthUser('uid-legacy', '张 三', DataEncryptUtil.pbkdf2_hmac('secret123'), datetime.now())
+    store._users['张 三'] = legacy
+    store._by_uid['uid-legacy'] = legacy
+
+    r = client.post('/api/v1/auth/login', json={'username': '张 三', 'password': 'secret123'})
+    assert r.status_code == 200, r.get_json()
+    assert r.get_json()['data']['username'] == '张 三'
+
+
+def test_login_rejects_control_chars_in_username(client, fresh_store):
+    """登录仍必须挡住控制字符（日志行污染 / 缓存键注入面）"""
+    for bad in ('bad\nname', 'bad\rname', 'bad\x00name'):
+        r = client.post('/api/v1/auth/login',
+                        json={'username': bad, 'password': 'secret123'})
+        assert r.status_code == 422, f'{bad!r} 应被拒绝'
 
 
 @pytest.fixture

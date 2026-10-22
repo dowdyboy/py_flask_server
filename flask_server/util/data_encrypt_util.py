@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import os
 
 # 数据加密工具类
@@ -39,18 +40,23 @@ class DataEncryptUtil:
         return sha256_hash.hexdigest()
 
     @staticmethod
-    def pbkdf2_hmac(text, salt=None, iterations=100000):
+    def pbkdf2_hmac(text, salt=None, iterations=None):
         """
         使用PBKDF2-HMAC-SHA256派生密钥，适用于密码存储场景
 
         Args:
             text (str): 原始密码/文本
             salt (str, optional): 盐值。为None时自动生成16字节随机盐
-            iterations (int): 迭代次数，默认100000
+            iterations (int, optional): 迭代次数。为 None 时取配置
+                AUTH_PBKDF2_ITERATIONS（默认 600000，对齐 OWASP 2023 建议；
+                原默认 100000 偏低）。迭代次数会写入哈希串，历史哈希不受默认值变更影响。
 
         Returns:
             str: "salt$iterations$hash" 格式的字符串，salt 为16字节十六进制，hash 为64字节十六进制
         """
+        if iterations is None:
+            from ..config import config
+            iterations = config.auth_pbkdf2_iterations
         if salt is None:
             salt = os.urandom(16).hex()
         derived = hashlib.pbkdf2_hmac(
@@ -76,7 +82,9 @@ class DataEncryptUtil:
                 salt, iterations, hash_hex = parts
                 iterations = int(iterations)
             elif len(parts) == 2:
-                # 兼容旧格式 "salt$hash"（无 iterations，使用默认值）
+                # 兼容旧格式 "salt$hash"（无 iterations）：该格式由历史版本产生，
+                # 其隐含迭代次数固定为当时的默认值 100000——**不能**跟随当前默认值，
+                # 否则旧哈希全部校验失败（用户无法登录）
                 salt, hash_hex = parts
                 iterations = 100000
             else:
@@ -91,4 +99,5 @@ class DataEncryptUtil:
         derived = hashlib.pbkdf2_hmac(
             'sha256', text.encode('utf-8'), salt_bytes, iterations
         )
-        return derived.hex() == hash_hex
+        # 常量时间比较：避免按字节短路的 '==' 泄露"前缀匹配长度"的时序侧信道
+        return hmac.compare_digest(derived.hex(), hash_hex)

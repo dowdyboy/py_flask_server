@@ -26,6 +26,9 @@ for _key, _val in {
     'LOG_FILE_PATH': '',
     # 固定 DEBUG=true：禁用 health 依赖检查缓存等仅生产生效的逻辑，保证测试实时探测
     'DEBUG': 'true',
+    # 密码哈希迭代次数：生产默认 600000（OWASP 建议），测试降到 10000 以免
+    # 每次注册/登录都耗 ~0.2s CPU；哈希串自带迭代次数，不影响正确性断言
+    'AUTH_PBKDF2_ITERATIONS': '10000',
 }.items():
     os.environ.setdefault(_key, _val)
 

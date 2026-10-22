@@ -1,7 +1,8 @@
 from flask.views import MethodView
 from flask import request
 from flask_smorest import Blueprint
-from flask_server.util import GraceResult, CommonUtil
+from flask_server import config
+from flask_server.util import GraceResult, CommonUtil, Logger
 from flask_server.schema import GraceResultSchema
 from flask_server.schema.auth_schema import (
     AuthRegisterSchema, AuthLoginSchema, AuthRefreshSchema,
@@ -34,13 +35,22 @@ class LoginView(MethodView):
     @blp.response(200, GraceResultSchema)
     def post(self, data):
         """登录，返回 access token + refresh token"""
-        tokens, err = AuthService.login(data['username'], data['password'])
+        # 传入真实来源 IP：防爆破锁定按 (用户名, IP) 隔离，避免他人故意打错密码
+        # 把受害者账号锁死（锁定型 DoS）
+        tokens, err = AuthService.login(
+            data['username'], data['password'],
+            client_ip=CommonUtil.get_real_ip(request, config.trusted_proxies),
+        )
         if err == 'locked':
             return GraceResult.business_error(4003, '失败次数过多，请稍后再试'), 429
         if tokens is None:
             return GraceResult.business_error(4001, '用户名或密码错误'), 401
         access, refresh = tokens
         user = AuthService.get_user_by_token(access)
+        if user is None:
+            # 令牌刚写入却读不出来（缓存降级/写入失败）：不能对 None 取属性 → 500
+            Logger.error(f'login succeeded but session unreadable for username={data["username"]}')
+            return GraceResult.business_error(4002, '会话不可用，请重试'), 503
         return GraceResult.ok({
             'token': access,
             'refresh_token': refresh,
@@ -60,6 +70,9 @@ class RefreshView(MethodView):
             return GraceResult.business_error(4002, 'refresh_token 无效或已过期'), 401
         access, new_refresh = tokens
         user = AuthService.get_user_by_token(access)
+        if user is None:
+            # 用户已被删除/存储被重置：refresh_access_token 已拦截，这里兜底竞态
+            return GraceResult.business_error(4002, 'refresh_token 无效或已过期'), 401
         return GraceResult.ok({
             'token': access,
             'refresh_token': new_refresh,

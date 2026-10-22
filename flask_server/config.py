@@ -30,15 +30,21 @@ def _parse_worker_num(default: int = 1) -> int:
     return val
 
 
-def _parse_bytes_env(name: str, default: bytes) -> bytes:
+def _parse_bytes_env(name: str, default: bytes, warn_on_empty: bool = True) -> bytes:
     """安全解析字节串环境变量（支持转义写法：\\n / \\r\\n / \\xaa\\x55）。
 
     使用 latin-1 往返解码，保证 \\x80-\\xff 等二进制字节保持单字节不变
     （unicode_escape 会先把 \\xaa 解码为码点 U+00AA，再经 utf-8 编码会变成两字节）。
     空值或非法转义回退默认值并告警。
+
+    warn_on_empty=False 时，**空字符串**视为"未配置"静默取默认值（用于 TCP_FRAME_HEAD /
+    TCP_FRAME_TAIL 这类可选配置——.env.example 中它们默认留空，若按非法值告警，
+    每次启动都会打印两条无意义的 WARN，稀释真正的配置告警）；非法转义仍然告警。
     """
     raw = os.environ.get(name)
     if raw is None:
+        return default
+    if not raw.strip() and not warn_on_empty:
         return default
     try:
         value = raw.encode('latin-1').decode('unicode_escape').encode('latin-1')
@@ -103,9 +109,10 @@ class Config:
                   '(must be > 0), falling back to line framing')
             self.tcp_framing = 'line'
         # 帧头/帧尾（head_tail 模式）：支持二进制转义写法（如 \xaa\x55）；
+        # 空值属"未配置"（.env.example 留空），静默取默认值不告警；
         # 配置不完整（缺任一）告警并回退 line
-        self.tcp_frame_head = _parse_bytes_env('TCP_FRAME_HEAD', b'')
-        self.tcp_frame_tail = _parse_bytes_env('TCP_FRAME_TAIL', b'')
+        self.tcp_frame_head = _parse_bytes_env('TCP_FRAME_HEAD', b'', warn_on_empty=False)
+        self.tcp_frame_tail = _parse_bytes_env('TCP_FRAME_TAIL', b'', warn_on_empty=False)
         if self.tcp_framing == 'head_tail' and (not self.tcp_frame_head or not self.tcp_frame_tail):
             print('[Config WARNING] TCP_FRAME_HEAD / TCP_FRAME_TAIL must be set for '
                   'head_tail framing, falling back to line')
@@ -119,6 +126,11 @@ class Config:
             self.tcp_max_message_length = 64 * 1024
         # 每连接一线程：并发连接上限（超限拒绝新连接，防线程耗尽 DoS；≤0 表示不限制）
         self.tcp_max_connections = _parse_int('TCP_MAX_CONNECTIONS', 256)
+        # 空闲连接超时（秒）：连接建立后若在此时长内没有任何数据到达即关闭。
+        # 没有它时，攻击者建立 TCP_MAX_CONNECTIONS 个"只连不发"的空闲连接即可占满全部
+        # 槽位（正常客户端被 verify_request 拒绝）——典型的慢连接耗尽 DoS。
+        # ≤0 表示不设超时（长连接心跳场景可关闭）。
+        self.tcp_idle_timeout = _parse_int('TCP_IDLE_TIMEOUT', 300)
         # fixed 模式帧长与消息上限的语义提示（固定帧可以合法地大于消息上限，
         # 但若大于默认 64KB 大概率是配置失误，给出告警）
         if self.tcp_framing == 'fixed' and self.tcp_frame_length > self.tcp_max_message_length:
@@ -161,7 +173,14 @@ class Config:
         self.secret_key = os.environ.get('SECRET_KEY', self.default_secret_key)
         self.secret_key_is_default = (self.secret_key == self.default_secret_key)
         self.max_content_length = _parse_int('MAX_CONTENT_LENGTH', 16 * 1024 * 1024)   # 默认 16MB
-
+        # HSTS（Strict-Transport-Security）：默认关闭——HTTP 明文下浏览器会忽略该头，
+        # 本地开发/内网 HTTP 场景无需开启；置于 HTTPS 反向代理之后时建议开启
+        self.hsts_enabled = os.environ.get('HSTS_ENABLED', 'false').lower() in ('1', 'true', 'yes')
+        self.hsts_max_age = _parse_int('HSTS_MAX_AGE', 31536000)   # 默认 1 年
+        if self.hsts_max_age < 0:
+            print(f'[Config WARNING] HSTS_MAX_AGE={self.hsts_max_age!r} is invalid '
+                  '(must be >= 0), using default 31536000')
+            self.hsts_max_age = 31536000
         # logger配置
         # LOG_FILE_PATH：日志文件路径（默认项目根 server.log）；设为空字符串则禁用文件日志（仅控制台）
         _log_file_path = os.environ.get('LOG_FILE_PATH')
@@ -232,7 +251,9 @@ class Config:
                   'is invalid (must be > 0), using default 2592000')
             self.auth_refresh_token_ttl = 30 * 24 * 3600
         self.auth_store = os.environ.get('AUTH_STORE', 'memory')             # memory / sqlalchemy
-        # 登录防爆破：连续失败 N 次锁定 M 秒
+        # 登录防爆破：同一 (用户名, 来源 IP) 连续失败 N 次锁定 M 秒
+        # 注意：锁定键按 (用户名, IP) 隔离——若只按用户名计数，攻击者遍历已知用户名
+        # 各打 5 次错误密码即可把全站账号逐个锁死（锁定型 DoS）
         self.auth_login_max_fails = _parse_int('AUTH_LOGIN_MAX_FAILS', 5)
         # ≤0 非法：首次失败即锁定（=0/负数），告警并回退默认
         if self.auth_login_max_fails <= 0:
@@ -245,11 +266,23 @@ class Config:
             print(f'[Config WARNING] AUTH_LOGIN_LOCK_SECONDS={self.auth_login_lock_seconds!r} '
                   'is invalid (must be > 0), using default 300')
             self.auth_login_lock_seconds = 300
+        # 密码哈希 PBKDF2-HMAC-SHA256 迭代次数（新写入的哈希使用该值；
+        # 校验时以哈希串中记录的 iteration 为准，历史哈希不受影响，可平滑升级）
+        # 默认 600000：对齐 OWASP 2023 对 PBKDF2-HMAC-SHA256 的建议（原 100000 偏低）
+        self.auth_pbkdf2_iterations = _parse_int('AUTH_PBKDF2_ITERATIONS', 600000)
+        if self.auth_pbkdf2_iterations < 10000:
+            print(f'[Config WARNING] AUTH_PBKDF2_ITERATIONS={self.auth_pbkdf2_iterations!r} '
+                  'is too low (must be >= 10000), using default 600000')
+            self.auth_pbkdf2_iterations = 600000
 
         # Prometheus 指标（/metrics，依赖 prometheus-client，未安装或关闭时自动降级）
         self.metrics_enabled = os.environ.get('METRICS_ENABLED', 'true').lower() in ('1', 'true', 'yes')
+        # 多进程指标目录：gunicorn 多 worker 时必须设置（PROMETHEUS_MULTIPROC_DIR），
+        # 否则每个 worker 各自计数，/metrics 只能看到被刮到的那个进程的数据
+        self.metrics_multiprocess_dir = os.environ.get('PROMETHEUS_MULTIPROC_DIR') or None
 
-        # 雪花 ID 机器标识（多进程部署时每进程应配置不同值；未配置时按 PID 自动派生）
+        # 雪花 ID 机器标识（多副本部署时每个进程/副本应配置不同值；未配置时按
+        # (crc32(hostname) + pid) % 32 派生——容器内 hostname 可区分副本，但仍非严格保证）
         # 非法（非数字）或越界（非 0-31）时告警并视为未配置，避免 KeyGenerator 初始化崩溃
         _worker_id_raw = os.environ.get('SNOWFLAKE_WORKER_ID')
         if _worker_id_raw:
@@ -262,6 +295,20 @@ class Config:
                 self.snowflake_worker_id = None
         else:
             self.snowflake_worker_id = None
+
+        # 雪花 ID 数据中心标识（0-31）。多机房/多集群部署时各集群应配置不同值，
+        # 否则 worker_id 相同的数据中心之间仍可能重复（默认 1，兼容历史行为）
+        _dc_raw = os.environ.get('SNOWFLAKE_DATACENTER_ID')
+        if _dc_raw:
+            _parsed_dc = _parse_int('SNOWFLAKE_DATACENTER_ID', -1)
+            if 0 <= _parsed_dc <= 31:
+                self.snowflake_datacenter_id = _parsed_dc
+            else:
+                print(f'[Config WARNING] SNOWFLAKE_DATACENTER_ID={_dc_raw!r} is invalid '
+                      '(must be 0-31), using default 1')
+                self.snowflake_datacenter_id = 1
+        else:
+            self.snowflake_datacenter_id = 1
 
         # 可信代理配置（get_real_ip 仅在来自可信代理时才信任 X-Forwarded-For）
         _trusted_raw = os.environ.get('TRUSTED_PROXIES', '127.0.0.1,::1')

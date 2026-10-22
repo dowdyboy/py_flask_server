@@ -14,14 +14,26 @@ def test_sha256():
 
 
 def test_pbkdf2_hmac_format():
-    """新格式: salt$iterations$hash"""
+    """新格式: salt$iterations$hash，迭代次数取配置（默认 600000）"""
+    from flask_server import config
+
     out = DataEncryptUtil.pbkdf2_hmac('password')
     parts = out.split('$')
     assert len(parts) == 3
     salt, iterations, hash_hex = parts
     assert len(salt) == 32   # 16 bytes hex
-    assert iterations == '100000'
+    assert iterations == str(config.auth_pbkdf2_iterations)
     assert len(hash_hex) == 64   # 32 bytes hex
+
+
+def test_pbkdf2_hmac_default_iterations_from_config(monkeypatch):
+    """默认迭代次数跟随 AUTH_PBKDF2_ITERATIONS（可平滑调高，历史哈希按串内值校验）"""
+    from flask_server import config
+
+    monkeypatch.setattr(config, 'auth_pbkdf2_iterations', 12345)
+    assert DataEncryptUtil.pbkdf2_hmac('password').split('$')[1] == '12345'
+    stored = DataEncryptUtil.pbkdf2_hmac('password')
+    assert DataEncryptUtil.verify_pbkdf2('password', stored) is True
 
 
 def test_pbkdf2_hmac_custom_iterations():

@@ -182,25 +182,51 @@ _SECURITY_HEADERS = {
     'Referrer-Policy': 'no-referrer',
 }
 
+# Swagger UI 资源来源（scheme://host[:port]）：CSP 需要放行它
+# —— swagger-ui.css / swagger-ui-bundle.js 都从 OPENAPI_SWAGGER_UI_URL 取。
+# 修复前 CSP 写死 cdn.jsdelivr.net：① style-src 未放行 CDN → 样式表被拦截（页面无样式）；
+# ② 按文档把 SWAGGER_UI_URL 指向内网镜像后脚本也被拦 → /docs 白屏。
+def _swagger_origin(url=None):
+    """从 SWAGGER_UI_URL 提取 scheme://host 作为 CSP 白名单来源；非法/相对路径返回空串"""
+    from urllib.parse import urlsplit
+    parts = urlsplit(url if url is not None else config.swagger_ui_url or '')
+    if parts.scheme in ('http', 'https') and parts.netloc:
+        return f'{parts.scheme}://{parts.netloc}'
+    return ''
+
+
+def _csp_docs(swagger_origin):
+    """/docs 的 CSP：放行 Swagger UI 资源的来源与内联脚本/样式"""
+    cdn = f' {swagger_origin}' if swagger_origin else ''
+    return (
+        "default-src 'self'; "
+        f"style-src 'self' 'unsafe-inline'{cdn}; "
+        f"script-src 'self' 'unsafe-inline'{cdn}; "
+        f"img-src 'self' data:{cdn}; "
+        f"font-src 'self'{cdn}; "
+        "connect-src 'self'"
+    )
+
+
+# 其余路径收紧：不信任内联脚本与远程脚本（webui 若含内联脚本需自行放行）
+_CSP_STRICT = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
+
 
 @app.after_request
 def set_security_headers(resp):
     if config.security_headers_enabled:
         for k, v in _SECURITY_HEADERS.items():
             resp.headers.setdefault(k, v)
+        # HSTS 仅在显式开启时注入（HTTP 明文场景浏览器会忽略，默认关闭避免影响本地开发）
+        if config.hsts_enabled:
+            resp.headers.setdefault(
+                'Strict-Transport-Security',
+                f'max-age={config.hsts_max_age}; includeSubDomains',
+            )
         if request.path == config.api_docs_url:
-            # /docs（Swagger UI）使用 jsdelivr CDN 资源：放行远程脚本与内联样式
-            resp.headers.setdefault(
-                'Content-Security-Policy',
-                "default-src 'self'; style-src 'self' 'unsafe-inline'; "
-                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
-            )
+            resp.headers.setdefault('Content-Security-Policy', _csp_docs(_swagger_origin()))
         else:
-            # 其余路径收紧：不信任内联脚本与远程脚本（webui 若含内联脚本需自行放行）
-            resp.headers.setdefault(
-                'Content-Security-Policy',
-                "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'",
-            )
+            resp.headers.setdefault('Content-Security-Policy', _CSP_STRICT)
     return resp
 
 
