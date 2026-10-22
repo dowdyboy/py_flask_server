@@ -46,6 +46,8 @@ WORKER_NUM=4 python wsgi_gunicorn.py
 9. **后台任务**：任务消费者建议**独立进程/独立容器**部署（`python scripts/worker.py`），
    与 Web 进程分开扩容重启。必须配置 `REDIS_URL`（内存队列只在入队的进程内可见）；
    `TASK_WORKER_EMBEDDED=true` 只适合单进程开发。详见 [task-queue.md](task-queue.md)
+   > `docker-compose.prod.yml` 已内置 `worker` 服务（默认不启动，避免没定义任务时反复重启）：
+   > `docker compose -f docker-compose.prod.yml --profile worker up -d --build`
 
 ### 优雅退出
 

@@ -45,6 +45,30 @@ services:
     restart: unless-stopped
     stop_grace_period: 15s
 
+  # 任务队列消费者（独立进程，与 app 分开扩容/重启）
+  # 默认不启动（tasks 为空时 worker 会以退出码 1 结束，避免 up 之后反复重启）：
+  #   docker-compose -f docker-compose.prod.yml --profile worker up -d --build
+  # 需要先在本机 flask_server/task/ 下定义任务；REDIS_URL 必须配置（内存队列跨进程不可见）
+  worker:
+    build: .
+    command: ["python", "scripts/worker.py", "--concurrency", "4"]
+    profiles: ["worker"]
+    environment:
+      APP_ENV: production
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
+      SQLALCHEMY_URI: mysql+pymysql://app:${MYSQL_PASSWORD:-apppass}@mysql:3306/appdb?charset=utf8mb4
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
+      DB_REFLECT_ON_START: "false"
+      LOG_FILE_PATH: ""
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # 收到 SIGTERM 后不再取新任务、等在途任务跑完；长任务请调大
+    stop_grace_period: 60s
+
   mysql:
     image: mysql:8.0
     environment:
