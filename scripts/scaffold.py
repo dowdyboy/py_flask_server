@@ -84,6 +84,18 @@ def main():
     if os.path.exists(dst_dir) and os.listdir(dst_dir):
         print(f'[ERROR] 目标目录 {dst_dir} 已存在且非空')
         sys.exit(1)
+    # 目标目录不能位于模板目录内部：否则 copytree 会边复制边把"新生成的部分"再复制一遍，
+    # 形成递归嵌套（sub/sub/sub/...）直到路径过长崩溃
+    try:
+        src_real = os.path.realpath(src_dir)
+        dst_real = os.path.realpath(dst_dir)
+        if os.path.commonpath([src_real, dst_real]) == src_real:
+            print(f'[ERROR] 目标目录不能位于模板目录内部（{dst_dir} 在 {src_dir} 之内）。'
+                  '请使用兄弟目录或父目录下的路径，例如：python scripts/scaffold.py ../my_project')
+            sys.exit(1)
+    except ValueError:
+        # 不同盘符（Windows）时 commonpath 抛 ValueError —— 一定不在同一棵树内
+        pass
 
     count = copy_template(src_dir, dst_dir, author=args.author)
     print(f'[OK] 脚手架已生成: {dst_dir}（{count} 个文件）')

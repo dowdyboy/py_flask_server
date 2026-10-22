@@ -20,8 +20,9 @@ python-dotenv>=1.0.0,<2.0
 prometheus-client>=0.20.0,<1.0
 # 生产 WSGI 服务器（waitress，单进程多线程）
 waitress>=3.0.2,<4.0
-# HTTP 客户端（工具类/示例使用）
-requests>=2.32.5,<3.0
+
+# 注：requests 仅在 scripts/benchmark.py 中使用，已移至 requirements-dev.txt，
+# 避免生产镜像多装 urllib3/certifi/idna/charset-normalizer 等 5 个包
 
 # 可选：WebSocket 支持（设环境变量 SOCKETIO_ENABLED=true 启用）
 # Flask-SocketIO>=5.6.0,<6.0

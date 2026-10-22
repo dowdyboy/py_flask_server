@@ -2,7 +2,6 @@ from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import multiprocessing
 import threading
-import traceback
 import time
 import atexit
 import shlex
@@ -202,7 +201,9 @@ class SafeThread(threading.Thread):
             super().run()
         except Exception as e:
             self.exception = e
-            traceback.print_exc()
+            # 走统一日志（含 request_id / JSON 格式 / 文件轮转），
+            # 而不是 traceback.print_exc() 直接打到 stderr（容器里可能被丢弃）
+            Logger.error(f'SafeThread `{self.name}` crashed: {e}', exc_info=True)
             if self._on_crash:
                 self._on_crash(self, e)  # 触发回调
 

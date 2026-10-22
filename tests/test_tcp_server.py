@@ -668,3 +668,81 @@ def test_head_tail_resync_cap_disconnects():
         server.stop()
     assert records['messages'] == []
     assert _wait_until(lambda: len(records['disconnect']) == 1)
+
+
+# ---------------- 空闲连接超时（慢连接耗尽 DoS 防护） ----------------
+
+
+def test_idle_connection_closed_after_timeout():
+    """只连不发：超过 TCP_IDLE_TIMEOUT 无数据 → 服务端主动断开并释放槽位"""
+    server, port, records = _start_echo_server(idle_timeout=0.3)
+    try:
+        sock = _connect(port)
+        try:
+            sock.settimeout(5)
+            assert sock.recv(1024) == b''   # 服务端关闭 → recv 返回空
+        finally:
+            sock.close()
+    finally:
+        server.stop()
+    assert _wait_until(lambda: len(records['disconnect']) == 1)
+
+
+def test_active_connection_not_killed_by_idle_timeout():
+    """有空闲超时也不应误杀正常连接（消息间隔短于超时即可持续交互）"""
+    server, port, records = _start_echo_server(idle_timeout=2)
+    try:
+        sock = _connect(port)
+        try:
+            for i in range(3):
+                sock.sendall(b'ping\n')
+                assert _recv_exact(sock, len(b'echo: ping')) == b'echo: ping'
+                time.sleep(0.2)
+        finally:
+            sock.close()
+    finally:
+        server.stop()
+    assert records['messages'] == [b'ping'] * 3
+
+
+def test_idle_timeout_disabled_keeps_connection_open():
+    """idle_timeout<=0 表示不设超时：连接保持，不产生超时断开"""
+    server, port, records = _start_echo_server(idle_timeout=0)
+    try:
+        sock = _connect(port)
+        try:
+            time.sleep(0.5)
+            sock.sendall(b'still-here\n')
+            assert _recv_exact(sock, len(b'echo: still-here')) == b'echo: still-here'
+        finally:
+            sock.close()
+    finally:
+        server.stop()
+    assert records['messages'] == [b'still-here']
+
+
+def test_idle_timeout_applies_to_raw_mode():
+    """raw 模式同样受空闲超时保护（recv 阻塞分支）"""
+    server, port, records = _start_echo_server(framing='raw', idle_timeout=0.3)
+    try:
+        sock = _connect(port)
+        try:
+            sock.settimeout(5)
+            assert sock.recv(1024) == b''
+        finally:
+            sock.close()
+    finally:
+        server.stop()
+    assert _wait_until(lambda: len(records['disconnect']) == 1)
+
+
+def test_idle_timeout_defaults_from_config(monkeypatch):
+    """未显式传 idle_timeout 时取配置 TCP_IDLE_TIMEOUT"""
+    from flask_server import config
+    from flask_server.module.tcp_server import TcpServer
+
+    monkeypatch.setattr(config, 'tcp_idle_timeout', 42)
+    server = TcpServer(host='127.0.0.1', port=0)
+    assert server.idle_timeout == 42
+    monkeypatch.setattr(config, 'tcp_idle_timeout', 0)
+    assert TcpServer(host='127.0.0.1', port=0).idle_timeout == 0

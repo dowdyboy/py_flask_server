@@ -133,3 +133,39 @@ def test_logger_init_falls_back_to_console_on_oserror(tmp_path):
         for h in list(logger.handlers):
             logger.removeHandler(h)
             h.close()
+
+
+def test_format_msg_escapes_newlines():
+    """日志伪造防护：消息中的 CR/LF 必须转义为字面量，不能拆行"""
+    from flask_server.util.logger import _escape_newlines
+
+    assert _escape_newlines('a\nb') == 'a\\nb'
+    assert _escape_newlines('a\r\nb') == 'a\\r\\nb'
+    assert _escape_newlines('plain') == 'plain'
+    assert _escape_newlines(123) == '123'
+    assert _escape_newlines(None) == 'None'
+
+
+def test_logger_info_single_line_with_injected_newline(tmp_path):
+    """端到端：用户输入带换行的 URL/用户名写日志后，文件里只增加一行（不可伪造记录）"""
+    from logging.handlers import RotatingFileHandler
+
+    log_file = tmp_path / 'inject.log'
+    Logger.init(filename=str(log_file), level=logging.INFO, to_console=False)
+    logger = logging.getLogger('flask_server')
+    try:
+        Logger.set_request_id('rid-1')
+        Logger.warn('rate limit exceeded (path): /api/x\n2026-01-01 [ERROR] fake injected record')
+        for h in logger.handlers:
+            if isinstance(h, RotatingFileHandler):
+                h.flush()
+        lines = [ln for ln in log_file.read_text(encoding='utf-8').splitlines() if ln.strip()]
+        assert len(lines) == 1, f'注入的换行被当成新日志行: {lines}'
+        assert '\\n' in lines[0]
+        assert 'fake injected record' in lines[0]
+        assert '[rid:rid-1]' in lines[0]
+    finally:
+        Logger.clear_request_id()
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
+            h.close()

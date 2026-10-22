@@ -35,6 +35,19 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(log_entry, ensure_ascii=False)
 
 
+def _escape_newlines(txt):
+    """转义 CR/LF，防日志伪造（log forging）。
+
+    用户可控输入（URL、用户名、请求头等）中的换行会把一条日志拆成两条——
+    攻击者可据此伪造 ERROR 行、污染审计记录或触发误告警。
+    统一在日志出口转义，避免每个调用点各自清洗（漏一处即失守）。
+    """
+    text = txt if isinstance(txt, str) else str(txt)
+    if '\n' in text or '\r' in text:
+        return text.replace('\r', '\\r').replace('\n', '\\n')
+    return text
+
+
 class Logger:
 
     @staticmethod
@@ -50,9 +63,10 @@ class Logger:
     @staticmethod
     def _format_msg(txt):
         rid = _request_id_ctx.get()
+        text = _escape_newlines(txt)
         if rid:
-            return f'[rid:{rid}] {txt}'
-        return txt
+            return f'[rid:{rid}] {text}'
+        return text
 
     @staticmethod
     def init(

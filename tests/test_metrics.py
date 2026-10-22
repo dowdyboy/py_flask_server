@@ -86,3 +86,50 @@ def test_metrics_record_without_timer(client):
     with client.application.test_request_context('/x'):
         resp = metrics_record(Response())
         assert resp.status_code == 200
+
+
+def test_multiprocess_registry_collects_without_error(tmp_path, monkeypatch):
+    """多进程 Registry：空目录下构造 collector 不应抛异常（gunicorn 首次启动场景）"""
+    from flask_server import config
+    from flask_server.component.metrics import _multiprocess_registry
+
+    monkeypatch.setattr(config, 'metrics_multiprocess_dir', str(tmp_path))
+    registry = _multiprocess_registry()
+    # 空目录 → 无样本，但结构合法、可迭代
+    assert list(registry.collect()) is not None
+
+
+def test_metrics_uses_multiprocess_registry_when_configured(client, monkeypatch):
+    """配置 PROMETHEUS_MULTIPROC_DIR 后 /metrics 走多进程聚合分支（而非单进程默认 registry）"""
+    from flask_server import config
+    from flask_server.component import metrics as metrics_module
+
+    called = []
+
+    class _EmptyRegistry:
+        def collect(self):
+            return []
+
+    def fake_registry():
+        called.append(1)
+        return _EmptyRegistry()
+
+    monkeypatch.setattr(config, 'metrics_multiprocess_dir', '/tmp/prom_mp')
+    monkeypatch.setattr(metrics_module, '_multiprocess_registry', fake_registry)
+    resp = client.get('/metrics')
+    assert resp.status_code == 200
+    assert called == [1], '多进程模式必须走聚合 registry，否则只能看到当前进程的数据'
+
+
+def test_metrics_single_process_path_when_not_configured(client, monkeypatch):
+    """未配置多进程目录时走默认 registry（不触达 collector）"""
+    from flask_server import config
+    from flask_server.component import metrics as metrics_module
+
+    monkeypatch.setattr(config, 'metrics_multiprocess_dir', None)
+
+    def boom():
+        raise AssertionError('单进程模式不应使用多进程 registry')
+
+    monkeypatch.setattr(metrics_module, '_multiprocess_registry', boom)
+    assert client.get('/metrics').status_code == 200

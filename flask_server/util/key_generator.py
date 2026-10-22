@@ -1,10 +1,27 @@
-import uuid
-import time
-import threading
 import os
+import socket
+import threading
+import time
+import uuid
+import zlib
+import secrets
 
+from .logger import Logger
 
 # 用于生成唯一ID的工具类
+#
+# 三种 ID 形态，按场景选择：
+#   - generate_uuid()      UUID4：128 位全随机，无排序性，零配置、零冲突
+#   - generate_uuid7()     UUIDv7（RFC 9562）：时间有序 + 随机后缀，容器化多副本首选
+#   - generate_snowflake_id()  雪花 ID：64 位整数（字符串形式），需分配 worker_id
+#
+# 雪花 ID 的机器号分配（历史坑）：
+#   原实现用 `os.getpid() % 32` 派生 —— 容器/ K8s 里主进程 PID 恒为 1，
+#   于是**所有副本的 worker_id 都是 1**，同毫秒发号即冲突。现改为
+#   `(crc32(hostname) + pid) % 32`：容器 hostname 默认是唯一容器 ID（K8s 为 Pod 名），
+#   多副本可区分；单机多进程再叠加 PID。仍非严格保证，**生产务必显式配置
+#   SNOWFLAKE_WORKER_ID（0-31）与 SNOWFLAKE_DATACENTER_ID（0-31）**，
+#   对冲突零容忍的场景请直接用 generate_uuid7()。
 
 
 class SnowflakeIdWorker:
@@ -93,19 +110,49 @@ class SnowflakeIdWorker:
 # print(worker.next_id())
 
 
+def _derive_worker_id(pid=None):
+    """按 (主机名, PID) 派生 0-31 的 worker_id（未显式配置时的兜底）。
+
+    加入主机名是为了容器场景：容器内主进程 PID 恒为 1，仅用 PID 会让所有副本
+    得到同一个 worker_id；容器 hostname 默认是唯一容器 ID / Pod 名，可区分副本。
+    """
+    if pid is None:
+        pid = os.getpid()
+    try:
+        host = socket.gethostname() or ''
+    except OSError:
+        host = ''
+    base = zlib.crc32(host.encode('utf-8', 'replace')) if host else 0
+    return (base + pid) % 32
+
+
 class KeyGenerator:
 
-    # 多进程安全：每进程使用不同 worker_id。
-    # 显式配置 SNOWFLAKE_WORKER_ID 时优先；否则按 PID 派生（0-31），
-    # 保证同一时刻不同进程的 worker_id 互不相同（同进程内由实例锁保证线程安全）。
+    # 雪花 worker 惰性初始化：导入期不读配置/不连任何依赖，便于测试替换配置
+    _worker = None
+    _worker_lock = threading.Lock()
+
     @staticmethod
     def _resolve_worker_id():
         from ..config import config
         if config.snowflake_worker_id is not None:
             return config.snowflake_worker_id
-        return os.getpid() % 32
+        return _derive_worker_id()
 
-    snow_worker = SnowflakeIdWorker(worker_id=_resolve_worker_id(), datacenter_id=1)
+    @classmethod
+    def _get_worker(cls):
+        """获取（首次调用时创建）雪花 ID worker（线程安全）"""
+        if cls._worker is not None:
+            return cls._worker
+        with cls._worker_lock:
+            if cls._worker is None:
+                from ..config import config
+                datacenter_id = getattr(config, 'snowflake_datacenter_id', 1)
+                worker_id = cls._resolve_worker_id()
+                cls._worker = SnowflakeIdWorker(worker_id=worker_id, datacenter_id=datacenter_id)
+                Logger.info(f'SnowflakeIdWorker initialized: worker_id={worker_id}, '
+                            f'datacenter_id={datacenter_id}')
+        return cls._worker
 
     @staticmethod
     def generate_uuid():
@@ -113,9 +160,22 @@ class KeyGenerator:
         return str(uuid.uuid4())
 
     @staticmethod
+    def generate_uuid7():
+        """生成 UUIDv7（RFC 9562，时间有序的 UUID）。
+
+        布局：48 位毫秒时间戳 | 4 位版本(7) | 12 位随机 | 2 位变体(10) | 62 位随机。
+        相比 UUID4 具备天然的时间有序性（作主键时 B-Tree 插入更局部化，索引页分裂更少），
+        相比雪花 ID 不需要分配 worker_id，容器化多副本部署不会撞号。
+        """
+        unix_ms = int(time.time() * 1000) & ((1 << 48) - 1)
+        rand_a = secrets.randbits(12)
+        rand_b = secrets.randbits(62)
+        value = (unix_ms << 80) | (0x7 << 76) | (rand_a << 64) | (0x2 << 62) | rand_b
+        return str(uuid.UUID(int=value))
+
+    @staticmethod
     def generate_snowflake_id():
         """
         雪花算法生成主键
         """
-        return str(KeyGenerator.snow_worker.next_id())
-
+        return str(KeyGenerator._get_worker().next_id())

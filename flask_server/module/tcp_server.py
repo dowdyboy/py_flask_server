@@ -20,6 +20,10 @@ from .protocol_server import ProtocolServer
 # 槽位在 spawn 线程前检查（verify_request）：超限的新连接被直接关闭、不创建线程，
 # 连接风暴场景零线程 churn；stop() 会同时关闭所有已建立的连接。
 #
+# 空闲防护：TCP_IDLE_TIMEOUT（默认 300s）内没有任何数据到达的连接自动关闭。
+# 没有它时，攻击者建立 TCP_MAX_CONNECTIONS 个"只连不发"的连接就能占满所有槽位，
+# 正常客户端被拒——即慢连接耗尽 DoS（≤0 表示不设超时，长连接心跳场景可关闭）。
+#
 # 处理器（文件放在 flask_server/handler/ 下自动生效）：
 #   @tcp_server.on_connect     on_connect(conn, addr)
 #   @tcp_server.on_message     on_message(conn, data, addr)   data 为 bytes（定界开销已剥离）
@@ -47,6 +51,8 @@ class _TcpConnectionHandler(socketserver.BaseRequestHandler):
             if not tcp._track_connection(conn):
                 conn.close()
                 return
+            # 空闲超时：防"只连不发"占满并发槽位（慢连接耗尽 DoS）
+            tcp._prepare_connection(conn)
             # 跨帧累积缓冲：一次 recv 可能含多帧，未读完的残帧留给下一轮（粘包/拆包处理）
             buffer = bytearray()
             state = {'resyncs': 0}   # head_tail 模式重同步计数（帧协议状态）
@@ -109,7 +115,7 @@ class TcpServer(ProtocolServer):
     def __init__(self, name='tcp', host=None, port=None, framing=None,
                  separator=None, max_message_length=None,
                  frame_length=None, frame_head=None, frame_tail=None,
-                 max_connections=None):
+                 max_connections=None, idle_timeout=None):
         super().__init__(name, max_concurrency=max_connections
                          if max_connections is not None else config.tcp_max_connections)
         self.host = host if host is not None else config.tcp_host
@@ -121,6 +127,8 @@ class TcpServer(ProtocolServer):
         self.frame_length = frame_length if frame_length is not None else config.tcp_frame_length
         self.frame_head = frame_head if frame_head is not None else config.tcp_frame_head
         self.frame_tail = frame_tail if frame_tail is not None else config.tcp_frame_tail
+        # 空闲超时（秒）：≤0 表示不设超时
+        self.idle_timeout = idle_timeout if idle_timeout is not None else config.tcp_idle_timeout
         # 活动连接集合（stop 时统一关闭）
         self._connections = set()
         self._connections_lock = threading.Lock()
@@ -151,6 +159,20 @@ class TcpServer(ProtocolServer):
         return _ThreadingTcpServer((self.host, self.port), self)
 
     # ---------------- 活动连接跟踪 ----------------
+
+    def _prepare_connection(self, conn):
+        """为新连接设置空闲超时（recv 超时即视为空闲，关闭连接释放槽位）"""
+        if not self.idle_timeout or self.idle_timeout <= 0:
+            return
+        try:
+            conn.settimeout(self.idle_timeout)
+        except OSError as e:
+            Logger.warn(f'{self.name}: set connection idle timeout failed: {e}')
+
+    def _idle_timeout(self):
+        """空闲超时告警（随后断开）"""
+        Logger.warn(f'{self.name}: connection idle for {self.idle_timeout}s, closing '
+                    '(raise TCP_IDLE_TIMEOUT for long-lived connections)')
 
     def _track_connection(self, conn):
         """登记活动连接；服务器已停止时返回 False（调用方应立即关闭连接）。
@@ -201,15 +223,22 @@ class TcpServer(ProtocolServer):
         if self.framing == 'raw':
             try:
                 data = conn.recv(self.max_message_length)
+            except TimeoutError:
+                self._idle_timeout()
+                return None
             except OSError:
                 return None
             return data or None
         return self._read_line_frame(conn, buffer)
 
     def _recv_more(self, conn, buffer):
-        """recv 一块数据追加到缓冲；连接关闭/recv 异常返回 False"""
+        """recv 一块数据追加到缓冲；连接关闭/空闲超时/recv 异常返回 False"""
         try:
             chunk = conn.recv(self._RECV_CHUNK)
+        except TimeoutError:
+            # 空闲超时：TCP_IDLE_TIMEOUT 内没有任何数据到达（慢连接耗尽槽位）
+            self._idle_timeout()
+            return False
         except OSError:
             return False
         if not chunk:

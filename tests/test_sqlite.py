@@ -40,6 +40,32 @@ def test_select_limit_value(monkeypatch):
     assert 'LIMIT 10' in captured['sql']
 
 
+def test_identifier_injection_rejected():
+    """表名/列名白名单：拼接型标识符注入必须被拒绝（无法用 ? 参数化）"""
+    for evil in ("users; DROP TABLE user--", "users`", "users WHERE 1=1",
+                 "1table", "", "a b", "tbl'--"):
+        with pytest.raises(ValueError):
+            SQLite._parse_table_name(evil)
+    with pytest.raises(ValueError):
+        SQLite._parse_columns(['ok', "x`; DROP TABLE t--"])
+    with pytest.raises(ValueError):
+        SQLite.insert('tbl', ['bad col'], [1])
+
+
+def test_identifier_valid_names_accepted():
+    """常见标识符（含下划线/数字/$）应正常引用"""
+    assert SQLite._parse_table_name('user_profile2') == '`user_profile2`'
+    assert SQLite._parse_column('_id') == '`_id`'
+    assert SQLite._parse_table_name('t$1') == '`t$1`'
+
+
+def test_select_limit_non_integer_rejected():
+    """limit 必须是整数：防止把用户输入直接拼进 SQL"""
+    for bad in ('10; DROP TABLE t', 1.5, True, -1, [10]):
+        with pytest.raises(ValueError):
+            SQLite.select('tbl', limit=bad)
+
+
 def test_no_parse_value_method():
     """_parse_value/_parse_values 已移除（未转义字面量拼接是注入隐患），
     值必须走 ? 占位符参数化"""

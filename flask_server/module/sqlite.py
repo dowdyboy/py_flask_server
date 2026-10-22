@@ -1,11 +1,18 @@
 import sqlite3
 import threading
 import os
+import re
 import time
 from ..config import config
 from ..util import Logger
 
 # 使用SQLite作为数据库访问层，具体使用参考sqlite3库
+
+# 标识符白名单：表名/列名只允许「字母或下划线开头，后接字母/数字/_/$」。
+# 表名与列名会被拼进 SQL（无法用 ? 占位符参数化），因此必须白名单校验，
+# 否则 `SQLite.select(table=request.args['t'])` 这类调用就是一个 SQL 注入面。
+# 注意：conditions / order_by 参数按设计是**原始 SQL 片段**，只能传常量，绝不能传用户输入。
+_IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_$]*$')
 
 
 class SQLite:
@@ -68,22 +75,32 @@ class SQLite:
     # 注意：仅支持 ? 占位符参数化查询，禁止将值直接拼接进 SQL（防注入）
     # （_parse_value 曾被用于拼接字面量且未转义，已移除）
 
-    # 转换表名为sqlite3语法，用于sql语句中
+    # 将表名/列名转换为 sqlite3 标识符（白名单校验后加反引号，防标识符注入）
+    @staticmethod
+    def _quote_identifier(name, kind='identifier'):
+        """校验并引用 SQL 标识符（表名/列名不能参数化，只能白名单 + 引用）"""
+        if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
+            raise ValueError(
+                f'invalid SQL {kind}: {name!r} '
+                '(only letters/digits/_/$ are allowed, must start with a letter or _)'
+            )
+        return f'`{name}`'
+
     @staticmethod
     def _parse_table_name(table_name):
-        return f"`{table_name}`"
+        return SQLite._quote_identifier(table_name, 'table name')
 
     # 转换列名为sqlite3语法，用于sql语句中
     @staticmethod
     def _parse_column(column):
-        return f"`{column}`"
+        return SQLite._quote_identifier(column, 'column name')
 
     # 转换列名列表为sqlite3语法，用于sql语句中
     @staticmethod
     def _parse_columns(columns):
         if columns is None:
             return '*'
-        return ','.join([f"`{c}`" for c in columns])
+        return ','.join([SQLite._quote_identifier(c, 'column name') for c in columns])
 
     # 执行sql语句，返回row_id，多用于insert语句
     # 用法示例：
@@ -142,8 +159,12 @@ class SQLite:
 
     # 查询数据，用法示例：
     # SQLite.select("table", ["column1", "column2"], "column1 = ?", params=[1])
+    # ⚠️ conditions / order_by 是原始 SQL 片段（无法参数化），只能传代码内常量，
+    #    严禁拼接用户输入；表名/列名经白名单校验，limit 必须是整数。
     @staticmethod
     def select(table, columns=None, conditions=None, params=None, order_by=None, limit=None, ):
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):
+            raise ValueError(f'invalid limit: {limit!r} (must be a non-negative integer)')
         sql = (f"SELECT {SQLite._parse_columns(columns)} "
                f"FROM {SQLite._parse_table_name(table)} "
                f"{'WHERE ' + conditions if conditions else ''} "
