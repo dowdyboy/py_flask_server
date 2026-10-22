@@ -65,6 +65,7 @@
 | `flask_server/config.py` | 配置解析、`Config`、`ConfigProxy` | 改配置项需新增字段 |
 | `flask_server/controller/` | 路由与入参校验 | ✅ 自动注册 Blueprint / `register(app)` |
 | `flask_server/handler/` | TCP/UDP 消息处理器 | ✅ 自动导入并注册装饰器 |
+| `flask_server/task/` | 后台任务（`@task` 声明） | ✅ worker 启动时自动导入（`auto_import_tasks`） |
 | `flask_server/service/` | 业务编排（可选层） | ❌ 需被 controller 调用 |
 | `flask_server/model/po/` | 声明式 ORM 模型 | ✅ 被 `model` 包导入后进入迁移检测 |
 | `flask_server/module/` | 基础设施单例（DB/缓存/存储/协议服务器） | 需在 `module/__init__.py` 导出 |
@@ -191,6 +192,7 @@ app 上下文时作用于进程默认配置，既有测试无需修改。
 | SocketIO | 进程内 | eventlet monkey patch 是**导入期**决定的 |
 | Prometheus 指标 | 进程内 | 需 `PROMETHEUS_MULTIPROC_DIR` 才能聚合 |
 | 内存缓存 / 限流计数 / 认证 token | 进程内 | 需 `REDIS_URL` 才能跨 worker 一致 |
+| 任务队列 | 内存（默认）/ Redis | 多 worker 必须配 `REDIS_URL`，否则各消费各的；生产用独立 `scripts/worker.py` |
 | 日志 handler | 进程内 | 多 worker 写同一文件有轮转竞态，建议容器日志 |
 | TCP/UDP 协议服务器 | **每进程绑定同一端口** | 由 `post_worker_init` 在 `workers > 1` 时禁启 |
 | 雪花 ID worker | 进程内 | 按 `crc32(hostname)+pid` 派生；严格唯一请显式配置或改用 UUIDv7 |

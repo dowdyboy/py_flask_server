@@ -1,6 +1,8 @@
 from werkzeug.serving import is_running_from_reloader
 from flask_server import app, socketio, config
-from flask_server.module import start_protocol_servers, stop_protocol_servers
+from flask_server.module import (
+    start_embedded_task_worker, start_protocol_servers, stop_protocol_servers,
+)
 from flask_server.util.banner import print_startup_banner
 
 
@@ -25,6 +27,8 @@ if __name__ == '__main__':
     # debug+reloader 模式下仅真实服务进程启动，避免父子进程端口冲突）
     if should_start_protocol_servers():
         start_protocol_servers()
+    # 内嵌任务消费者（TASK_WORKER_EMBEDDED=true，开发便利；生产用 scripts/worker.py）
+    start_embedded_task_worker(app=app)
 
     try:
         # 启动服务（部署、支持websocket）

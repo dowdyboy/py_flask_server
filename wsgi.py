@@ -3,7 +3,9 @@ import signal
 import threading
 
 from flask_server import app, config, socketio
-from flask_server.module import start_protocol_servers, stop_protocol_servers
+from flask_server.module import (
+    start_embedded_task_worker, start_protocol_servers, stop_protocol_servers,
+)
 from flask_server.util import Logger
 from flask_server.util.banner import print_startup_banner
 from waitress.server import create_server
@@ -131,6 +133,8 @@ def main():
     print_startup_banner()
     # 协议服务器随主进程启动（TCP_ENABLED / UDP_ENABLED 为 true 时生效）
     start_protocol_servers()
+    # 内嵌任务消费者（TASK_WORKER_EMBEDDED=true；生产建议独立进程跑 scripts/worker.py）
+    start_embedded_task_worker(app=app)
 
     options = _waitress_options()
     server = create_server(app, **options)

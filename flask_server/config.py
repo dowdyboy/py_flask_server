@@ -281,6 +281,59 @@ class Config:
         # 否则每个 worker 各自计数，/metrics 只能看到被刮到的那个进程的数据
         self.metrics_multiprocess_dir = os.environ.get('PROMETHEUS_MULTIPROC_DIR') or None
 
+        # 任务队列（flask_server/module/task_queue.py + scripts/worker.py）
+        # 配置 REDIS_URL 时用 Redis Streams（多 worker/多实例正确、消息持久化）；
+        # 未配置时退化为进程内内存队列（单进程开发/测试，进程退出即丢）
+        self.task_queue_stream = os.environ.get('TASK_QUEUE_STREAM') or 'tasks:default'
+        self.task_queue_group = os.environ.get('TASK_QUEUE_GROUP') or 'default'
+        # worker 并发消费线程数
+        self.task_worker_concurrency = _parse_int('TASK_WORKER_CONCURRENCY', 4)
+        if self.task_worker_concurrency <= 0:
+            print(f'[Config WARNING] TASK_WORKER_CONCURRENCY={self.task_worker_concurrency!r} '
+                  'is invalid (must be > 0), using default 4')
+            self.task_worker_concurrency = 4
+        # 最大重试次数（0 表示不重试，失败直接进死信）
+        self.task_max_retries = _parse_int('TASK_MAX_RETRIES', 3)
+        if self.task_max_retries < 0:
+            print(f'[Config WARNING] TASK_MAX_RETRIES={self.task_max_retries!r} '
+                  'is invalid (must be >= 0), using default 3')
+            self.task_max_retries = 3
+        # 重试退避基数（秒）：第 n 次重试延迟 = backoff * 2**(n-1)
+        self.task_retry_backoff = _parse_int('TASK_RETRY_BACKOFF', 5)
+        if self.task_retry_backoff <= 0:
+            print(f'[Config WARNING] TASK_RETRY_BACKOFF={self.task_retry_backoff!r} '
+                  'is invalid (must be > 0), using default 5')
+            self.task_retry_backoff = 5
+        # 可见性超时（秒）：worker 崩溃后，pending 消息超过该时长会被重新投递（会重复执行，靠 handler 幂等）
+        self.task_visibility_timeout = _parse_int('TASK_VISIBILITY_TIMEOUT', 300)
+        if self.task_visibility_timeout <= 0:
+            print(f'[Config WARNING] TASK_VISIBILITY_TIMEOUT={self.task_visibility_timeout!r} '
+                  'is invalid (must be > 0), using default 300')
+            self.task_visibility_timeout = 300
+        # 任务状态保留时长（秒，Redis 后端用作 key TTL）
+        self.task_status_ttl = _parse_int('TASK_STATUS_TTL', 86400)
+        if self.task_status_ttl <= 0:
+            print(f'[Config WARNING] TASK_STATUS_TTL={self.task_status_ttl!r} '
+                  'is invalid (must be > 0), using default 86400')
+            self.task_status_ttl = 86400
+        # 死信队列上限（超出后丢弃最旧的）
+        self.task_dead_letter_max = _parse_int('TASK_DEAD_LETTER_MAX', 1000)
+        if self.task_dead_letter_max <= 0:
+            print(f'[Config WARNING] TASK_DEAD_LETTER_MAX={self.task_dead_letter_max!r} '
+                  'is invalid (must be > 0), using default 1000')
+            self.task_dead_letter_max = 1000
+        # 内存后端的状态表上限（防内存无界增长）
+        self.task_status_max = _parse_int('TASK_STATUS_MAX', 10000)
+        if self.task_status_max <= 0:
+            self.task_status_max = 10000
+        # 单次出队阻塞时长（秒）：越小空转越频繁，越大停止响应越慢
+        self.task_reserve_timeout = _parse_int('TASK_RESERVE_TIMEOUT', 2)
+        if self.task_reserve_timeout <= 0:
+            self.task_reserve_timeout = 2
+        # 是否在 Web 进程内嵌一个 worker（仅开发/单进程方便；生产建议独立进程跑 scripts/worker.py）
+        # 注意：内存后端下任务只在"入队的进程内"可见，内嵌 worker 才能在单进程里跑通全链路
+        self.task_worker_embedded = os.environ.get('TASK_WORKER_EMBEDDED', 'false').lower() in ('1', 'true', 'yes')
+
         # 雪花 ID 机器标识（多副本部署时每个进程/副本应配置不同值；未配置时按
         # (crc32(hostname) + pid) % 32 派生——容器内 hostname 可区分副本，但仍非严格保证）
         # 非法（非数字）或越界（非 0-31）时告警并视为未配置，避免 KeyGenerator 初始化崩溃

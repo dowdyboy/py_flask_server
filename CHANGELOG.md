@@ -7,6 +7,32 @@
 
 ### 新增
 
+- **可持久化的后台任务队列**（`flask_server/module/task_queue.py` + `task_worker.py` +
+  `scripts/worker.py`）——补上脚手架最后一个"业务必然自己造轮子"的能力：
+  - 后端：配置 `REDIS_URL` 用 **Redis Streams**（consumer group/XACK，多 worker 正确、
+    重启不丢、崩溃可接管）；未配置时退化为进程内内存队列（单进程开发/测试）
+  - 声明：`flask_server/task/` 下 `@task('name', max_retries=N)` 即自动发现
+    （worker 启动时 `auto_import_tasks()`）
+  - 入队：`enqueue_task(name, *args, delay=..., **kwargs)` 返回 `task_id`；
+    后端不可用时抛 `TaskQueueUnavailable`（**不静默丢弃**，与缓存降级策略刻意不同）
+  - 消费：`scripts/worker.py --concurrency 4`（`make worker`），失败按
+    `backoff * 2**(n-1)` 指数退避重投，超上限进死信（`{stream}:dead`）；
+    worker 崩溃留下的 pending 消息超过 `TASK_VISIBILITY_TIMEOUT` 由 `XAUTOCLAIM` 接管
+  - 状态：`get_task_status(task_id)` → `queued/running/succeeded/retrying/dead` + `attempts` + `last_error`
+  - 开发便利：`TASK_WORKER_EMBEDDED=true` 在 Web 进程内嵌 worker（`server.py` / `wsgi.py`），
+    内存后端下也能单进程跑通全链路
+  - 交付语义 **at-least-once**，handler 必须幂等（文档已强调）
+- **配置**：`TASK_QUEUE_STREAM` / `TASK_QUEUE_GROUP` / `TASK_WORKER_CONCURRENCY` /
+  `TASK_MAX_RETRIES` / `TASK_RETRY_BACKOFF` / `TASK_VISIBILITY_TIMEOUT` /
+  `TASK_STATUS_TTL` / `TASK_DEAD_LETTER_MAX` / `TASK_STATUS_MAX` / `TASK_RESERVE_TIMEOUT` /
+  `TASK_WORKER_EMBEDDED`
+- **`docs/task-queue.md`**：三步接入、语义与保证、状态机、配置表、死信运维与重放、注意事项
+- `tests/test_task_queue.py` + `tests/test_task_queue_redis.py`（50 例）：注册表/内存后端/
+  worker 端到端（成功·重试·死信·未注册·并发·停止·后端故障恢复）/CLI/内嵌 worker，
+  以及 Redis 后端的命令级验证（假客户端模拟 Streams/ZSET/LIST 语义）
+
+### 新增
+
 - **配置注入**：`Config(overrides)` + `create_app(framework_config=...)`，配合
   `ConfigProxy` 实现"按 app 解析配置"而不改动任何 `config.xxx` 调用点：
   - `Config({'api_version': 'v9', 'auth_enabled': True})` 可覆盖任意环境变量派生字段

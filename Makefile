@@ -1,7 +1,7 @@
 # Flask Server 常用命令
 # 用法：make <target>（Windows 可用 Git Bash / WSL；纯 Windows 环境请用 scripts/dev.ps1）
 
-.PHONY: install dev prod test lint audit migrate upgrade init scaffold verify smoke-gunicorn help
+.PHONY: install dev prod test lint audit migrate upgrade init scaffold verify smoke-gunicorn worker help
 
 install:            ## 安装依赖（运行时 + 开发）
 	pip install -r requirements.txt -r requirements-dev.txt
@@ -38,6 +38,9 @@ verify:             ## 真实环境自检（MySQL/Redis 全链路，配置 .env 
 
 smoke-gunicorn:     ## gunicorn 多 worker 冒烟（Linux/WSL；校验协议服务器不被重复绑定）
 	python scripts/smoke_gunicorn.py
+
+worker:             ## 启动任务队列消费者（需先在 task/ 定义任务；多进程请配置 REDIS_URL）
+	python scripts/worker.py --concurrency 4
 
 help:               ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*## ' Makefile | awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'

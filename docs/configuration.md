@@ -80,6 +80,17 @@
 | `RATE_LIMIT_STORE` | `memory` | 限流计数存储：`memory`（进程内）/ `redis`（多实例准确，需 REDIS_URL） |
 | `SNOWFLAKE_WORKER_ID` | _自动_ | 雪花 ID 机器标识（0-31）。未配置时按 `(crc32(hostname) + pid) % 32` 派生（容器内 hostname 可区分副本，但仍非严格保证），**多副本部署建议显式配置**；对唯一性零容忍请用 `KeyGenerator.generate_uuid7()` |
 | `SNOWFLAKE_DATACENTER_ID` | `1` | 雪花 ID 数据中心标识（0-31）。多机房/多集群各配不同值，越界回退 1 并告警 |
+| `TASK_QUEUE_STREAM` | `tasks:default` | 任务队列名（Redis Streams）。详见 [任务队列](task-queue.md) |
+| `TASK_QUEUE_GROUP` | `default` | 任务队列 consumer group 名 |
+| `TASK_WORKER_CONCURRENCY` | `4` | 任务消费线程数（须 > 0，否则回退默认） |
+| `TASK_MAX_RETRIES` | `3` | 任务最大重试次数（`0` = 失败直接进死信） |
+| `TASK_RETRY_BACKOFF` | `5` | 重试退避基数（秒）：第 n 次重试延迟 = `backoff * 2**(n-1)` |
+| `TASK_VISIBILITY_TIMEOUT` | `300` | 可见性超时（秒）：worker 崩溃后超过该时长的 pending 消息会被重新投递 |
+| `TASK_STATUS_TTL` | `86400` | 任务状态保留时长（秒，Redis 后端为 key TTL） |
+| `TASK_DEAD_LETTER_MAX` | `1000` | 死信队列上限（超出丢弃最旧的） |
+| `TASK_STATUS_MAX` | `10000` | 内存后端状态表上限（防内存无界增长） |
+| `TASK_RESERVE_TIMEOUT` | `2` | 单次出队阻塞时长（秒）：越小空转越频繁，越大停止响应越慢 |
+| `TASK_WORKER_EMBEDDED` | `false` | 是否在 Web 进程内嵌任务消费者（开发便利；生产用 `scripts/worker.py`） |
 
 ## 数据库
 

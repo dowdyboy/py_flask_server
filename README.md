@@ -7,6 +7,7 @@
 - 📐 **分层架构**：Controller-Service-Model-Module，目录即约定
 - ⚡ **零注册接口**：在 `controller/` 新建文件定义 `blp`，路由自动注册
 - 🔌 **TCP/UDP 协议服务器**：在 `handler/` 新建文件注册装饰器处理器即接收 TCP/UDP 消息（分隔符/固定长度/帧头帧尾/raw 四种定界、自动回发）
+- 🧵 **后台任务队列**：`task/` 建文件定义任务即自动发现；Redis Streams 持久化、重试退避、死信、状态查询
 - ✅ **参数校验 + Swagger**：flask-smorest 自动校验入参并生成 `/docs` 文档
 - 🔐 **认证骨架**：注册/登录/Token 开箱可用（默认关闭，一键开启）
 - 📊 **可观测性**：request_id 全链路、JSON 日志、Prometheus `/metrics`（支持多进程聚合）、healthz/readyz 探针
@@ -47,6 +48,7 @@ py_flask_server/
 │   ├── component/             # 组件：认证 / 限流 / Prometheus / 拦截器
 │   ├── controller/            # 路由层（★ 新建文件即自动注册）
 │   ├── handler/               # 协议处理器层（★ 新建文件即接收 TCP/UDP 消息）
+│   ├── task/                  # 后台任务层（★ 新建文件即被 worker 发现）
 │   ├── schema/                # marshmallow 校验 Schema
 │   ├── service/               # 业务层（简单业务可省略）
 │   ├── model/po/              # ORM 模型
@@ -54,7 +56,7 @@ py_flask_server/
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 开发启动脚本
-├── tests/                     # 516 个用例（覆盖率门槛 85%，实测 92.0%）
+├── tests/                     # 566 个用例（覆盖率门槛 85%，实测 91.2%）
 ├── docs/                      # 详细文档
 ├── Makefile                   # 统一命令入口
 ├── Dockerfile / docker-compose*.yml
@@ -70,6 +72,7 @@ make lint       # 代码风格                 ruff check flask_server/ tests/ .
 make audit      # 依赖安全审计            pip-audit -r requirements.txt
 make verify     # 真实环境自检（MySQL/Redis 全链路，需配置 .env）
 make smoke-gunicorn  # 多进程冒烟（Linux/WSL；校验协议服务器不被重复绑定）
+make worker     # 启动任务队列消费者        python scripts/worker.py --concurrency 4
 make migrate m="create users table"  # 生成迁移   make upgrade   # 执行迁移
 python scripts/scaffold.py my_project   # 生成新项目
 ```
@@ -82,6 +85,7 @@ python scripts/scaffold.py my_project   # 生成新项目
 | [快速上手与教程](docs/getting-started.md) | 从零创建第一个完整接口（DB/校验/文档全流程） |
 | [配置说明](docs/configuration.md) | 环境变量表、APP_ENV 预设档、依赖说明 |
 | [TCP/UDP 协议服务器](docs/protocol-servers.md) | 在 handler/ 注册处理器接收 TCP/UDP 消息（帧格式/回发/部署注意） |
+| [任务队列](docs/task-queue.md) | 后台任务：定义/入队/消费、重试与死信、状态查询、运维 |
 | [部署指南](docs/deployment.md) | Docker、生产入口选型、健康检查、安全建议 |
 | [API 约定](docs/api-conventions.md) | 统一响应、错误码表、分页/ETag、认证、限流 |
 | [开发与 FAQ](docs/development.md) | 测试、lint、常见问题 |
