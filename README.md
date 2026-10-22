@@ -9,9 +9,9 @@
 - 🔌 **TCP/UDP 协议服务器**：在 `handler/` 新建文件注册装饰器处理器即接收 TCP/UDP 消息（分隔符/固定长度/帧头帧尾/raw 四种定界、自动回发）
 - ✅ **参数校验 + Swagger**：flask-smorest 自动校验入参并生成 `/docs` 文档
 - 🔐 **认证骨架**：注册/登录/Token 开箱可用（默认关闭，一键开启）
-- 📊 **可观测性**：request_id 全链路、JSON 日志、Prometheus `/metrics`、healthz/readyz 探针
+- 📊 **可观测性**：request_id 全链路、JSON 日志、Prometheus `/metrics`（支持多进程聚合）、healthz/readyz 探针
 - 🗄️ **数据库**：SQLAlchemy + Flask-Migrate（MySQL/SQLite）、缓存（内存/Redis 自动降级）
-- 🛡️ **安全基线**：路径穿越防护、URI 脱敏、限流、安全响应头、可信代理
+- 🛡️ **安全基线**：路径穿越防护、URI 脱敏、限流、安全响应头（CSP/HSTS）、可信代理 XFF 最右解析
 - 🐳 **容器化**：多阶段 Dockerfile + dev/prod compose + CI 七流水线（含 Windows）
 
 ## 🚀 快速开始（5 分钟）
@@ -54,7 +54,7 @@ py_flask_server/
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 开发启动脚本
-├── tests/                     # 424 个用例（覆盖率门槛 85%，实测 91.77%）
+├── tests/                     # 482 个用例（覆盖率门槛 85%，实测 91.8%）
 ├── docs/                      # 详细文档
 ├── Makefile                   # 统一命令入口
 ├── Dockerfile / docker-compose*.yml

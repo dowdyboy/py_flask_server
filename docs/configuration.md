@@ -36,6 +36,7 @@
 | `TCP_FRAME_TAIL` | _空_ | TCP 帧尾字节串（`head_tail` 模式） |
 | `TCP_MAX_MESSAGE_LENGTH` | `65536` | TCP 单条消息上限（字节，超限视为协议错误断开连接，防内存 DoS） |
 | `TCP_MAX_CONNECTIONS` | `256` | TCP 并发连接上限（每连接一线程，超限拒绝新连接，防线程耗尽 DoS；`≤0` 表示不限制） |
+| `TCP_IDLE_TIMEOUT` | `300` | TCP 空闲连接超时（秒）：连接在此时间内没有任何数据到达即关闭。防"只连不发"占满并发槽位（慢连接耗尽 DoS）；`≤0` 表示不设超时（长连接心跳场景） |
 | `UDP_ENABLED` | `false` | 是否启用 UDP 协议服务器（处理器返回 bytes 自动回发） |
 | `UDP_HOST` | `0.0.0.0` | UDP 监听地址 |
 | `UDP_PORT` | `9001` | UDP 监听端口 |
@@ -44,7 +45,9 @@
 | `CORS_ORIGINS` | `*` | CORS 允许来源，`*` 或逗号分隔列表 |
 | `SECRET_KEY` | _默认值_ | Flask 密钥，生产环境必须修改 |
 | `MAX_CONTENT_LENGTH` | `16777216` | 请求体最大字节数（默认 16MB） |
-| `SWAGGER_UI_URL` | _CDN_ | Swagger UI 资源 URL，内网可指向本地 |
+| `SWAGGER_UI_URL` | _CDN_ | Swagger UI 资源 URL（CSS/JS 都从这里取）。`/docs` 的 CSP 会**自动放行该 URL 的 scheme://host**，因此内网镜像/私有 CDN 可直接使用 |
+| `HSTS_ENABLED` | `false` | 是否注入 `Strict-Transport-Security`（仅在 HTTPS 反代之后有意义；HTTP 下浏览器会忽略该头） |
+| `HSTS_MAX_AGE` | `31536000` | HSTS max-age（秒，默认 1 年）；负数告警回退默认 |
 | `LOG_FORMAT` | `text` | 日志格式：`text` / `json`（JSON 便于接入 ELK） |
 | `LOG_MAX_BYTES` | `10485760` | 日志单文件最大字节数（默认 10MB） |
 | `LOG_BACKUP_COUNT` | `5` | 保留的历史日志文件数 |
@@ -68,12 +71,15 @@
 | `AUTH_TOKEN_TTL` | `604800` | access token 有效期（秒，默认 7 天） |
 | `AUTH_REFRESH_TOKEN_TTL` | `2592000` | refresh token 有效期（秒，默认 30 天） |
 | `AUTH_STORE` | `memory` | 认证用户存储：`memory`（进程内，默认）/ `sqlalchemy`（需配置 DB 并迁移建表） |
-| `AUTH_LOGIN_MAX_FAILS` | `5` | 登录防爆破：连续失败次数阈值 |
-| `AUTH_LOGIN_LOCK_SECONDS` | `300` | 登录防爆破：达阈值后的锁定秒数 |
+| `AUTH_LOGIN_MAX_FAILS` | `5` | 登录防爆破：同一 (用户名, 来源 IP) 连续失败次数阈值 |
+| `AUTH_LOGIN_LOCK_SECONDS` | `300` | 登录防爆破：达阈值后的锁定秒数（锁定键按 (用户名, IP) 隔离，避免他人故意打错密码锁死账号） |
+| `AUTH_PBKDF2_ITERATIONS` | `600000` | 密码哈希 PBKDF2-HMAC-SHA256 迭代次数（新哈希写入用；校验以哈希串内记录的迭代次数为准，可平滑升级）。`<10000` 告警回退默认 |
 | `METRICS_ENABLED` | `true` | 是否启用 Prometheus 指标（`/metrics`） |
+| `PROMETHEUS_MULTIPROC_DIR` | _无_ | 多进程指标目录。gunicorn 多 worker 时**必须设置**（指向一个目录），否则 `/metrics` 只返回被刮到的那个 worker 的数据；目录不存在会自动创建 |
 | `WORKER_NUM` | `4` | gunicorn worker 数（仅 wsgi_gunicorn.py 生效） |
 | `RATE_LIMIT_STORE` | `memory` | 限流计数存储：`memory`（进程内）/ `redis`（多实例准确，需 REDIS_URL） |
-| `SNOWFLAKE_WORKER_ID` | _自动_ | 雪花 ID 机器标识（0-31）；多进程部署建议每进程显式配置，未配置时按 PID 自动派生 |
+| `SNOWFLAKE_WORKER_ID` | _自动_ | 雪花 ID 机器标识（0-31）。未配置时按 `(crc32(hostname) + pid) % 32` 派生（容器内 hostname 可区分副本，但仍非严格保证），**多副本部署建议显式配置**；对唯一性零容忍请用 `KeyGenerator.generate_uuid7()` |
+| `SNOWFLAKE_DATACENTER_ID` | `1` | 雪花 ID 数据中心标识（0-31）。多机房/多集群各配不同值，越界回退 1 并告警 |
 
 ## 数据库
 
@@ -106,12 +112,15 @@ export SQLITE_DB_PATH='storage/app.db'
 
 ```
 Flask, flask-cors, Flask-SQLAlchemy, flask-migrate, flask-smorest,
-marshmallow, requests, Werkzeug, PyMySQL, waitress, MarkupSafe,
+marshmallow, Werkzeug, PyMySQL, waitress, MarkupSafe,
 redis, python-dotenv, prometheus-client
 ```
 
 可选：`Flask-SocketIO` + `simple-websocket`（WebSocket）、`eventlet`（eventlet 模式）、
 `gunicorn`（Linux 生产多进程）。
+
+> `requests` 仅 `scripts/benchmark.py` 使用，已移至 `requirements-dev.txt`，
+> 不进入生产镜像。
 
 > 配置 `LOG_FILE_PATH`（非空）时日志写入对应文件（按 `LOG_MAX_BYTES` 轮转）；
 > 未配置时仅控制台输出（容器场景由 Docker logs 采集）。文件存储于 `storage/` 目录。

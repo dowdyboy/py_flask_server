@@ -70,8 +70,14 @@
 - `POST /api/v1/auth/logout` 使 access token 失效；body 可选携带 `{"refresh_token": "..."}`
   一并吊销 refresh（彻底结束会话），不携带则 refresh 到期自然失效（向后兼容）
 
-**防爆破**：同一用户名连续登录失败 `AUTH_LOGIN_MAX_FAILS`（默认 5）次后锁定
+**防爆破**：同一 **(用户名, 来源 IP)** 连续登录失败 `AUTH_LOGIN_MAX_FAILS`（默认 5）次后锁定
 `AUTH_LOGIN_LOCK_SECONDS`（默认 300）秒，锁定期间正确密码也拒绝（code 4003，HTTP 429）。
+
+> 锁定键按 (用户名, IP) 隔离，而不是只按用户名：否则攻击者遍历已知用户名、各打几次错误密码，
+> 就能把全站账号逐个锁死（锁定型 DoS）。代价是分布式撞库可绕过单 IP 阈值——跨 IP 失败累计
+> 达 50 次会打一条告警日志，真正的拦截请交给 `RATE_LIMIT_ENABLED` / WAF。
+>
+> `refresh_token` 换取新令牌时会校验用户是否仍存在（用户被删除 → 401，而非 500）。
 
 **令牌与计数存储（自动降级）**：
 - 未配置 `REDIS_URL`：access/refresh token 与防爆破计数存进程内内存（单实例可用，重启失效）
@@ -162,7 +168,13 @@ class ArticleView(MethodView):
   `RATE_LIMIT_STORE=redis` 但未配置 `REDIS_URL` 时同样回退内存存储
 
 **客户端 IP 解析**：`get_real_ip` 仅在来源位于 `TRUSTED_PROXIES`（支持 CIDR）时信任
-`X-Forwarded-For`（取第一个非空条目），否则使用 `remote_addr`。
+`X-Forwarded-For`；解析规则是**从右向左取第一个"非可信代理且为合法 IP"的条目**，否则使用
+`remote_addr`。
+
+> 为什么不是取最左项：反向代理普遍采用**追加**语义（nginx `$proxy_add_x_forwarded_for`、
+> Traefik 等），头形如 `客户端伪造值, ..., 代理追加的真实地址`。最左项由客户端提供、可任意伪造，
+> 取它等于让攻击者每次换个假 IP 就绕过 IP 限流并污染审计日志。仅当整条链路都是可信代理时
+> 才回退最左项。
 
 ## Prometheus 指标
 

@@ -5,8 +5,84 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-22
+
+### 行为变更（升级前必读）
+
+本版修复了多处"生产部署才暴露"的问题，其中 5 项会改变既有行为：
+
+1. **X-Forwarded-For 改为取最右**：由"取第一个非空项"改为从右向左取第一个非可信 IP。
+   若你的部署依赖"取最左"（例如多级代理但只把第一跳配进 `TRUSTED_PROXIES`），
+   真实客户端 IP 的判定结果会变化，请复核 `TRUSTED_PROXIES` 配置。
+2. **waitress 不再丢弃 `X-Forwarded-*`**（`clear_untrusted_proxy_headers=False`）：
+   信任决策统一交给 `TRUSTED_PROXIES` + `get_real_ip()`。若此前依赖 waitress 清除
+   代理头来做隔离，请确认 `TRUSTED_PROXIES` 只包含可信代理。
+3. **登录锁定键格式变化**：`auth:login_lock:{username}` → `auth:login_lock:{username}:{ip}`
+   （失败计数同理）。滚动升级期间旧键不再生效，进行中的锁定会提前解除，影响可忽略。
+4. **PBKDF2 迭代次数默认 100000 → 600000**：旧哈希照常校验（迭代次数写在哈希串里），
+   但新写入哈希的登录/注册 CPU 成本约 **×6**（单次约 50ms → 250ms）。
+   高并发登录场景请评估：可调回 `AUTH_PBKDF2_ITERATIONS=310000`，或改用 Argon2id。
+5. **`requests` 移出运行时依赖**：`scripts/benchmark.py` 需安装 `requirements-dev.txt`。
+
+（`flask_server/controller/` 的导入失败现在会给出明确的 `RuntimeError`，行为仍是
+fail-fast，仅报错信息变化。）
+
 ### 修复
 
+- **gunicorn 多 worker + 协议服务器崩溃循环（P0）**：`post_worker_init` 在每个 worker
+  都会执行，原实现让每个 worker 都 `start_protocol_servers()` —— worker 2..N 因端口已被
+  占用抛 `OSError`，异常穿出钩子导致 worker 退出 → master 重拉 → 无限重启（HTTP 只剩
+  1 个 worker 可用）。现在 `WORKER_NUM>1` 时跳过启动并只告警一次；单 worker 下绑定失败
+  也只记 ERROR，不再让 worker 崩溃
+- **waitress 优雅关闭（P0）**：`wsgi.py` 改为 `waitress.create_server()` + 信号驱动
+  `server.close()`（停止 accept，等在途请求处理完）→ 释放依赖 → 退出；空闲 keep-alive
+  连接由 15s 看门狗兜底，二次信号立即退出。修复前信号处理器直接 `os._exit(0)`，
+  在途请求被强杀（滚动更新偶发 502）
+- **X-Forwarded-For 解析可被伪造（P1）**：由"取最左非空项"改为**从右向左取第一个
+  非可信且合法的 IP**。反向代理普遍是追加语义（`$proxy_add_x_forwarded_for`），最左项
+  由客户端提供、可任意伪造——修复前攻击者每个请求换一个假 XFF 即可绕过 IP 限流、
+  污染审计日志。整条链路均为可信代理时回退最左项，非法字面量跳过
+- **waitress 默认丢弃 X-Forwarded-For（P1，实机验证发现）**：waitress 3 的
+  `clear_untrusted_proxy_headers` 默认 True，未配置 `trusted_proxy` 时会**删除**请求中的
+  `X-Forwarded-*`。这会让上面的可信代理逻辑在生产入口下完全失效——置于反向代理之后时
+  所有请求的 `remote_addr` 都是代理 IP，IP 限流退化成全站共享一个桶、审计日志丢失真实来源。
+  `wsgi.py` 现显式传 `clear_untrusted_proxy_headers=False`，信任决策仍由
+  `TRUSTED_PROXIES` + `get_real_ip()` 统一负责
+- **`/docs` 被自身 CSP 打残（P1）**：CSP 改为按 `SWAGGER_UI_URL` 动态放行
+  `scheme://host`，并补齐 `img-src`/`font-src`。修复前 `style-src` 未放行 CDN
+  （swagger-ui.css 被拦 → 页面无样式），按文档改内网镜像后脚本也被拦（/docs 白屏）
+- **容器内雪花 ID 撞号（P1）**：worker_id 由 `pid % 32` 改为
+  `(crc32(hostname) + pid) % 32`（容器内 PID 恒为 1，原实现所有副本同为 1）；
+  新增 `SNOWFLAKE_DATACENTER_ID`；worker 改为惰性初始化（导入期不再读配置/建对象）；
+  新增 `KeyGenerator.generate_uuid7()`（时间有序 UUID，无需分配机器号）
+- **TCP 空闲连接耗尽并发槽位（P1）**：新增 `TCP_IDLE_TIMEOUT`（默认 300s），
+  只连不发的连接由服务端关闭并释放槽位；`≤0` 关闭超时。修复前 256 个空连接即可
+  占满 `TCP_MAX_CONNECTIONS`，正常客户端被拒
+- **登录锁定型 DoS（P1）**：防爆破计数/锁定键由"仅按用户名"改为**(用户名, 来源 IP)**，
+  攻击者无法再靠故意打错密码把受害者账号锁死；跨 IP 失败累计 50 次打告警日志
+  （观测分布式撞库，不阻断）。`login()` 新增 `client_ip` 参数
+- **refresh token 换取令牌可能 500（P1）**：`refresh_access_token` 校验用户是否仍存在
+  （已删除 → 返回 401），`/login` 与 `/refresh` 均对 `user is None` 兜底，
+  修复前对 `None` 取 `user.uid` 触发 AttributeError
+- **密码哈希强度与比较方式**：PBKDF2 迭代次数默认值改为 `AUTH_PBKDF2_ITERATIONS`
+  （默认 600000，对齐 OWASP 2023）；校验改用 `hmac.compare_digest`（常量时间）。
+  时序均衡用的虚拟哈希与真实哈希参数保持一致
+- **日志伪造（log forging）**：`Logger` 出口统一转义消息中的 CR/LF，用户可控输入
+  （URL/用户名/请求头）中的换行不再能拆出伪造日志行；**新注册**用户名收敛为
+  `[A-Za-z0-9_.@-]`，**登录**仅禁止控制字符（不用严格白名单，避免存量中文/带空格
+  用户名在升级后 422 登录失败）
+- **SQLite 标识符注入面**：表名/列名改为白名单校验 + 引用（`ValueError` 拒绝
+  `users; DROP TABLE ...` 之类），`limit` 强制整数；`conditions`/`order_by`
+  明确标注为原始 SQL 片段（仅可传常量）
+- **scaffold 自嵌套**：目标目录位于模板目录内部时拒绝执行（修复前 `copytree`
+  会边复制边递归复制自身，直到路径过长）
+- **`SafeThread` 崩溃日志**：`traceback.print_exc()`（stderr，容器里可能丢弃）改为
+  `Logger.error(exc_info=True)`，与统一日志/JSON 格式一致
+- **controller 自动发现的报错可读性**：模块导入失败时包装为明确的 `RuntimeError`
+  （指出模块名与排查方向），并文档化"controller fail-fast / handler 容错跳过"的差异
+- **启动噪音**：`TCP_FRAME_HEAD`/`TCP_FRAME_TAIL` 默认留空不再触发
+  `[Config WARNING]`（空值属未配置；非法转义仍告警）。修复前 `cp .env.example .env`
+  后每次启动都打两条无意义告警
 - **banner 多 worker 判定与 gunicorn 默认对齐**：`check_production_config` /
   `print_startup_banner` 新增 `worker_num` 参数，gunicorn 入口（`wsgi_gunicorn.py`）
   传入实际 worker 数（未设 `WORKER_NUM` 时默认 4），使 Redis/token/TCP/日志的多
@@ -15,8 +91,32 @@
   `ContextVar`，移除惰性 `_ensure_ctx` 的并发竞态（多线程首个请求窗口个别日志
   rid 关联错位）
 - **文档事实修正**：`LOG_FILE_PATH` 说明改为"未设置/为空时仅控制台、不写文件"
-  （此前文档称默认写 `server.log`，与代码行为不符）；测试用例数 422→424、
-  覆盖率更新为实测 91.77%
+  （此前文档称默认写 `server.log`，与代码行为不符）
+
+### 新增
+
+- **Prometheus 多进程指标**：支持 `PROMETHEUS_MULTIPROC_DIR`，`/metrics` 聚合所有
+  worker 的指标（目录不存在自动创建），gunicorn 通过 `child_exit` 调用
+  `mark_process_dead` 清理退出 worker 的指标文件。修复前多 worker 下每个进程各自计数，
+  `/metrics` 只能看到被刮到的那一个进程
+- **HSTS**：`HSTS_ENABLED`（默认 false）/ `HSTS_MAX_AGE`，置于 HTTPS 反代之后建议开启
+- **配置项**：`TCP_IDLE_TIMEOUT`、`AUTH_PBKDF2_ITERATIONS`、`SNOWFLAKE_DATACENTER_ID`、
+  `PROMETHEUS_MULTIPROC_DIR`、`HSTS_ENABLED` / `HSTS_MAX_AGE`
+- **测试**：424 → 482 用例（覆盖率实测 91.8%），新增多 worker 钩子、优雅关闭、
+  XFF 伪造、CSP/HSTS、UUIDv7、TCP 空闲超时、IP 隔离锁定、refresh 兜底、
+  日志注入、SQLite 标识符、scaffold 守卫等回归用例
+
+### 变更
+
+- `requests` 从运行时依赖移至 `requirements-dev.txt`（仅 `scripts/benchmark.py` 使用，
+  生产镜像少装 urllib3/certifi/idna/charset-normalizer 等 5 个传递依赖）
+
+### 文档
+
+- 同步 `docs/configuration.md`（新增环境变量表项）、`docs/api-conventions.md`
+  （XFF 解析规则、防爆破语义、refresh 兜底）、`docs/deployment.md`（多 worker 防护、
+  优雅关闭、多进程指标、HSTS、CSP 与 SWAGGER_UI_URL、waitress 代理头清理）、
+  `docs/protocol-servers.md`（空闲超时）
 
 ## [0.4.0] - 2026-08-13
 

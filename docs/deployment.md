@@ -20,32 +20,36 @@ WORKER_NUM=4 python wsgi_gunicorn.py
 
 ### 多进程部署注意事项（gunicorn）
 
-1. **雪花 ID**：多 worker 下默认按 PID 自动派生 worker_id（防重复）；更推荐显式配置，
-   如 gunicorn 配置中为每个 worker 注入不同的 `SNOWFLAKE_WORKER_ID`
+1. **雪花 ID**：worker_id 默认按 `(crc32(hostname) + pid) % 32` 派生（容器 hostname 可区分副本，
+   但仍非严格保证）。多副本部署请**显式配置** `SNOWFLAKE_WORKER_ID` / `SNOWFLAKE_DATACENTER_ID`；
+   对唯一性零容忍的场景直接用 `KeyGenerator.generate_uuid7()`（时间有序 UUID，无需分配机器号）
 2. **缓存/限流**：memory_cache 与限流计数为进程内，多 worker 下互相独立——
    必须配置 `REDIS_URL` 保持一致（启动 banner 会告警）
 3. **认证**：access/refresh token 与登录防爆破计数默认存进程内缓存；配置 `REDIS_URL`
    后自动改用 Redis（多 worker 共享，任意 worker 签发的 token 都能校验）。
    `AUTH_STORE=sqlalchemy` 只解决用户数据持久化，**token 共享仍依赖 Redis**
-4. **登录锁定**：防爆破计数存缓存，多 worker 下同样需 Redis 才能全局生效
+4. **登录锁定**：防爆破计数按 (用户名, IP) 隔离并缓存在上述存储，多 worker 下同样需 Redis 才能全局生效
 5. **定时任务**：若使用 APScheduler，多 worker 下任务会重复执行——建议单 worker 运行
    或加分布式锁（参考 `examples/scheduler_demo.py`）
 6. **日志**：每个 worker 都向 `LOG_FILE_PATH`（默认 `server.log`）写入，
    多进程并发轮转同一文件存在竞态（可能丢行）。生产建议：将日志重定向到 stdout
    （如 `LOG_FILE_PATH=` 禁用文件日志 + 容器日志采集器），或将 `LOG_FILE_PATH`
    指向共享挂载卷后由外部工具统一轮转
-7. **Prometheus 指标**：未启用 multiprocess 模式时，各 worker 的 `/metrics` 只含本进程的
-   计数（轮询任一 worker 都会漏掉其他 worker 的数据）。需要全局准确指标时：
-   配置 `prometheus_multiproc_dir` 共享目录 + `PROMETHEUS_MULTIPROC_DIR` 环境变量，
-   并部署 prometheus-client 多进程模式（或用独立采集端聚合）
-8. **TCP/UDP 协议服务器**：为每进程独立实例，多 worker 会重复绑定同一端口导致冲突。
-   启用时需 `WORKER_NUM=1`，或将协议服务器独立进程部署（启动 banner 会告警）；
-   同时需在防火墙放行 TCP/UDP 监听端口（默认 9000 / 9001）。详见
-   [protocol-servers.md](protocol-servers.md)
+7. **Prometheus 指标**：多 worker 下必须设置 `PROMETHEUS_MULTIPROC_DIR`（指向一个目录，
+   不存在会自动创建），框架会自动用多进程聚合模式返回全局指标，并在 worker 退出时
+   清理其指标文件；未设置时 `/metrics` 只含被刮到的那个 worker 的计数
+8. **TCP/UDP 协议服务器**：为每进程独立实例，多 worker 会重复绑定同一端口。
+   **框架已在代码层拦截**：`WORKER_NUM>1` 时 `post_worker_init` 跳过启动（只打一条告警），
+   不会出现"端口冲突 → worker 崩溃 → master 重拉"的崩溃循环。需要协议服务器时请
+   `WORKER_NUM=1` 或将协议服务器独立进程部署；同时在防火墙放行 TCP/UDP 端口
+   （默认 9000 / 9001）。详见 [protocol-servers.md](protocol-servers.md)
 
-waitress（wsgi.py）与 gunicorn（wsgi_gunicorn.py）均支持优雅退出：
-waitress 由 `wsgi.py` 注册的 SIGTERM/SIGINT 处理器释放 DB 连接池、Redis 连接、线程池；
-gunicorn 由自身管理信号与 worker 优雅退出。
+### 优雅退出
+
+| 入口 | 行为 |
+|---|---|
+| `python wsgi.py` | 收到 SIGTERM/SIGINT 后：**停止 accept 新连接** → 等待在途请求处理完（最长 `GRACEFUL_TIMEOUT`=15s）→ 释放 DB 连接池/Redis/线程池/协议服务器 → 退出。空闲 keep-alive 连接由看门狗超时兜底；**二次信号立即退出** |
+| `python wsgi_gunicorn.py` | 由 gunicorn 自身管理 `graceful_timeout`（15s）与 worker 优雅退出 |
 
 ## Docker 部署
 
@@ -110,13 +114,20 @@ docker run -p 5000:5000 --env-file .env flask-server
    （`.gitignore` 已排除 `.env`、`*.log`、`storage/*.db`）。
 3. **数据库**：使用连接池、限制数据库用户权限。
 4. **安全响应头**：默认注入 X-Content-Type-Options / X-Frame-Options / Referrer-Policy / CSP
-   （`SECURITY_HEADERS_ENABLED=false` 可关闭）。
+   （`SECURITY_HEADERS_ENABLED=false` 可关闭）。CSP 对 `/docs` 会自动放行 `SWAGGER_UI_URL`
+   的 `scheme://host`（CSS/JS 都从该地址取），其余路径收紧为 `script-src 'self'`。
+   置于 HTTPS 反代之后建议同时开启 `HSTS_ENABLED=true`。
 5. **限流**：`RATE_LIMIT_ENABLED=true` 按 IP+路径 固定窗口限流（另有 IP 级总配额兜底，
    防随机路径绕过），超限返回 429；`/metrics` 与健康探针端点豁免限流。
-6. **可信代理**：`TRUSTED_PROXIES` 内的来源会被信任其 `X-Forwarded-For` 头。
-   ⚠️ 使用 CIDR（如 Docker 的 `172.16.0.0/12`）时，该网段内**任何**主机（含同网络下
-   其他容器）都能伪造 `X-Forwarded-For`（绕过限流、污染日志 IP）。请确保网段内仅含
-   可信服务；如需严格隔离，应改为信任具体网关 IP。
+6. **可信代理**：`TRUSTED_PROXIES` 内的来源会被信任其 `X-Forwarded-For` 头，解析规则是从右
+   向左取第一个非可信 IP。⚠️ 使用 CIDR（如 Docker 的 `172.16.0.0/12`）时，该网段内**任何**
+   主机（含同网络下其他容器）都能伪造 `X-Forwarded-For`（绕过限流、污染日志 IP）。请确保
+   网段内仅含可信服务；如需严格隔离，应改为信任具体网关 IP。
+   > **waitress 特有坑（框架已处理）**：waitress 3 的 `clear_untrusted_proxy_headers`
+   > 默认为 True，未配置 `trusted_proxy` 时会**直接删除** `X-Forwarded-*`。若被删除，
+   > 代理后所有请求的 `remote_addr` 都是代理 IP——限流会退化成一个全站共享的桶、
+   > 日志丢失真实来源。`wsgi.py` 已显式关闭该清理，信任决策统一交给
+   > `TRUSTED_PROXIES` + `get_real_ip()`。
 7. **认证与监控**：`AUTH_ENABLED=true` 时全局认证仅拦截 `/api/` 前缀路径——
    `/metrics` 不在 `/api/` 下，**不需要 `X-AUTH-TOKEN`**（Prometheus 可直接抓取）。
    如需保护指标端点，请将服务仅绑定内网（防火墙/编排网络策略），或在
@@ -130,6 +141,9 @@ docker run -p 5000:5000 --env-file .env flask-server
 ```bash
 SWAGGER_UI_URL=http://internal-docs.example.com/swagger-ui-dist/
 ```
+
+> `/docs` 的 CSP 会读取 `SWAGGER_UI_URL` 并自动放行其来源（`scheme://host`），
+> 无需手工改代码；自定义地址同样生效（内网 IP/端口、私有 CDN 均可）。
 
 Nginx 托管示例：
 
