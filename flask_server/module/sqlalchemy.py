@@ -19,27 +19,28 @@ _app = None   # 初始化时绑定的 Flask app（单应用场景）
 
 
 # 初始化SQLAlchemy对象，并根据配置决定是否反射数据库表结构
-def init_SQLAlchemy(app):
+def init_SQLAlchemy(app, cfg=None):
     global db, _app
+    cfg = cfg if cfg is not None else config
     # 已初始化：进程级单例直接复用（create_app() 二次调用时不得把它重置为 None，
     # 否则第二次创建的应用会丢掉 db，且 model 模块的 UserPO 绑定失效）
     if db is not None:
         return
-    if config.sqlalchemy_uri is None:
+    if cfg.sqlalchemy_uri is None:
         return
     _app = app
-    Logger.info(f'init_SQLAlchemy : {_mask_uri(config.sqlalchemy_uri)}')
-    app.config['SQLALCHEMY_DATABASE_URI'] = config.sqlalchemy_uri
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = config.sqlalchemy_track_modify
+    Logger.info(f'init_SQLAlchemy : {_mask_uri(cfg.sqlalchemy_uri)}')
+    app.config['SQLALCHEMY_DATABASE_URI'] = cfg.sqlalchemy_uri
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = cfg.sqlalchemy_track_modify
     # S3: 数据库连接池参数
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'pool_size': config.db_pool_size,
-        'pool_recycle': config.db_pool_recycle,
-        'pool_pre_ping': config.db_pool_pre_ping,
-        'pool_timeout': config.db_pool_timeout,
+        'pool_size': cfg.db_pool_size,
+        'pool_recycle': cfg.db_pool_recycle,
+        'pool_pre_ping': cfg.db_pool_pre_ping,
+        'pool_timeout': cfg.db_pool_timeout,
     }
     db = SQLAlchemy(app)
-    if config.db_reflect_on_start:
+    if cfg.db_reflect_on_start:
         # 容错：反射失败（如 DB 短暂不可达）不应导致应用启动崩溃，
         # engine 本身为惰性连接，首个查询时才真正连库
         try:

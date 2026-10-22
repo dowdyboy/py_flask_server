@@ -54,7 +54,7 @@ py_flask_server/
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 开发启动脚本
-├── tests/                     # 490 个用例（覆盖率门槛 85%，实测 91.9%）
+├── tests/                     # 516 个用例（覆盖率门槛 85%，实测 92.0%）
 ├── docs/                      # 详细文档
 ├── Makefile                   # 统一命令入口
 ├── Dockerfile / docker-compose*.yml
@@ -78,6 +78,7 @@ python scripts/scaffold.py my_project   # 生成新项目
 
 | 文档 | 内容 |
 |---|---|
+| [架构说明](docs/architecture.md) | 分层与依赖方向、启动流程、请求生命周期、配置体系、进程模型、扩展点 |
 | [快速上手与教程](docs/getting-started.md) | 从零创建第一个完整接口（DB/校验/文档全流程） |
 | [配置说明](docs/configuration.md) | 环境变量表、APP_ENV 预设档、依赖说明 |
 | [TCP/UDP 协议服务器](docs/protocol-servers.md) | 在 handler/ 注册处理器接收 TCP/UDP 消息（帧格式/回发/部署注意） |

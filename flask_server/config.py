@@ -70,7 +70,7 @@ _preset = _ENV_PRESETS.get(_APP_ENV, _ENV_PRESETS['development'])
 
 
 class Config:
-    def __init__(self, ):
+    def __init__(self, overrides=None):
         # 项目根目录绝对路径
         self.project_dir = _PROJECT_DIR
 
@@ -325,5 +325,71 @@ class Config:
 
         # 自定义配置
 
+        # 注入覆盖：Config({'auth_enabled': True, 'api_version': 'v9'})
+        # 用于 create_app(framework_config=...) 构造隔离配置（测试/多实例场景），
+        # 也可覆盖任意环境变量派生出的字段
+        if overrides:
+            for key, value in overrides.items():
+                setattr(self, key, value)
 
-config = Config()
+    def to_dict(self):
+        """导出为普通 dict（调试/日志用；不含 _ 开头的内部字段）"""
+        return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
+
+    def __repr__(self):
+        return f'<Config env={self.app_env} api_version={self.api_version}>'
+
+
+# 进程默认配置：导入期从环境变量 / .env 读取一次
+default_config = Config()
+
+# 当前 app 注入配置的存放位置（create_app 写入 app.extensions）
+CONFIG_EXT_KEY = 'flask_server.config'
+
+
+def _resolve_config():
+    """解析当前应使用的配置对象。
+
+    优先级：当前 Flask app 注入的配置 > 进程默认配置。
+    在 app/请求上下文之外（后台线程、导入期、CLI 脚本）一律回退默认配置，
+    与改造前的行为一致。
+    """
+    try:
+        from flask import current_app, has_app_context
+    except ImportError:      # 极端情况下 Flask 未安装（纯脚本用 config）时也能工作
+        return default_config
+    if has_app_context():
+        cfg = current_app.extensions.get(CONFIG_EXT_KEY)
+        if cfg is not None:
+            return cfg
+    return default_config
+
+
+class ConfigProxy:
+    """模块级 `config` 的代理对象。
+
+    为什么用代理而不是把 100+ 处 `config.xxx` 全改成显式传参：
+      - 读取：自动解析到"当前 app 注入的配置"，请求内行为可随 app 变化；
+      - 写入：转发到解析出的配置对象，`monkeypatch.setattr(config, 'x', y)` 等
+        既有测试写法保持可用；
+      - 上下文外：回退进程默认配置，后台线程/脚本不受影响。
+    这样既拿到了"配置可注入"，又不需要改动所有调用点。
+    """
+
+    __slots__ = ()
+
+    def __getattr__(self, name):
+        if name.startswith('__'):
+            raise AttributeError(name)
+        return getattr(_resolve_config(), name)
+
+    def __setattr__(self, name, value):
+        setattr(_resolve_config(), name, value)
+
+    def __repr__(self):
+        return f'<ConfigProxy -> {_resolve_config()!r}>'
+
+
+# 对外暴露的配置单例（保持 `from ..config import config` 用法不变）
+config = ConfigProxy()
+

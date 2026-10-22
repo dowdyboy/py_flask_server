@@ -14,10 +14,15 @@ from . import auth
 from . import metrics
 
 
-def init_components(app):
-    """把全部横切组件装配到指定 app"""
+def init_components(app, cfg=None):
+    """把全部横切组件装配到指定 app
+
+    Args:
+        app (Flask): 目标应用
+        cfg (Config, optional): 应用的框架配置（注册期需要判断的开关，如 AUTH_ENABLED）
+    """
     rate_limit.init_rate_limit(app)
-    auth.init_auth(app)
+    auth.init_auth(app, cfg)
     metrics.init_metrics(app)
 
 

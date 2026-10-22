@@ -15,7 +15,7 @@ pytest tests/ --cov=flask_server --cov-report=term
 认证模块（Redis 存储降级与内存兜底、防爆破、refresh 轮换、登出吊销 refresh、入参限长）、
 Prometheus 指标、缓存降级恢复（含故障/脏数据自愈）、事务提交/回滚（CI 含真实 MySQL）、
 路径穿越防护、反射与声明式模型共存、雪花 ID 并发、SubprocessTask 哨兵停止等
-**490 个用例**（覆盖率 91.9%）。
+**516 个用例**（覆盖率 92.0%）。
 
 真实环境自检（云服务器 MySQL/Redis 全链路验证）：
 
@@ -48,13 +48,19 @@ CI 流水线（`.github/workflows/ci.yml`）：
 
 ## 应用工厂（create_app）
 
+> 分层/生命周期/进程模型的完整说明见 [架构说明](architecture.md)。
+
 `flask_server/app.py` 提供 `create_app()`，模块底部的 `app = create_app()` 保留原有用法
 （`from flask_server import app` / `FLASK_APP=flask_server.app:app` 都不变）。
 
 ```python
 from flask_server import create_app
+from flask_server.config import Config
 
-app = create_app({'TESTING': True})   # 可选：合并进 app.config 的 Flask 级配置
+app = create_app({'TESTING': True})                       # 只改 Flask 级配置
+
+cfg = Config({'api_version': 'v9', 'auth_enabled': True})  # 框架配置注入（可覆盖任意字段）
+app = create_app(framework_config=cfg)                     # 该实例的装配与请求期配置都用它
 ```
 
 装配流程（顺序即行为）：
@@ -71,6 +77,16 @@ app = create_app({'TESTING': True})   # 可选：合并进 app.config 的 Flask 
 **仍是进程级单例**（有意为之）：SQLAlchemy 的 `db`、Flask-Migrate、SocketIO、
 Prometheus 指标对象、内存缓存/限流/认证存储。同进程创建多个 app 会共享这些；
 需要"多套完全独立配置"请用多进程部署。
+
+**配置解析优先级**（`flask_server/config.py::_resolve_config`）：
+
+```
+create_app(framework_config=Config({...}))   ← 该 app 的装配与请求期配置
+        > 环境变量 > 项目根 .env > 代码默认值
+```
+
+`config` 是一个代理对象：请求内自动解析到当前 app 注入的配置，app 上下文之外
+（后台线程 / CLI 脚本 / 导入期）回退进程默认配置，因此既有代码与测试写法不变。
 
 **扩展点**：controller 模块里除了 Blueprint，还可以定义 `def register(app)`，
 在装配时拿到 app 做任意注册（如 `app.add_url_rule`、`app.errorhandler`）。

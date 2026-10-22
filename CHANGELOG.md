@@ -5,6 +5,22 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **配置注入**：`Config(overrides)` + `create_app(framework_config=...)`，配合
+  `ConfigProxy` 实现"按 app 解析配置"而不改动任何 `config.xxx` 调用点：
+  - `Config({'api_version': 'v9', 'auth_enabled': True})` 可覆盖任意环境变量派生字段
+  - `create_app(framework_config=cfg)`：创建期装配（CORS/SECRET_KEY/OpenAPI/SocketIO/
+    DB/组件开关）与请求期 `config.xxx` 都解析到该对象（存于
+    `app.extensions['flask_server.config']`，亦可通过 `app.framework_config` 取用）
+  - app 上下文之外（后台线程、CLI、导入期）回退进程默认配置，
+    `monkeypatch.setattr(config, 'x', y)` 等既有写法与测试**完全不受影响**
+- **`docs/architecture.md`**：架构总览——分层与依赖方向、目录职责、启动流程、
+  create_app 装配顺序、请求生命周期（钩子顺序/异常映射/路由匹配）、配置解析链、
+  进程模型与单例边界、扩展点、改动决策表、已知约束
+- `tests/test_config_injection.py`（11 例）：覆盖 Config 覆盖、创建期/请求期注入、
+  按 app 隔离的 AUTH_ENABLED、上下文外回退默认、代理写入语义
+
 ### 变更
 
 - **引入 `create_app()` 应用工厂**（架构重构，用法向后兼容）：

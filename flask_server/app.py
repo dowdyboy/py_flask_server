@@ -268,7 +268,7 @@ def register_error_handlers(app):
     app.register_error_handler(Exception, all_exception_handler)
 
 
-def _init_socketio(app):
+def _init_socketio(app, cfg):
     """按配置初始化 SocketIO（默认关闭；未安装依赖时告警降级）"""
     if not _socketio_will_init:
         return None
@@ -279,68 +279,80 @@ def _init_socketio(app):
             async_mode=_async_mode,
             ping_timeout=120,
             ping_interval=30,
-            max_http_buffer_size=config.socketio_max_http_buffer_size,
-            cors_allowed_origins=config.cors_origins,
+            max_http_buffer_size=cfg.socketio_max_http_buffer_size,
+            cors_allowed_origins=cfg.cors_origins,
         )
     except ImportError:
         Logger.warn('SOCKETIO_ENABLED=true but Flask-SocketIO not installed, skipping SocketIO init')
         return None
 
 
-def create_app(app_config=None):
+def create_app(app_config=None, framework_config=None):
     """创建并装配一个 Flask 应用实例。
 
     Args:
         app_config (dict, optional): 合并进 `app.config` 的 Flask 级配置
-            （如 `{'TESTING': True}`）。框架自身配置仍来自环境变量 / config 单例。
+            （如 `{'TESTING': True}`）。
+        framework_config (Config, optional): 框架配置对象（`flask_server.config.Config`）。
+            不传则使用进程默认配置。传入后：
+              - 创建期的装配（CORS / SECRET_KEY / OpenAPI / SocketIO / DB / 组件开关）
+                全部读这个对象；
+              - 请求期代码里的 `config.xxx` 通过 ConfigProxy 解析到它
+                （见 flask_server/config.py::_resolve_config）。
 
     Returns:
         Flask: 已注册安全钩子、异常处理、限流/认证/指标与全部路由的应用实例。
 
     ⚠️ 进程级单例（同进程内多实例会共享，属已知设计约束）：
-        - SQLAlchemy 的 `db` 与 Flask-Migrate（`init_SQLAlchemy` 只在首次绑定）
-        - SocketIO（eventlet 模式下必须全局唯一）
-        - Prometheus 指标对象与默认 registry
+        - SQLAlchemy 的 `db` 与 Flask-Migrate（`init_SQLAlchemy` 只在首次绑定；
+          不同 URI 需要多进程部署）
+        - SocketIO（eventlet 模式下必须全局唯一；eventlet monkey patch 是导入期决定的）
+        - Prometheus 指标对象与默认 registry、日志 handler
         - 内存缓存 / 限流计数 / 认证 token 存储
-      需要"多套配置各自独立"的场景，应改为多进程部署而非同进程多实例。
     """
+    from .config import CONFIG_EXT_KEY, default_config
     from .module import init_SQLAlchemy, init_Migrate
     from .component import init_components
     from .controller import register_controllers
 
+    cfg = framework_config if framework_config is not None else default_config
+
     app = Flask(__name__)
-    CORS(app, origins=config.cors_origins)
+    # 先落配置：组件注册与请求期钩子都从这里解析（必须早于任何装配）
+    app.extensions[CONFIG_EXT_KEY] = cfg
+
+    CORS(app, origins=cfg.cors_origins)
 
     # 安全配置
-    app.config['SECRET_KEY'] = config.secret_key
-    app.config['MAX_CONTENT_LENGTH'] = config.max_content_length
+    app.config['SECRET_KEY'] = cfg.secret_key
+    app.config['MAX_CONTENT_LENGTH'] = cfg.max_content_length
 
     # 非 development 环境使用默认 SECRET_KEY 时告警（生产环境必须修改）
-    if config.app_env != 'development' and config.secret_key_is_default:
+    if cfg.app_env != 'development' and cfg.secret_key_is_default:
         Logger.warn('SECRET_KEY is set to the default scaffold value. '
                     'Please set a strong custom SECRET_KEY in production!')
 
     # flask-smorest API 文档 + 参数校验
     app.config.update({
-        'API_TITLE': config.api_title,
-        'API_VERSION': config.api_version,
+        'API_TITLE': cfg.api_title,
+        'API_VERSION': cfg.api_version,
         'OPENAPI_VERSION': '3.0.3',
         'OPENAPI_URL_PREFIX': '/',
-        'OPENAPI_JSON_PATH': config.api_spec_url,
-        'OPENAPI_SWAGGER_UI_PATH': config.api_docs_url,
-        'OPENAPI_SWAGGER_UI_URL': config.swagger_ui_url,
+        'OPENAPI_JSON_PATH': cfg.api_spec_url,
+        'OPENAPI_SWAGGER_UI_PATH': cfg.api_docs_url,
+        'OPENAPI_SWAGGER_UI_URL': cfg.swagger_ui_url,
     })
     api = Api(app)
 
-    socketio = _init_socketio(app)
+    socketio = _init_socketio(app, cfg)
 
-    init_SQLAlchemy(app)
+    init_SQLAlchemy(app, cfg)
     init_Migrate(app)
 
     register_request_hooks(app)
     register_error_handlers(app)
     # 组件按 限流 → 认证 → 指标 的顺序注册（与历史 import 顺序一致，决定 before_request 执行序）
-    init_components(app)
+    init_components(app, cfg)
     register_controllers(app, api)
 
     if app_config:
@@ -349,6 +361,7 @@ def create_app(app_config=None):
     # 便于调用方拿到与本 app 绑定的扩展对象（不依赖模块级全局）
     app.api = api
     app.socketio = socketio
+    app.framework_config = cfg
     return app
 
 

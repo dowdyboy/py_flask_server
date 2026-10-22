@@ -441,9 +441,15 @@ def auth_interceptor():
 
 
 # AUTH_ENABLED=true 时启用全局认证保护（由 create_app → init_auth 注册）
-def init_auth(app):
-    """把全局认证拦截器注册到指定 app（AUTH_ENABLED=false 时不注册）"""
-    if not config.auth_enabled:
+def init_auth(app, cfg=None):
+    """把全局认证拦截器注册到指定 app（AUTH_ENABLED=false 时不注册）
+
+    Args:
+        app (Flask): 目标应用
+        cfg (Config, optional): 应用的框架配置；缺省用当前 config 代理解析
+    """
+    cfg = cfg if cfg is not None else config
+    if not cfg.auth_enabled:
         return
     app.before_request(auth_interceptor)
     Logger.info('Auth module: global auth interceptor enabled (AUTH_ENABLED=true)')
