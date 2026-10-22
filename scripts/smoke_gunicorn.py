@@ -47,6 +47,7 @@ def on_message(conn, data, addr):
 
 # 各阶段最长等待时间（秒）
 READY_TIMEOUT = 40
+BOOT_TIMEOUT = 20      # gunicorn 逐个 fork worker，需要等待全部起来
 STOP_TIMEOUT = 25
 LOG_TAIL = 4000
 
@@ -167,10 +168,17 @@ def _run_phase(name, workers, expect_tcp_open):
         print(f'[{name}] http_ready={healthy}', flush=True)
         assert healthy, f'[{name}] HTTP 未就绪（{READY_TIMEOUT}s），输出尾部:\n{_tail(output)}'
 
-        booted = output.count('Booting worker with pid')
+        # 注意：HTTP 就绪只说明"第一个 worker 起来了"，gunicorn 是逐个 fork 的，
+        # 必须等到 worker 数足够再断言（否则是竞态：上一轮恰好赶上了）
+        def _booted():
+            return _read(out_path).count('Booting worker with pid')
+
+        booted_ok = _wait(lambda: _booted() >= workers, BOOT_TIMEOUT, interval=0.1)
+        booted = _booted()
         print(f'[{name}] workers_booted={booted}', flush=True)
-        assert booted >= workers, \
-            f'[{name}] 只启动了 {booted}/{workers} 个 worker，输出尾部:\n{_tail(output)}'
+        assert booted_ok, \
+            f'[{name}] 只启动了 {booted}/{workers} 个 worker（{BOOT_TIMEOUT}s），输出尾部:\n{_tail(_read(out_path))}'
+        output = _read(out_path)
         for bad in ('Exception in worker process', 'address already in use', 'Worker failed to boot'):
             assert bad not in output, f'[{name}] 出现 "{bad}"，输出尾部:\n{_tail(output)}'
 
@@ -188,6 +196,10 @@ def _run_phase(name, workers, expect_tcp_open):
             assert not started, (
                 f'[{name}] 多 worker 下不应启动协议服务器（否则端口冲突 → 崩溃循环），'
                 f'但 {tcp_port} 可连接，输出尾部:\n{_tail(output)}')
+            # 更直接的证据：启动日志里不应出现协议服务器的监听行
+            assert 'tcp listening on' not in output, (
+                f'[{name}] 日志显示协议服务器被启动过（多 worker 下不应发生），'
+                f'输出尾部:\n{_tail(output)}')
 
         # 优雅退出：SIGTERM → master 退出码 0
         proc.send_signal(signal.SIGTERM)
