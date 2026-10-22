@@ -81,3 +81,55 @@ def test_main_skips_on_windows(monkeypatch, capsys):
     monkeypatch.setattr(sys, 'platform', 'win32')
     assert mod.main() == 0
     assert '[skip]' in capsys.readouterr().out
+
+
+def test_install_and_remove_handler(tmp_path, monkeypatch):
+    """临时 handler 的安装/删除：内容可被 handler 自动发现机制导入，用完不留痕"""
+    mod = _load()
+    handler = tmp_path / 'handler' / '_smoke_tcp_echo.py'
+    monkeypatch.setattr(mod, 'HANDLER_PATH', str(handler))
+
+    assert mod._install_handler() is True
+    assert handler.exists()
+    source = handler.read_text(encoding='utf-8')
+    assert '@tcp_server.on_message' in source
+    assert 'def on_message(conn, data, addr):' in source
+
+    mod._remove_handler(True)
+    assert not handler.exists()
+
+
+def test_install_handler_does_not_overwrite_existing(tmp_path, monkeypatch):
+    """目标文件已存在时不动它（避免踩到用户自己的 handler）"""
+    mod = _load()
+    handler = tmp_path / '_smoke_tcp_echo.py'
+    handler.write_text('# user file', encoding='utf-8')
+    monkeypatch.setattr(mod, 'HANDLER_PATH', str(handler))
+
+    assert mod._install_handler() is False
+    assert handler.read_text(encoding='utf-8') == '# user file'
+    mod._remove_handler(False)          # created=False 时不应删除
+    assert handler.exists()
+
+
+def test_tcp_echo_roundtrip_against_local_echo(tmp_path):
+    """_tcp_echo_roundtrip：连上监听端并收回应答"""
+    import threading
+
+    mod = _load()
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+        srv.bind(('127.0.0.1', 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+
+        def fake_echo():
+            # 真实框架按行定界，回调里拿到的是**已剥离分隔符**的 payload
+            conn, _ = srv.accept()
+            with conn:
+                conn.sendall(b'echo: ' + conn.recv(1024).rstrip(b'\n'))
+
+        t = threading.Thread(target=fake_echo, daemon=True)
+        t.start()
+        assert mod._tcp_echo_roundtrip(port) == b'echo: ping'
+        t.join(timeout=2)
