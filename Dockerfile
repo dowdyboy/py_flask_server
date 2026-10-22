@@ -3,8 +3,9 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt \
+# constraints.txt 锁定运行时依赖的具体版本：保证"CI 测的版本"与"镜像里的版本"一致
+COPY requirements.txt constraints.txt ./
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt -c constraints.txt \
     && find /install -name '__pycache__' -type d -exec rm -rf {} + \
     && find /install -name '*.pyc' -delete
 

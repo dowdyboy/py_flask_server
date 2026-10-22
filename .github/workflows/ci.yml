@@ -71,6 +71,45 @@ jobs:
         shell: bash
         run: pytest tests/ --cov=flask_server --cov-report=term --cov-fail-under=85
 
+  # 用 constraints.txt 锁定版本跑一遍：保证"镜像里装的版本"也被测试过
+  test-locked-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked runtime deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -c constraints.txt -r requirements-dev.txt
+      - name: Show resolved versions
+        run: pip list --format=freeze | sort | head -40
+      - name: Run tests with coverage
+        run: pytest tests/ --cov=flask_server --cov-report=term --cov-fail-under=85
+
+  # 多进程真实冒烟：单测覆盖不到"每个 worker 都抢绑协议端口"这类问题
+  # （gunicorn 不支持 Windows，只能在 Linux 上验证）
+  test-gunicorn-multiprocess:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -c constraints.txt -r requirements-dev.txt
+      - name: Install gunicorn
+        run: pip install gunicorn
+      - name: Multi-worker smoke
+        # 校验：WORKER_NUM=2 + TCP_ENABLED=true 时协议服务器被跳过且所有 worker 存活；
+        #       WORKER_NUM=1 时协议服务器正常监听；SIGTERM 后 master 退出码为 0
+        run: python scripts/smoke_gunicorn.py
+
   lint:
     runs-on: ubuntu-latest
     steps:

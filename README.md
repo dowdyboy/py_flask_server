@@ -54,7 +54,7 @@ py_flask_server/
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 开发启动脚本
-├── tests/                     # 482 个用例（覆盖率门槛 85%，实测 91.8%）
+├── tests/                     # 490 个用例（覆盖率门槛 85%，实测 91.9%）
 ├── docs/                      # 详细文档
 ├── Makefile                   # 统一命令入口
 ├── Dockerfile / docker-compose*.yml
@@ -69,6 +69,7 @@ make test       # 测试 + 覆盖率            pytest tests/ --cov=flask_server
 make lint       # 代码风格                 ruff check flask_server/ tests/ ...
 make audit      # 依赖安全审计            pip-audit -r requirements.txt
 make verify     # 真实环境自检（MySQL/Redis 全链路，需配置 .env）
+make smoke-gunicorn  # 多进程冒烟（Linux/WSL；校验协议服务器不被重复绑定）
 make migrate m="create users table"  # 生成迁移   make upgrade   # 执行迁移
 python scripts/scaffold.py my_project   # 生成新项目
 ```

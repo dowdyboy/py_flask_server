@@ -1,5 +1,8 @@
 """HTTP 层集成测试：验证统一响应格式、422 校验格式、404、request_id 等"""
 
+import re
+from urllib.parse import urlsplit
+
 from flask import request
 from werkzeug.exceptions import abort
 
@@ -175,6 +178,47 @@ def test_swagger_origin_parsing(monkeypatch):
     assert _swagger_origin('') == ''
     assert _swagger_origin('/local/swagger/') == ''
     assert _swagger_origin('javascript:alert(1)') == ''
+
+
+def _csp_directive(csp, name):
+    """从 CSP 头中取出某个指令的取值列表"""
+    for part in csp.split(';'):
+        part = part.strip()
+        if part == name:
+            return []
+        if part.startswith(name + ' '):
+            return part[len(name) + 1:].split()
+    return []
+
+
+def test_docs_csp_covers_every_asset_the_page_loads(client):
+    """真实 HTML 与 CSP 对齐：页面上每个 CSS/JS 的来源都必须被对应指令放行。
+
+    这是比"断言包含某个域名"更强的回归测试——它直接从 /docs 返回的 HTML 里提取
+    `src=`/`href=`，逐个校验 CSP 放行情况。历史上 style-src 漏掉 CDN 就是这类问题：
+    头部断言全过，但浏览器把 swagger-ui.css 拦了，页面无样式。
+    """
+    resp = client.get('/docs')
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    csp = resp.headers['Content-Security-Policy']
+
+    assets = re.findall(r'(?:src|href)="([^"]+)"', html)
+    external = [u for u in assets if u.startswith(('http://', 'https://'))]
+    assert external, (
+        '/docs 未引用任何外部资源（Swagger UI 可能改为本地托管），'
+        f'请同步调整本用例的断言。assets={assets}'
+    )
+
+    style_sources = _csp_directive(csp, 'style-src')
+    script_sources = _csp_directive(csp, 'script-src')
+    for url in external:
+        parts = urlsplit(url)
+        origin = f'{parts.scheme}://{parts.netloc}'
+        allowed = style_sources if url.endswith('.css') else script_sources
+        directive = 'style-src' if url.endswith('.css') else 'script-src'
+        assert origin in allowed, \
+            f'{url} 的来源 {origin} 未被 CSP {directive} 放行，浏览器会拦截该资源'
 
 
 def test_hsts_disabled_by_default(client):

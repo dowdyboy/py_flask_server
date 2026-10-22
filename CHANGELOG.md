@@ -5,6 +5,20 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **gunicorn 多进程冒烟脚本**（`scripts/smoke_gunicorn.py` / `make smoke-gunicorn`）：
+  在真实 gunicorn 下校验——`WORKER_NUM=2 + TCP_ENABLED=true` 时协议服务器被跳过
+  且全部 worker 存活（避免 0.5.0 修复的那条崩溃循环回归）、`WORKER_NUM=1` 时协议
+  服务器正常监听、SIGTERM 后 master 退出码为 0。已接入 CI
+  （`test-gunicorn-multiprocess` job，Linux）
+- **依赖锁定**：新增 `constraints.txt`（由 `scripts/freeze_constraints.py` 生成，
+  只锁版本不改依赖关系）与 `test-locked-deps` CI job；Dockerfile 构建时应用约束，
+  保证"CI 测的版本"与"镜像里的版本"一致
+- **`/docs` CSP 与真实页面一致性用例**：从 `/docs` 返回的 HTML 中提取每个 CSS/JS 的
+  origin，逐个校验对应 CSP 指令已放行——比"断言包含某个域名"更强，能直接捕获
+  "头部看着对、浏览器却拦了资源"这类问题（0.5.0 修复的正是这一类）
+
 ## [0.5.0] - 2026-10-22
 
 ### 行为变更（升级前必读）
@@ -102,7 +116,7 @@ fail-fast，仅报错信息变化。）
 - **HSTS**：`HSTS_ENABLED`（默认 false）/ `HSTS_MAX_AGE`，置于 HTTPS 反代之后建议开启
 - **配置项**：`TCP_IDLE_TIMEOUT`、`AUTH_PBKDF2_ITERATIONS`、`SNOWFLAKE_DATACENTER_ID`、
   `PROMETHEUS_MULTIPROC_DIR`、`HSTS_ENABLED` / `HSTS_MAX_AGE`
-- **测试**：424 → 482 用例（覆盖率实测 91.8%），新增多 worker 钩子、优雅关闭、
+- **测试**：424 → 490 用例（覆盖率实测 91.9%），新增多 worker 钩子、优雅关闭、
   XFF 伪造、CSP/HSTS、UUIDv7、TCP 空闲超时、IP 隔离锁定、refresh 兜底、
   日志注入、SQLite 标识符、scaffold 守卫等回归用例
 

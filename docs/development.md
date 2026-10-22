@@ -15,7 +15,7 @@ pytest tests/ --cov=flask_server --cov-report=term
 认证模块（Redis 存储降级与内存兜底、防爆破、refresh 轮换、登出吊销 refresh、入参限长）、
 Prometheus 指标、缓存降级恢复（含故障/脏数据自愈）、事务提交/回滚（CI 含真实 MySQL）、
 路径穿越防护、反射与声明式模型共存、雪花 ID 并发、SubprocessTask 哨兵停止等
-**424 个用例**（覆盖率 91.77%）。
+**490 个用例**（覆盖率 91.9%）。
 
 真实环境自检（云服务器 MySQL/Redis 全链路验证）：
 
@@ -24,14 +24,42 @@ python scripts/verify_real_env.py        # 连接→建库→集成测试→迁�
 # 可选：--skip-pytest / --skip-migrate / --skip-reflect / --skip-boot / --keep-migrations
 ```
 
+多进程冒烟（Linux/WSL，gunicorn 不支持 Windows）：
+
+```bash
+pip install gunicorn
+python scripts/smoke_gunicorn.py     # 或 make smoke-gunicorn
+```
+
+校验两件事：`WORKER_NUM=2 + TCP_ENABLED=true` 时协议服务器被自动跳过且两个 worker 都存活
+（修复前会端口冲突 → worker 崩溃 → master 重拉的死循环）；`WORKER_NUM=1` 时协议服务器
+正常监听、HTTP 可用、SIGTERM 后退出码为 0。
+
 CI 流水线（`.github/workflows/ci.yml`）：
 1. **test** — Python 3.10/3.12 矩阵 + 覆盖率门槛 85%
 2. **test-mysql** — 真实 MySQL 8.0 集成测试（`TEST_DB_URI` 环境变量）
 3. **test-windows** — Windows + Python 3.12 全量测试（覆盖 Windows 专属路径）
-4. **lint** — ruff 代码风格检查
-5. **security** — pip-audit 依赖漏洞审计
-6. **docker-build** — 多阶段镜像构建 + 容器启动冒烟
-7. **deps-sync** — pyproject.toml 与 requirements.txt 依赖清单一致性检查
+4. **test-locked-deps** — 用 `constraints.txt` 锁定版本再跑一遍（与镜像内版本一致）
+5. **test-gunicorn-multiprocess** — gunicorn 多 worker 真实冒烟（协议服务器不被重复绑定）
+6. **lint** — ruff 代码风格检查
+7. **security** — pip-audit 依赖漏洞审计
+8. **docker-build** — 多阶段镜像构建 + 容器启动冒烟
+9. **deps-sync** — pyproject.toml 与 requirements.txt 依赖清单一致性检查
+
+## 依赖锁定
+
+`requirements.txt` 只写版本区间（下界），CI 与生产每次装出的具体版本可能不同。
+`constraints.txt` 记录当前验证过的完整版本组合，**只锁版本、不改依赖关系**：
+
+```bash
+# 安装时应用锁定（CI / Dockerfile 已这样用）
+pip install -r requirements.txt -c constraints.txt
+
+# 升级依赖后重新生成
+pip install -r requirements.txt && python scripts/freeze_constraints.py
+```
+
+生成脚本只收录 `requirements.txt` 直接依赖及其传递依赖闭包，不会把环境里的无关包写进去。
 
 ## 代码风格
 
