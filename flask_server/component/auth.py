@@ -4,9 +4,9 @@ import time
 from datetime import datetime
 from flask import request, jsonify
 
-from flask_server import app, config
-from flask_server.module import memory_cache, redis_cache
-from flask_server.util import DataEncryptUtil, RandomGenerator, CommonUtil, Logger, GraceResult
+from ..config import config
+from ..module import memory_cache, redis_cache
+from ..util import DataEncryptUtil, RandomGenerator, CommonUtil, Logger, GraceResult
 
 # 认证模块骨架
 #
@@ -440,7 +440,10 @@ def auth_interceptor():
     return None
 
 
-# AUTH_ENABLED=true 时启用全局认证保护
-if config.auth_enabled:
+# AUTH_ENABLED=true 时启用全局认证保护（由 create_app → init_auth 注册）
+def init_auth(app):
+    """把全局认证拦截器注册到指定 app（AUTH_ENABLED=false 时不注册）"""
+    if not config.auth_enabled:
+        return
     app.before_request(auth_interceptor)
     Logger.info('Auth module: global auth interceptor enabled (AUTH_ENABLED=true)')

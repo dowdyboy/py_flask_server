@@ -1,4 +1,6 @@
 import uuid
+from functools import wraps
+
 from .config import config
 
 # 仅 eventlet 模式才 monkey_patch（须在 socket 相关导入前执行）
@@ -11,63 +13,42 @@ if _socketio_will_init and _async_mode == 'eventlet':
     except ImportError:
         _async_mode = 'threading'   # 未安装 eventlet 则降级为 threading
 
-from functools import wraps
 from flask import Flask, request, g, Response
 from flask_cors import CORS
 from werkzeug.exceptions import HTTPException, UnprocessableEntity
 from flask_smorest import Api
-from .module import init_SQLAlchemy, init_Migrate
 from .util import Logger, GraceResult, CommonUtil
 
-# Flask App 启动
+# Flask App 工厂
+#
+# 为什么要有 create_app()：
+#   历史上所有注册（CORS / 拦截器 / 指标 / 路由 / 蓝图）都写在模块导入副作用里，
+#   于是"import flask_server"就等于"建好唯一的那个 app"。这让测试无法替换配置、
+#   无法同进程跑两个实例，也让 `from flask_server.util import Logger` 这种导入
+#   顺带把整个应用初始化一遍。
+#
+#   现在：`create_app()` 显式创建并装配一个 app；模块底部的 `app = create_app()`
+#   保留原有用法（`from flask_server import app` / `flask_server.app:app`）不变。
+#
+# 仍然是**进程级单例**的部分（有意为之，见 create_app 的文档字符串）：
+#   SQLAlchemy 的 db / Flask-Migrate、SocketIO、Prometheus 指标对象。
 
+# X-Request-Id 清洗上限：控制字符会污染日志格式（log forging 面），
+# 超长值会撑大每条日志与响应头；截断 + 清洗后仅保留可打印字符
+_MAX_REQUEST_ID_LEN = 64
 
-app = Flask(__name__)
-CORS(app, origins=config.cors_origins)
+# 支持携带 body 的方法：POST/PUT/PATCH/DELETE
+_BODY_METHODS = ('POST', 'PUT', 'PATCH', 'DELETE')
 
-# 安全配置
-app.config['SECRET_KEY'] = config.secret_key
-app.config['MAX_CONTENT_LENGTH'] = config.max_content_length
+# 基础安全响应头（SECURITY_HEADERS_ENABLED=true 时生效）
+_SECURITY_HEADERS = {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+}
 
-# 非 development 环境使用默认 SECRET_KEY 时告警（生产环境必须修改）
-if config.app_env != 'development' and config.secret_key_is_default:
-    Logger.warn('SECRET_KEY is set to the default scaffold value. '
-                'Please set a strong custom SECRET_KEY in production!')
-
-# flask-smorest API 文档 + 参数校验
-app.config.update({
-    'API_TITLE': config.api_title,
-    'API_VERSION': config.api_version,
-    'OPENAPI_VERSION': '3.0.3',
-    'OPENAPI_URL_PREFIX': '/',
-    'OPENAPI_JSON_PATH': config.api_spec_url,
-    'OPENAPI_SWAGGER_UI_PATH': config.api_docs_url,
-    'OPENAPI_SWAGGER_UI_URL': config.swagger_ui_url,
-})
-api = Api(app)
-
-# SocketIO（可选，默认关闭）
-socketio = None
-if _socketio_will_init:
-    try:
-        from flask_socketio import SocketIO
-        socketio = SocketIO(
-            app,
-            async_mode=_async_mode,
-            ping_timeout=120,
-            ping_interval=30,
-            max_http_buffer_size=config.socketio_max_http_buffer_size,
-            cors_allowed_origins=config.cors_origins,
-        )
-    except ImportError:
-        Logger.warn('SOCKETIO_ENABLED=true but Flask-SocketIO not installed, skipping SocketIO init')
-        socketio = None
-
-
-# Initialize
-
-init_SQLAlchemy(app)
-init_Migrate(app)
+# 其余路径收紧：不信任内联脚本与远程脚本（webui 若含内联脚本需自行放行）
+_CSP_STRICT = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
 
 
 # Common Annotation ########
@@ -109,11 +90,6 @@ def json_response(func):
 
 # Request Param Parser ########
 
-# X-Request-Id 清洗上限：控制字符会污染日志格式（log forging 面），
-# 超长值会撑大每条日志与响应头；截断 + 清洗后仅保留可打印字符
-_MAX_REQUEST_ID_LEN = 64
-
-
 def _sanitize_request_id(raw):
     """清洗客户端传入的 X-Request-Id：去控制字符 + 截断；无效值回退自动生成"""
     if not raw:
@@ -122,7 +98,6 @@ def _sanitize_request_id(raw):
     return cleaned or None
 
 
-@app.before_request
 def init_request_info():
     if not hasattr(request, 'info'):
         request.info = {}
@@ -135,16 +110,10 @@ def init_request_info():
     request.payload = {}
 
 
-@app.before_request
 def parse_request_param():
     request.params = request.args.to_dict()
 
 
-# 支持携带 body 的方法：POST/PUT/PATCH/DELETE
-_BODY_METHODS = ('POST', 'PUT', 'PATCH', 'DELETE')
-
-
-@app.before_request
 def parse_request_json():
     if request.method in _BODY_METHODS and request.is_json:
         data = request.get_json()
@@ -156,7 +125,6 @@ def parse_request_json():
         request.payload = data
 
 
-@app.before_request
 def parse_request_form_data():
     if request.method in _BODY_METHODS and \
             str(request.content_type).lower().startswith('application/x-www-form-urlencoded'):
@@ -166,7 +134,6 @@ def parse_request_form_data():
         request.payload = dict(request.form.to_dict(), **request.files.to_dict())
 
 
-@app.after_request
 def set_request_id_header(resp):
     # 回写 X-Request-Id，客户端可据此关联服务端日志进行链路追踪
     rid = getattr(g, 'request_id', None)
@@ -174,13 +141,6 @@ def set_request_id_header(resp):
         resp.headers['X-Request-Id'] = rid
     return resp
 
-
-# 基础安全响应头（SECURITY_HEADERS_ENABLED=true 时生效）
-_SECURITY_HEADERS = {
-    'X-Content-Type-Options': 'nosniff',
-    'X-Frame-Options': 'DENY',
-    'Referrer-Policy': 'no-referrer',
-}
 
 # Swagger UI 资源来源（scheme://host[:port]）：CSP 需要放行它
 # —— swagger-ui.css / swagger-ui-bundle.js 都从 OPENAPI_SWAGGER_UI_URL 取。
@@ -208,11 +168,6 @@ def _csp_docs(swagger_origin):
     )
 
 
-# 其余路径收紧：不信任内联脚本与远程脚本（webui 若含内联脚本需自行放行）
-_CSP_STRICT = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
-
-
-@app.after_request
 def set_security_headers(resp):
     if config.security_headers_enabled:
         for k, v in _SECURITY_HEADERS.items():
@@ -230,7 +185,6 @@ def set_security_headers(resp):
     return resp
 
 
-@app.teardown_request
 def clear_request_id(exc=None):
     """请求结束时清除 request_id，避免线程复用时串号"""
     Logger.clear_request_id()
@@ -245,7 +199,6 @@ def _internal_error_detail(e):
     return str(e) if config.app_env == 'development' else '服务器内部错误'
 
 
-@app.errorhandler(HTTPException)
 @json_response
 def http_exception_handler(e):
     # 4xx（404/405 等）多为客户端/扫描器行为，记 WARNING 避免刷屏；5xx 才记 ERROR
@@ -264,7 +217,6 @@ def http_exception_handler(e):
     return GraceResult.error(data=data), e.code
 
 
-@app.errorhandler(UnprocessableEntity)
 @json_response
 def unprocessable_entity_handler(e):
     # 参数校验失败（flask-smorest/webargs 422）：统一为 GraceResult 格式，
@@ -275,14 +227,12 @@ def unprocessable_entity_handler(e):
     return GraceResult.param_error(data=errors), 422
 
 
-@app.errorhandler(KeyError)
 @json_response
 def param_exception_handler(e):
     Logger.error(f'param_exception_handler : {e}', exc_info=True)
     return GraceResult.param_error(data=str(e)), 400
 
 
-@app.errorhandler(Exception)
 @json_response
 def all_exception_handler(e):
     # 防御性双保险：若 HTTPException 意外落入此 handler，仍按原状态码返回
@@ -291,3 +241,118 @@ def all_exception_handler(e):
         return GraceResult.error(data=_internal_error_detail(e)), e.code
     Logger.error(f'all_exception_handler : {e}', exc_info=True)
     return GraceResult.error(data=_internal_error_detail(e)), 500
+
+
+# 注册函数 ########
+
+def register_request_hooks(app):
+    """注册请求生命周期钩子（顺序即执行顺序，务必与历史行为一致）。
+
+    before_request 执行顺序：参数解析 → 限流 → 认证 → 指标计时
+    （限流/认证/指标由 component 层在 create_app 中随后注册）
+    """
+    app.before_request(init_request_info)
+    app.before_request(parse_request_param)
+    app.before_request(parse_request_json)
+    app.before_request(parse_request_form_data)
+    app.after_request(set_request_id_header)
+    app.after_request(set_security_headers)
+    app.teardown_request(clear_request_id)
+
+
+def register_error_handlers(app):
+    """注册统一异常处理（HTTPException / 422 / KeyError / 兜底 Exception）"""
+    app.register_error_handler(HTTPException, http_exception_handler)
+    app.register_error_handler(UnprocessableEntity, unprocessable_entity_handler)
+    app.register_error_handler(KeyError, param_exception_handler)
+    app.register_error_handler(Exception, all_exception_handler)
+
+
+def _init_socketio(app):
+    """按配置初始化 SocketIO（默认关闭；未安装依赖时告警降级）"""
+    if not _socketio_will_init:
+        return None
+    try:
+        from flask_socketio import SocketIO
+        return SocketIO(
+            app,
+            async_mode=_async_mode,
+            ping_timeout=120,
+            ping_interval=30,
+            max_http_buffer_size=config.socketio_max_http_buffer_size,
+            cors_allowed_origins=config.cors_origins,
+        )
+    except ImportError:
+        Logger.warn('SOCKETIO_ENABLED=true but Flask-SocketIO not installed, skipping SocketIO init')
+        return None
+
+
+def create_app(app_config=None):
+    """创建并装配一个 Flask 应用实例。
+
+    Args:
+        app_config (dict, optional): 合并进 `app.config` 的 Flask 级配置
+            （如 `{'TESTING': True}`）。框架自身配置仍来自环境变量 / config 单例。
+
+    Returns:
+        Flask: 已注册安全钩子、异常处理、限流/认证/指标与全部路由的应用实例。
+
+    ⚠️ 进程级单例（同进程内多实例会共享，属已知设计约束）：
+        - SQLAlchemy 的 `db` 与 Flask-Migrate（`init_SQLAlchemy` 只在首次绑定）
+        - SocketIO（eventlet 模式下必须全局唯一）
+        - Prometheus 指标对象与默认 registry
+        - 内存缓存 / 限流计数 / 认证 token 存储
+      需要"多套配置各自独立"的场景，应改为多进程部署而非同进程多实例。
+    """
+    from .module import init_SQLAlchemy, init_Migrate
+    from .component import init_components
+    from .controller import register_controllers
+
+    app = Flask(__name__)
+    CORS(app, origins=config.cors_origins)
+
+    # 安全配置
+    app.config['SECRET_KEY'] = config.secret_key
+    app.config['MAX_CONTENT_LENGTH'] = config.max_content_length
+
+    # 非 development 环境使用默认 SECRET_KEY 时告警（生产环境必须修改）
+    if config.app_env != 'development' and config.secret_key_is_default:
+        Logger.warn('SECRET_KEY is set to the default scaffold value. '
+                    'Please set a strong custom SECRET_KEY in production!')
+
+    # flask-smorest API 文档 + 参数校验
+    app.config.update({
+        'API_TITLE': config.api_title,
+        'API_VERSION': config.api_version,
+        'OPENAPI_VERSION': '3.0.3',
+        'OPENAPI_URL_PREFIX': '/',
+        'OPENAPI_JSON_PATH': config.api_spec_url,
+        'OPENAPI_SWAGGER_UI_PATH': config.api_docs_url,
+        'OPENAPI_SWAGGER_UI_URL': config.swagger_ui_url,
+    })
+    api = Api(app)
+
+    socketio = _init_socketio(app)
+
+    init_SQLAlchemy(app)
+    init_Migrate(app)
+
+    register_request_hooks(app)
+    register_error_handlers(app)
+    # 组件按 限流 → 认证 → 指标 的顺序注册（与历史 import 顺序一致，决定 before_request 执行序）
+    init_components(app)
+    register_controllers(app, api)
+
+    if app_config:
+        app.config.update(app_config)
+
+    # 便于调用方拿到与本 app 绑定的扩展对象（不依赖模块级全局）
+    app.api = api
+    app.socketio = socketio
+    return app
+
+
+# 模块级默认实例（保留 `from flask_server import app` / `flask_server.app:app` 用法）
+app = create_app()
+api = app.api
+socketio = app.socketio

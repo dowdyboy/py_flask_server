@@ -42,7 +42,7 @@ python scripts/scaffold.py my_project --author "Your Name"
 ```
 py_flask_server/
 ├── flask_server/              # 主应用
-│   ├── app.py                 # Flask 核心（CORS/安全/异常处理/探针）
+│   ├── app.py                 # Flask 核心：create_app() 工厂 + CORS/安全/异常处理/探针
 │   ├── config.py              # 配置（环境变量 + .env 自动加载）
 │   ├── component/             # 组件：认证 / 限流 / Prometheus / 拦截器
 │   ├── controller/            # 路由层（★ 新建文件即自动注册）

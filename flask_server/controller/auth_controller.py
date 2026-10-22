@@ -1,13 +1,13 @@
 from flask.views import MethodView
 from flask import request
 from flask_smorest import Blueprint
-from flask_server import config
-from flask_server.util import GraceResult, CommonUtil, Logger
-from flask_server.schema import GraceResultSchema
-from flask_server.schema.auth_schema import (
+from ..config import config
+from ..util import GraceResult, CommonUtil, Logger
+from ..schema import GraceResultSchema
+from ..schema.auth_schema import (
     AuthRegisterSchema, AuthLoginSchema, AuthRefreshSchema,
 )
-from flask_server.component.auth import AuthService, login_required
+from ..component.auth import AuthService, login_required
 
 # 认证接口（注册/登录/登出/刷新令牌/当前用户）
 # 默认使用内存用户存储（AUTH_STORE=memory）；配置 AUTH_STORE=sqlalchemy + DB 后持久化

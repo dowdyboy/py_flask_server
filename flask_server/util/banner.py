@@ -1,7 +1,7 @@
 # 启动 banner 与生产配置自检
 # 供 server.py / wsgi.py / wsgi_gunicorn.py 入口调用（print 到控制台，不进日志文件）
 
-from flask_server import config
+from ..config import config
 
 
 def _status(enabled, extra=''):

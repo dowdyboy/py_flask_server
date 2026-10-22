@@ -5,7 +5,30 @@
 
 ## [Unreleased]
 
+### 变更
+
+- **引入 `create_app()` 应用工厂**（架构重构，用法向后兼容）：
+  - `flask_server/app.py` 新增 `create_app(app_config=None)`，显式创建并装配应用；
+    模块底部的 `app = create_app()` 保留 `from flask_server import app`、
+    `FLASK_APP=flask_server.app:app` 等既有用法
+  - 组件（限流 / 认证 / 指标）不再在 import 时修改全局 app，改为暴露
+    `init_rate_limit(app)` / `init_auth(app)` / `init_metrics(app)`，
+    由 `component.init_components(app)` 统一装配（顺序：限流 → 认证 → 指标）
+  - controller 自动发现改为 `register_controllers(app, api)`：除 Blueprint 外，
+    模块可定义 `def register(app)` 挂载 `@app.route` 风格路由
+    （`hello_controller` / `webui_controller` 已改用该方式），装配幂等（标记在
+    `app.extensions`，重复调用不会产生重复路由）
+  - 修复 `init_SQLAlchemy()` 二次调用会把已初始化的 `db` 重置为 `None` 的问题
+    （否则第二个 app 实例会丢掉 ORM 绑定）
+  - `flask_server/__init__.py` 先导入 config 再导入 app，避免子模块导入把包的
+    `config` 属性覆盖成模块对象（`from flask_server import config` 拿到模块的坑）
+  - 仍是进程级单例的部分（SQLAlchemy / Migrate / SocketIO / Prometheus 指标 /
+    缓存）已在 `create_app()` 文档字符串与 `docs/development.md` 中说明
+
 ### 新增
+
+- `tests/test_factory.py`（10 例）：独立实例、路由装配完整性、钩子注册顺序、
+  异常处理、重复创建可重入、controller 装配幂等、`db` 单例复用
 
 - **gunicorn 多进程冒烟脚本**（`scripts/smoke_gunicorn.py` / `make smoke-gunicorn`）：
   在真实 gunicorn 下校验——`WORKER_NUM=2 + TCP_ENABLED=true` 时协议服务器被跳过

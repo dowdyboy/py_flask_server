@@ -1,9 +1,9 @@
 import os
 import threading
 from collections import OrderedDict
-from flask import send_from_directory, abort, redirect, request
-from flask_server import app, config
-from flask_server.util import Logger
+from flask import send_from_directory, abort, redirect, request, current_app
+from ..config import config
+from ..util import Logger
 
 # 对静态界面的Controller，一般不用修改
 
@@ -60,7 +60,7 @@ def _redirect_to_registered_route(path):
         return None
     from werkzeug.exceptions import NotFound
     from werkzeug.routing import RequestRedirect
-    adapter = app.url_map.bind('localhost')
+    adapter = current_app.url_map.bind('localhost')
     try:
         rule, _ = adapter.match(target, 'GET', return_rule=True)
     except (NotFound, RequestRedirect):
@@ -70,8 +70,6 @@ def _redirect_to_registered_route(path):
     return redirect(target, code=308)
 
 
-@app.route('/', methods=['GET'], defaults={'filename': 'index.html'})
-@app.route('/<path:filename>', methods=['GET'])
 def webui(filename):
     # 尾斜杠路径命中已注册路由时重定向到规范路径（见 _redirect_to_registered_route）
     _redirect = _redirect_to_registered_route(request.path)
@@ -116,3 +114,9 @@ def webui(filename):
         if os.path.exists(index_path):
             return send_from_directory(config.webui_dir, 'index.html')
         abort(404)
+
+
+def register(app):
+    """把静态站点路由挂到指定 app（两条规则共用 endpoint 'webui'）"""
+    app.add_url_rule('/', 'webui', webui, defaults={'filename': 'index.html'}, methods=['GET'])
+    app.add_url_rule('/<path:filename>', 'webui', webui, methods=['GET'])

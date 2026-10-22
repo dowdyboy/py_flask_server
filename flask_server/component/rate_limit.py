@@ -1,7 +1,7 @@
 from flask import request, abort
-from flask_server import app, config
-from flask_server.module import memory_cache, redis_cache
-from flask_server.util import Logger, CommonUtil
+from ..config import config
+from ..module import memory_cache, redis_cache
+from ..util import Logger, CommonUtil
 
 # 简单限流组件：按 (客户端IP, 请求路径) 做固定窗口计数
 # 存储：RATE_LIMIT_STORE=memory（默认，进程内）/ redis（多实例准确，需配置 REDIS_URL）
@@ -68,8 +68,8 @@ def _over_limit(count):
     return count is not None and count > config.rate_limit_per_minute
 
 
-@app.before_request
 def rate_limit_check():
+    """限流拦截器（由 init_rate_limit 注册为 before_request）"""
     if not config.rate_limit_enabled:
         return None
     # 探针/监控端点豁免（见 RATE_LIMIT_EXEMPT_PATHS 注释：防 429 雪崩）；
@@ -93,3 +93,8 @@ def rate_limit_check():
         Logger.warn(f'rate limit exceeded (ip): rate:{ip}')
         abort(429)
     return None
+
+
+def init_rate_limit(app):
+    """把限流拦截器注册到指定 app（由 create_app 调用）"""
+    app.before_request(rate_limit_check)

@@ -1,6 +1,6 @@
-from .app import app, json_response, api
-from .app import socketio
-from .config import config
+from .config import config          # 必须先于 .app：否则子模块导入会把包属性 config 覆盖成模块对象
+
+from .app import create_app, app, json_response, api, socketio
 
 # 1、优先加载util
 from .util import *
@@ -9,7 +9,7 @@ from .module import *
 # 3、再加载model（UserPO 等声明式模型需在 SQLAlchemy 初始化后导入，
 #    才能被 Flask-Migrate autogenerate 识别建表）
 from . import model  # noqa: F401
-# 4、再加载component
+# 4、再加载component（组件已由 create_app 装配，这里只导出模块名）
 from .component import *
 from .controller import *
 from .service import *
@@ -22,5 +22,6 @@ __all__ = [
     'api',
     'socketio',
     'json_response',
+    'create_app',
     'config',
 ]

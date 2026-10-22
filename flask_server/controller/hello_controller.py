@@ -1,9 +1,10 @@
 from flask.views import MethodView
+from flask import current_app, has_app_context
 from flask_smorest import Blueprint
-from flask_server.app import app, json_response
-from flask_server.util import Logger, GraceResult
-from flask_server.schema import GraceResultSchema, EchoSchema
-from flask_server import config
+from ..app import json_response
+from ..util import Logger, GraceResult
+from ..schema import GraceResultSchema, EchoSchema
+from ..config import config
 import time
 import threading
 
@@ -21,12 +22,18 @@ _health_cache_lock = threading.Lock() if not config.debug else None
 
 
 # === @app.route 风格（最简示例，无校验无文档） ===
+# 这类直接挂在 app 上的路由通过模块级 register(app) 钩子装配（由 create_app 调用），
+# 保证同一份代码可以为不同的 app 实例注册路由。
 
-@app.route('/hello', methods=['GET'])
 @json_response
 def hello():
     """最简示例（统一 JSON 响应格式）"""
     return GraceResult.ok({'message': 'Hello, World!'})
+
+
+def register(app):
+    """把 @app.route 风格的路由挂到指定 app（endpoint 名保持 'hello' 不变）"""
+    app.add_url_rule('/hello', 'hello', hello, methods=['GET'])
 
 
 # === flask-smorest Blueprint 风格（推荐：参数校验 + 自动 API 文档） ===
@@ -66,7 +73,8 @@ def _check_dependencies():
     非 debug / 非测试模式下结果缓存 _HEALTH_CACHE_TTL 秒，避免探针高频轮询压垮依赖。
     """
     # debug 或 TESTING 模式（开发/测试）不缓存，保证每次真实探测
-    if _health_cache_lock is None or app.config.get('TESTING'):
+    testing = has_app_context() and current_app.config.get('TESTING')
+    if _health_cache_lock is None or testing:
         return _live_db_check(), _live_redis_check()
 
     now = time.time()

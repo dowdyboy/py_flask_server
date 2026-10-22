@@ -46,6 +46,35 @@ CI 流水线（`.github/workflows/ci.yml`）：
 8. **docker-build** — 多阶段镜像构建 + 容器启动冒烟
 9. **deps-sync** — pyproject.toml 与 requirements.txt 依赖清单一致性检查
 
+## 应用工厂（create_app）
+
+`flask_server/app.py` 提供 `create_app()`，模块底部的 `app = create_app()` 保留原有用法
+（`from flask_server import app` / `FLASK_APP=flask_server.app:app` 都不变）。
+
+```python
+from flask_server import create_app
+
+app = create_app({'TESTING': True})   # 可选：合并进 app.config 的 Flask 级配置
+```
+
+装配流程（顺序即行为）：
+
+1. `Flask(__name__)` + CORS + SECRET_KEY / MAX_CONTENT_LENGTH
+2. flask-smorest `Api`（OpenAPI 文档与参数校验）
+3. SocketIO（按配置，默认关闭）
+4. SQLAlchemy / Flask-Migrate
+5. `register_request_hooks()`：参数解析等 before/after 钩子
+6. `register_error_handlers()`：HTTPException / 422 / KeyError / 兜底异常
+7. `init_components()`：限流 → 认证 → 指标（顺序决定 before_request 执行序）
+8. `register_controllers()`：`controller/` 下的 Blueprint 与 `register(app)` 钩子
+
+**仍是进程级单例**（有意为之）：SQLAlchemy 的 `db`、Flask-Migrate、SocketIO、
+Prometheus 指标对象、内存缓存/限流/认证存储。同进程创建多个 app 会共享这些；
+需要"多套完全独立配置"请用多进程部署。
+
+**扩展点**：controller 模块里除了 Blueprint，还可以定义 `def register(app)`，
+在装配时拿到 app 做任意注册（如 `app.add_url_rule`、`app.errorhandler`）。
+
 ## 依赖锁定
 
 `requirements.txt` 只写版本区间（下界），CI 与生产每次装出的具体版本可能不同。

@@ -3,7 +3,7 @@ import time
 
 from flask import request, Response
 
-from flask_server import app, config
+from ..config import config
 
 # Prometheus 指标组件（METRICS_ENABLED=true 默认开启）
 # 暴露 /metrics（Prometheus 文本格式），指标：
@@ -67,29 +67,25 @@ def _multiprocess_registry():
     return registry
 
 
-if _METRICS_AVAILABLE:
+def metrics_start_timer():
+    # METRICS_ENABLED=false 时零开销（仅 /metrics 返回 503，不再统计请求）
+    if not config.metrics_enabled:
+        return None
+    request._metrics_start_time = time.perf_counter()
 
-    @app.before_request
-    def metrics_start_timer():
-        # METRICS_ENABLED=false 时零开销（仅 /metrics 返回 503，不再统计请求）
-        if not config.metrics_enabled:
-            return None
-        request._metrics_start_time = time.perf_counter()
 
-    @app.after_request
-    def metrics_record(resp):
-        if not config.metrics_enabled:
-            return resp
-        route = _route_label()
-        status = resp.status_code
-        _REQUESTS.labels(method=request.method, status=status, route=route).inc()
-        start = getattr(request, '_metrics_start_time', None)
-        if start is not None:
-            _DURATION.labels(method=request.method, route=route).observe(time.perf_counter() - start)
+def metrics_record(resp):
+    if not config.metrics_enabled:
         return resp
+    route = _route_label()
+    status = resp.status_code
+    _REQUESTS.labels(method=request.method, status=status, route=route).inc()
+    start = getattr(request, '_metrics_start_time', None)
+    if start is not None:
+        _DURATION.labels(method=request.method, route=route).observe(time.perf_counter() - start)
+    return resp
 
 
-@app.route('/metrics')
 def metrics():
     """Prometheus 指标端点（text/plain 格式；关闭或依赖缺失时返回 503）"""
     if not config.metrics_enabled or not _METRICS_AVAILABLE:
@@ -100,3 +96,12 @@ def metrics():
     else:
         payload = generate_latest()
     return Response(payload, mimetype=CONTENT_TYPE_LATEST)
+
+
+def init_metrics(app):
+    """把 /metrics 路由与请求计时/计数钩子注册到指定 app（由 create_app 调用）"""
+    if not _METRICS_AVAILABLE:
+        return
+    app.before_request(metrics_start_timer)
+    app.after_request(metrics_record)
+    app.add_url_rule('/metrics', 'metrics', metrics, methods=['GET'])

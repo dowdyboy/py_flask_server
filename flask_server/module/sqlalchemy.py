@@ -21,41 +21,44 @@ _app = None   # 初始化时绑定的 Flask app（单应用场景）
 # 初始化SQLAlchemy对象，并根据配置决定是否反射数据库表结构
 def init_SQLAlchemy(app):
     global db, _app
-    if config.sqlalchemy_uri is not None and db is None:
-        _app = app
-        Logger.info(f'init_SQLAlchemy : {_mask_uri(config.sqlalchemy_uri)}')
-        app.config['SQLALCHEMY_DATABASE_URI'] = config.sqlalchemy_uri
-        app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = config.sqlalchemy_track_modify
-        # S3: 数据库连接池参数
-        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-            'pool_size': config.db_pool_size,
-            'pool_recycle': config.db_pool_recycle,
-            'pool_pre_ping': config.db_pool_pre_ping,
-            'pool_timeout': config.db_pool_timeout,
-        }
-        db = SQLAlchemy(app)
-        if config.db_reflect_on_start:
-            # 容错：反射失败（如 DB 短暂不可达）不应导致应用启动崩溃，
-            # engine 本身为惰性连接，首个查询时才真正连库
-            try:
-                with app.app_context():
-                    # 先导入声明式模型（UserPO 等）占据 metadata 表名，再只反射
-                    # 未声明的表——修复"已建表（如 flask db upgrade 后的 user 表）
-                    # + 声明式模型 + 二次启动"时 Table 重定义崩溃（InvalidRequestError）。
-                    # 模型导入依赖 db 已赋值（本函数前面已完成），模块缓存保证
-                    # flask_server/__init__ 后续的 `from . import model` 无重复执行。
-                    import importlib
-                    importlib.import_module('flask_server.model')
-                    from sqlalchemy import inspect
-                    declared = set(db.metadata.tables.keys())
-                    inspector = inspect(db.engine)
-                    to_reflect = [t for t in inspector.get_table_names() if t not in declared]
-                    if to_reflect:
-                        db.metadata.reflect(bind=db.engine, only=to_reflect)
-            except Exception as e:
-                Logger.warn(f'db.reflect failed, continuing without reflection: {e}')
-    else:
-        db = None
+    # 已初始化：进程级单例直接复用（create_app() 二次调用时不得把它重置为 None，
+    # 否则第二次创建的应用会丢掉 db，且 model 模块的 UserPO 绑定失效）
+    if db is not None:
+        return
+    if config.sqlalchemy_uri is None:
+        return
+    _app = app
+    Logger.info(f'init_SQLAlchemy : {_mask_uri(config.sqlalchemy_uri)}')
+    app.config['SQLALCHEMY_DATABASE_URI'] = config.sqlalchemy_uri
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = config.sqlalchemy_track_modify
+    # S3: 数据库连接池参数
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_size': config.db_pool_size,
+        'pool_recycle': config.db_pool_recycle,
+        'pool_pre_ping': config.db_pool_pre_ping,
+        'pool_timeout': config.db_pool_timeout,
+    }
+    db = SQLAlchemy(app)
+    if config.db_reflect_on_start:
+        # 容错：反射失败（如 DB 短暂不可达）不应导致应用启动崩溃，
+        # engine 本身为惰性连接，首个查询时才真正连库
+        try:
+            with app.app_context():
+                # 先导入声明式模型（UserPO 等）占据 metadata 表名，再只反射
+                # 未声明的表——修复"已建表（如 flask db upgrade 后的 user 表）
+                # + 声明式模型 + 二次启动"时 Table 重定义崩溃（InvalidRequestError）。
+                # 模型导入依赖 db 已赋值（本函数前面已完成），模块缓存保证
+                # flask_server/__init__ 后续的 `from . import model` 无重复执行。
+                import importlib
+                importlib.import_module('flask_server.model')
+                from sqlalchemy import inspect
+                declared = set(db.metadata.tables.keys())
+                inspector = inspect(db.engine)
+                to_reflect = [t for t in inspector.get_table_names() if t not in declared]
+                if to_reflect:
+                    db.metadata.reflect(bind=db.engine, only=to_reflect)
+        except Exception as e:
+            Logger.warn(f'db.reflect failed, continuing without reflection: {e}')
 
 
 # 初始化 Flask-Migrate（数据库迁移），仅 db 非None时启用

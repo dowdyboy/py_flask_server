@@ -204,14 +204,22 @@ curl -X POST http://127.0.0.1:5000/api/v1/users/ \
 
 ```python
 # @app.route 风格（最简示例）
-from flask_server.app import app, json_response
+from flask_server.app import json_response
 from flask_server.util import GraceResult
 
-@app.route('/hello', methods=['GET'])
 @json_response
 def hello():
     return GraceResult.ok({'message': 'Hello, World!'})
+
+def register(app):
+    """controller 模块可选的装配钩子：由 create_app() 调用"""
+    app.add_url_rule('/hello', 'hello', hello, methods=['GET'])
 ```
+
+> 引入应用工厂后，`@app.route` 风格不再在 `import` 时直接改全局 app，而是通过模块级
+> `register(app)` 钩子装配（`flask_server/controller/__init__.py` 自动发现并调用）。
+> 好处：同一份代码可为不同 app 实例注册路由，测试也能构造独立实例。
+> flask-smorest 的 `blp` 写法无需改动，仍然"建文件即出接口"。
 
 ## 认证拦截器
 
