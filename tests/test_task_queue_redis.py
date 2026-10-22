@@ -144,6 +144,11 @@ class FakeRedis:
         self._maybe_fail()
         return len(self.lists.get(key, []))
 
+    def lrange(self, key, start, end):
+        self._maybe_fail()
+        items = list(self.lists.get(key, []))
+        return items[start:end + 1]
+
     def close(self):
         pass
 
@@ -273,6 +278,40 @@ def test_reclaim_stale_takes_over_other_consumer(queue, fake, monkeypatch):
     again = queue.reserve(timeout=0.05)
     assert again is not None and again.envelope.name == 'orphan'
     assert again.envelope.attempts == 1
+
+
+def test_get_status_raises_unavailable_when_backend_down(queue, fake):
+    """查询状态时后端故障 → TaskQueueUnavailable（而不是裸 ConnectionError → 500）"""
+    task_id = queue.enqueue('x')
+    fake.fail = ConnectionError('down')
+    with pytest.raises(TaskQueueUnavailable):
+        queue.get_status(task_id)
+
+
+def test_init_raises_unavailable_when_backend_down():
+    """初始化失败（Redis 不可达）统一暴露为 TaskQueueUnavailable"""
+    class BrokenRedis(FakeRedis):
+        def xgroup_create(self, *a, **kw):
+            raise ConnectionError('cannot connect')
+
+    with pytest.raises(TaskQueueUnavailable):
+        RedisTaskQueue('redis://fake:6379/0', client=BrokenRedis())
+
+
+def test_dead_letters_reader(queue, fake):
+    """死信读取接口（运维排查用）"""
+    task_id = queue.enqueue('doomed')
+    queue.dead(queue.reserve(timeout=0.01), error='fatal')
+
+    letters = queue.dead_letters(limit=5)
+    assert len(letters) == 1
+    assert letters[0]['id'] == task_id
+    assert letters[0]['last_error'] == 'fatal'
+
+
+def test_dead_letters_handles_corrupt_entries(queue, fake):
+    fake.lpush(queue.dead_key, 'not-json')
+    assert queue.dead_letters()[0]['raw'] == 'not-json'
 
 
 def test_status_unknown_raises(queue):

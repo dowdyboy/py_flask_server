@@ -53,6 +53,34 @@ def test_cleanup_resources_is_idempotent(wsgi_mod):
     wsgi_mod._cleanup_resources()
 
 
+def test_cleanup_stops_embedded_task_worker(wsgi_mod):
+    """内嵌任务 worker 必须在释放 DB 之前停掉（否则在途任务会遇到已 dispose 的引擎）"""
+    stopped = []
+
+    class _FakeWorker:
+        def stop(self, timeout=15):
+            stopped.append(1)
+
+    wsgi_mod._embedded_worker = _FakeWorker()
+    wsgi_mod._cleanup_resources()
+    assert stopped == [1]
+    assert wsgi_mod._embedded_worker is None
+    # 再清理一次不报错（幂等）
+    wsgi_mod._cleanup_resources()
+    assert stopped == [1]
+
+
+def test_cleanup_survives_embedded_worker_stop_error(wsgi_mod):
+    """内嵌 worker 停止失败不应中断后续清理（DB/Redis 仍要释放）"""
+    class _BrokenWorker:
+        def stop(self, timeout=15):
+            raise RuntimeError('boom')
+
+    wsgi_mod._embedded_worker = _BrokenWorker()
+    wsgi_mod._cleanup_resources()
+    assert wsgi_mod._embedded_worker is None
+
+
 def test_waitress_options_keep_forwarded_headers(wsgi_mod, monkeypatch):
     """waitress 3 默认清除 X-Forwarded-*：必须显式关闭，否则 TRUSTED_PROXIES 逻辑失效。
 

@@ -43,6 +43,10 @@
 | `UDP_MAX_MESSAGE_LENGTH` | `65536` | UDP 单数据报大小上限（字节；超过此大小的数据报会被操作系统静默截断） |
 | `UDP_MAX_CONCURRENCY` | `256` | UDP 并发处理数据报上限（每数据报一线程，超限丢弃数据报，防洪泛线程爆炸 DoS；`≤0` 表示不限制） |
 | `CORS_ORIGINS` | `*` | CORS 允许来源，`*` 或逗号分隔列表 |
+| `API_TITLE` | `Flask Server API` | Swagger 文档标题（`/docs`、`/openapi.json`） |
+| `API_VERSION` | `v1` | 接口版本（同时用于 `/api/v1/health` 返回的 version 字段） |
+| `API_SPEC_URL` | `/openapi.json` | OpenAPI JSON 路径 |
+| `API_DOCS_URL` | `/docs` | Swagger UI 路径（CSP 会针对该路径放宽） |
 | `SECRET_KEY` | _默认值_ | Flask 密钥，生产环境必须修改 |
 | `MAX_CONTENT_LENGTH` | `16777216` | 请求体最大字节数（默认 16MB） |
 | `SWAGGER_UI_URL` | _CDN_ | Swagger UI 资源 URL（CSS/JS 都从这里取）。`/docs` 的 CSP 会**自动放行该 URL 的 scheme://host**，因此内网镜像/私有 CDN 可直接使用 |

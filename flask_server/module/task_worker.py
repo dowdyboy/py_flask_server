@@ -79,6 +79,19 @@ class TaskWorker:
 
     # ---------------- 消费循环 ----------------
 
+    def process_one(self, timeout=None):
+        """同步处理一条任务（不启动消费线程），返回是否处理了任务。
+
+        供 `scripts/worker.py --once`（联调/定时触发）与测试使用。
+        与 `_loop` 的区别：不做后端故障退避，异常直接抛给调用方。
+        """
+        reserved = self.queue.reserve(
+            config.task_reserve_timeout if timeout is None else timeout)
+        if reserved is None:
+            return False
+        self._handle(reserved)
+        return True
+
     def _loop(self):
         backoff = 1.0
         while not self._stop.is_set():

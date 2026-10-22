@@ -108,6 +108,7 @@ TASK_WORKER_EMBEDDED=true python server.py
 | `TASK_VISIBILITY_TIMEOUT` | `300` | 崩溃恢复的接管阈值（秒） |
 | `TASK_STATUS_TTL` | `86400` | 状态保留时长（秒） |
 | `TASK_DEAD_LETTER_MAX` | `1000` | 死信列表上限 |
+| `TASK_STATUS_MAX` | `10000` | 内存后端状态表上限（防内存无界增长） |
 | `TASK_RESERVE_TIMEOUT` | `2` | 单次出队阻塞时长（秒） |
 | `TASK_WORKER_EMBEDDED` | `false` | 是否在 Web 进程内嵌 worker（仅开发/单进程） |
 
@@ -121,17 +122,19 @@ redis-cli XLEN tasks:default
 redis-cli ZCARD tasks:default:delayed
 redis-cli LLEN tasks:default:dead
 
-# 查看死信（最近 20 条）
+# 死信列表（最近 20 条；也可在代码里 get_task_queue().dead_letters(limit=20)）
 redis-cli LRANGE tasks:default:dead 0 19
 
-# 重放死信：取出一条重新入队（示例）
+# 重放一条死信：取出信封重新入队（示例）
 python - <<'PY'
-from flask_server.module.task_queue import get_task_queue, TaskEnvelope
 import json
+from flask_server.module.task_queue import get_task_queue
+
 q = get_task_queue()
-raw = q.client.lindex(q.dead_key, 0)
-env = TaskEnvelope.from_json(raw)
-q.client.zadd(q.delayed_key, {env.to_json(): 0})
+letter = q.dead_letters(limit=1)[0]          # {'id','name','status','last_error',...}
+if letter.get('id'):
+    # 用同一 task_id 重新入队（相当于重跑；handler 需幂等）
+    q.enqueue(letter['name'], delay=0, task_id=letter['id'])
 PY
 ```
 

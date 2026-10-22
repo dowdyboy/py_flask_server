@@ -229,6 +229,44 @@ def test_check_production_config_worker_num_single_no_warnings(monkeypatch):
     assert check_production_config(worker_num=1) == []
 
 
+def test_banner_shows_task_queue_backend(monkeypatch):
+    """banner 显示任务队列后端/stream（内存 vs redis）"""
+    monkeypatch.setattr(config, 'redis_url', None)
+    monkeypatch.setattr(config, 'task_queue_stream', 'tasks:default')
+    monkeypatch.setattr(config, 'task_worker_embedded', False)
+    banner = '\n'.join(build_banner())
+    assert 'TASK QUEUE' in banner
+    assert 'backend=memory' in banner
+
+    monkeypatch.setattr(config, 'redis_url', 'redis://localhost:6379/0')
+    monkeypatch.setattr(config, 'task_worker_embedded', True)
+    banner = '\n'.join(build_banner())
+    assert 'backend=redis' in banner
+    assert 'embedded-worker' in banner
+
+
+def test_check_production_config_warns_embedded_worker_without_redis(monkeypatch):
+    """内嵌 worker + 内存队列 + 多 worker：任务不会被消费，必须告警"""
+    monkeypatch.setattr(config, 'app_env', 'production')
+    monkeypatch.setattr(config, 'secret_key_is_default', False)
+    monkeypatch.setattr(config, 'cors_origins', ['https://app.example.com'])
+    monkeypatch.setattr(config, 'debug', False)
+    monkeypatch.setattr(config, 'host', '0.0.0.0')
+    monkeypatch.setattr(config, 'redis_url', 'redis://localhost:6379/0')
+    monkeypatch.setattr(config, 'log_to_file', False)
+    monkeypatch.setattr(config, 'auth_enabled', False)
+    monkeypatch.setattr(config, 'task_worker_embedded', True)
+    monkeypatch.setenv('WORKER_NUM', '4')
+
+    assert not any('TASK_WORKER_EMBEDDED' in w for w in check_production_config())
+
+    # 去掉 Redis → 告警
+    monkeypatch.setattr(config, 'redis_url', None)
+    monkeypatch.setattr(config, 'rate_limit_enabled', False)
+    warnings = check_production_config()
+    assert any('TASK_WORKER_EMBEDDED' in w for w in warnings)
+
+
 def test_print_startup_banner_outputs(capsys, monkeypatch):
     """print_startup_banner 打印 banner 行"""
     monkeypatch.setattr(config, 'app_env', 'development')

@@ -23,9 +23,19 @@ def build_banner():
         f'  SOCKETIO   : {_status(config.socketio_enabled, f"async={config.socketio_async_mode}")}',
         f'  TCP        : {_status(config.tcp_enabled, f"{config.tcp_host}:{config.tcp_port}")}',
         f'  UDP        : {_status(config.udp_enabled, f"{config.udp_host}:{config.udp_port}")}',
+        f'  TASK QUEUE : {_task_queue_desc()}',
         '└────────────────────────────────────────────────────────────────────────┘',
     ]
     return lines
+
+
+def _task_queue_desc():
+    """任务队列摘要：后端 + 队列名（+ 是否内嵌 worker）"""
+    backend = 'redis' if config.redis_url else 'memory'
+    desc = f'stream={config.task_queue_stream} backend={backend}'
+    if config.task_worker_embedded:
+        desc += ' embedded-worker'
+    return desc
 
 
 def _db_desc():
@@ -76,6 +86,10 @@ def check_production_config(worker_num=None):
     if _multi_worker(worker_num) and config.log_to_file:
         warnings.append('多 worker 写同一日志文件存在轮转竞态（可能丢行/损坏），'
                         '建议 LOG_FILE_PATH= 禁用文件日志改用容器日志采集')
+    if config.task_worker_embedded and not config.redis_url and _multi_worker(worker_num):
+        warnings.append('TASK_WORKER_EMBEDDED=true 且未配置 REDIS_URL：进程内内存队列只在'
+                        '"入队的那个进程"可见，多 worker 下任务不会被消费；'
+                        '请配置 REDIS_URL 并独立运行 scripts/worker.py')
     return warnings
 
 

@@ -43,13 +43,17 @@ WORKER_NUM=4 python wsgi_gunicorn.py
    不会出现"端口冲突 → worker 崩溃 → master 重拉"的崩溃循环。需要协议服务器时请
    `WORKER_NUM=1` 或将协议服务器独立进程部署；同时在防火墙放行 TCP/UDP 端口
    （默认 9000 / 9001）。详见 [protocol-servers.md](protocol-servers.md)
+9. **后台任务**：任务消费者建议**独立进程/独立容器**部署（`python scripts/worker.py`），
+   与 Web 进程分开扩容重启。必须配置 `REDIS_URL`（内存队列只在入队的进程内可见）；
+   `TASK_WORKER_EMBEDDED=true` 只适合单进程开发。详见 [task-queue.md](task-queue.md)
 
 ### 优雅退出
 
 | 入口 | 行为 |
 |---|---|
-| `python wsgi.py` | 收到 SIGTERM/SIGINT 后：**停止 accept 新连接** → 等待在途请求处理完（最长 `GRACEFUL_TIMEOUT`=15s）→ 释放 DB 连接池/Redis/线程池/协议服务器 → 退出。空闲 keep-alive 连接由看门狗超时兜底；**二次信号立即退出** |
-| `python wsgi_gunicorn.py` | 由 gunicorn 自身管理 `graceful_timeout`（15s）与 worker 优雅退出 |
+| `python wsgi.py` | 收到 SIGTERM/SIGINT 后：**停止 accept 新连接** → 等待在途请求处理完（最长 `GRACEFUL_TIMEOUT`=15s）→ 依次停止内嵌任务 worker、协议服务器、DB 连接池/Redis/线程池 → 退出。空闲 keep-alive 连接由看门狗超时兜底；**二次信号立即退出** |
+| `python wsgi_gunicorn.py` | 由 gunicorn 自身管理 `graceful_timeout`（15s）与 worker 优雅退出（任务消费者是独立进程，不在此列） |
+| `python scripts/worker.py` | 收到 SIGTERM/SIGINT 后**不再取新任务**，等在途任务执行完再退出；容器请把 `stop_grace_period` 设得比最长任务长 |
 
 ## Docker 部署
 

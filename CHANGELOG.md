@@ -5,6 +5,29 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **任务队列自查修正**（随功能上线前的一轮自审）：
+  - `scripts/worker.py --once` 原先会先 `start()` 起消费线程、主线程再同步消费，语义混乱且
+    可能在线程仍工作时退出；改为 `TaskWorker.process_one()` 同步处理（不开线程）
+  - `RedisTaskQueue.__init__` 建 consumer group 失败时抛出裸 `ConnectionError`，
+    与"入队失败抛 `TaskQueueUnavailable`"的契约不一致（控制器会漏成 500）；
+    现统一包装为 `TaskQueueUnavailable`；`get_status` 读取失败同样包装
+  - 补 `RedisTaskQueue.dead_letters()`（与内存后端对齐，运维排查用）
+  - `TASK_WORKER_EMBEDDED=true` 时内嵌 worker 收到 SIGTERM 未停止（在途任务会被直接杀掉）：
+    `wsgi.py` 关闭流程现在**先停内嵌 worker**，再停协议服务器、释放 DB/Redis
+  - 装饰器 `task` 不再从 `flask_server.module` 的 `__all__` 导出（与子包 `flask_server.task`
+    同名，经 `from .module import *` 会在包属性上互相覆盖，与早前 `config` 的坑同类）
+- **文档与代码同步（本轮全量核对）**：
+  - `docs/configuration.md` / `.env.example` 补齐 `API_TITLE`、`API_VERSION`、
+    `API_SPEC_URL`、`API_DOCS_URL`（此前代码支持但两处文档均未列出）
+  - `docs/architecture.md` 启动流程补内嵌 worker 与退出顺序；`module/` 职责补任务队列
+  - `docs/deployment.md` 多进程注意事项补"任务消费者独立部署"；优雅退出表补
+    `scripts/worker.py` 与内嵌 worker 的停止行为
+  - `docs/task-queue.md` 死信重放示例改用 `dead_letters()`；配置表补 `TASK_STATUS_MAX`
+  - README：CI 流水线数（七 → 九）、`scripts/` 职责、用例数与覆盖率（576 / 91.1%）
+  - `docs/development.md` 补 worker 命令；用例数同步
+
 ### 新增
 
 - **可持久化的后台任务队列**（`flask_server/module/task_queue.py` + `task_worker.py` +

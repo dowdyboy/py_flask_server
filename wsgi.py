@@ -21,8 +21,22 @@ if socketio is not None:
 GRACEFUL_TIMEOUT = 15
 
 
+# 内嵌任务消费者（TASK_WORKER_EMBEDDED=true 时由 main() 赋值，关闭时先停它）
+_embedded_worker = None
+
+
 def _cleanup_resources():
-    """停止协议服务器 → 释放 DB 连接池 / Redis / 线程池（幂等，可被多次调用）"""
+    """停止内嵌 worker / 协议服务器 → 释放 DB 连接池 / Redis / 线程池（幂等，可被多次调用）"""
+
+    # 内嵌任务在 Web 进程内执行：先停它，避免 DB 被 dispose 后仍在跑的任务报错
+    global _embedded_worker
+    if _embedded_worker is not None:
+        try:
+            _embedded_worker.stop()
+            Logger.info('Embedded task worker stopped')
+        except Exception as e:
+            Logger.warn(f'Embedded task worker stop error: {e}')
+        _embedded_worker = None
 
     # 先停止 TCP/UDP 协议服务器：处理中的 on_message 可能用到 DB/Redis，
     # 必须在关闭依赖之前停止消息入口，给在途消息一个完成窗口
@@ -130,11 +144,12 @@ def _waitress_options():
 
 def main():
     """启动 waitress 生产服务器（单进程多线程）"""
+    global _embedded_worker
     print_startup_banner()
     # 协议服务器随主进程启动（TCP_ENABLED / UDP_ENABLED 为 true 时生效）
     start_protocol_servers()
     # 内嵌任务消费者（TASK_WORKER_EMBEDDED=true；生产建议独立进程跑 scripts/worker.py）
-    start_embedded_task_worker(app=app)
+    _embedded_worker = start_embedded_task_worker(app=app)
 
     options = _waitress_options()
     server = create_server(app, **options)

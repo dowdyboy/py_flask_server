@@ -354,7 +354,12 @@ class RedisTaskQueue(BaseTaskQueue):
         self.client = client or redis.Redis.from_url(
             url, decode_responses=True, socket_connect_timeout=3, socket_timeout=5,
         )
-        self._ensure_group()
+        try:
+            self._ensure_group()
+        except Exception as e:
+            # 暴露成统一异常：调用方（如 enqueue_task 的控制器）可以据此返回 503，
+            # 而不是把 ConnectionError 直接漏成 500
+            raise TaskQueueUnavailable(f'任务队列初始化失败（Redis 不可用？）: {e}') from e
 
     # -- 初始化 --
     def _ensure_group(self):
@@ -513,10 +518,27 @@ class RedisTaskQueue(BaseTaskQueue):
 
     # -- 查询 --
     def get_status(self, task_id) -> Dict[str, Any]:
-        raw = self.client.get(self.status_prefix + task_id)
+        try:
+            raw = self.client.get(self.status_prefix + task_id)
+        except Exception as e:
+            raise TaskQueueUnavailable(f'读取任务状态失败: {e}') from e
         if raw is None:
             raise TaskNotFound(task_id)
         return json.loads(raw)
+
+    def dead_letters(self, limit=20):
+        """读取死信（最近 limit 条，解析失败的条目原样返回）"""
+        try:
+            raws = self.client.lrange(self.dead_key, 0, max(0, limit - 1))
+        except Exception as e:
+            raise TaskQueueUnavailable(f'读取死信失败: {e}') from e
+        out = []
+        for raw in raws:
+            try:
+                out.append(json.loads(raw))
+            except Exception:
+                out.append({'raw': raw})
+        return out
 
     def stats(self) -> Dict[str, int]:
         try:

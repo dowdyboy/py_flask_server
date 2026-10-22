@@ -78,18 +78,15 @@ def main(argv=None):
 
     # 4) 运行
     if args.once:
+        # 单次模式：不开消费线程，主线程同步处理完当前可立即取到的任务即退出
+        processed = 0
         try:
-            worker.start()
-            while True:
-                reserved = queue.reserve(timeout=0.3)
-                if reserved is None:
-                    break
-                worker._handle(reserved)      # noqa: SLF001 - 单次模式复用同一执行路径
+            while worker.process_one(timeout=0.3):
+                processed += 1
         except TaskQueueUnavailable as e:
             Logger.error(f'队列不可用: {e}')
             return 1
-        finally:
-            worker.stop()
+        print(f'单次模式：处理 {processed} 个任务')
         return 0
 
     try:

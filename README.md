@@ -13,7 +13,7 @@
 - 📊 **可观测性**：request_id 全链路、JSON 日志、Prometheus `/metrics`（支持多进程聚合）、healthz/readyz 探针
 - 🗄️ **数据库**：SQLAlchemy + Flask-Migrate（MySQL/SQLite）、缓存（内存/Redis 自动降级）
 - 🛡️ **安全基线**：路径穿越防护、URI 脱敏、限流、安全响应头（CSP/HSTS）、可信代理 XFF 最右解析
-- 🐳 **容器化**：多阶段 Dockerfile + dev/prod compose + CI 七流水线（含 Windows）
+- 🐳 **容器化**：多阶段 Dockerfile + dev/prod compose + CI 九流水线（含 Windows、多进程冒烟、依赖锁定）
 
 ## 🚀 快速开始（5 分钟）
 
@@ -55,8 +55,8 @@ py_flask_server/
 │   ├── module/                # 基础设施：DB / 缓存 / 文件存储 / TCP·UDP 服务器
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
-├── scripts/                   # 脚手架 / 迁移 / 开发启动脚本
-├── tests/                     # 566 个用例（覆盖率门槛 85%，实测 91.2%）
+├── scripts/                   # 脚手架 / 迁移 / 任务消费者 / 冒烟与压测脚本
+├── tests/                     # 576 个用例（覆盖率门槛 85%，实测 91.1%）
 ├── docs/                      # 详细文档
 ├── Makefile                   # 统一命令入口
 ├── Dockerfile / docker-compose*.yml

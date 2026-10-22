@@ -7,7 +7,7 @@ from .tcp_server import tcp_server
 from .udp_server import udp_server
 from .task_queue import (
     TaskQueueUnavailable, TaskNotFound, enqueue_task, get_task_queue,
-    get_task_status, registry as task_registry, task, task_queue_stats,
+    get_task_status, registry as task_registry, task_queue_stats,
 )
 from .task_worker import TaskWorker, start_worker
 from ..config import config
@@ -23,7 +23,10 @@ __all__ = [
     'redis_cache',
     'tcp_server', 'udp_server',
     'start_protocol_servers', 'stop_protocol_servers', 'start_embedded_task_worker',
-    'task', 'task_registry', 'enqueue_task', 'get_task_status', 'get_task_queue',
+    # 任务声明装饰器刻意不从这里导出：`task` 与子包 `flask_server.task` 同名，
+    # 经 `from .module import *` 会在包属性上互相覆盖。规范写法：
+    #   from flask_server.module.task_queue import task
+    'task_registry', 'enqueue_task', 'get_task_status', 'get_task_queue',
     'task_queue_stats', 'TaskQueueUnavailable', 'TaskNotFound',
     'TaskWorker', 'start_worker',
 ]

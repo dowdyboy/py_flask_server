@@ -244,6 +244,44 @@ def test_enqueue_and_status_helpers(fast_config):
     assert task_queue_stats()['ready'] == 1
 
 
+def test_worker_process_one_sync(fast_config):
+    """process_one：同步处理一条（--once 模式使用，不启动线程）"""
+    from flask_server.module.task_worker import TaskWorker
+
+    ran = []
+
+    @task('sync.task')
+    def sync_task(v):
+        ran.append(v)
+
+    q = MemoryTaskQueue()
+    worker = TaskWorker(queue=q, concurrency=1)
+    assert worker.process_one(timeout=0.01) is False      # 空队列
+
+    q.enqueue('sync.task', args=[5])
+    assert worker.process_one(timeout=0.5) is True
+    assert ran == [5]
+    assert worker.processed == 1
+    assert worker._threads == []                          # 没有启动消费线程
+
+
+def test_worker_cli_once_prints_summary(fast_config, monkeypatch, capsys):
+    """--once 打印处理条数，且不遗留消费线程"""
+    cli = _load_worker_cli()
+
+    @task('cli.sync')
+    def cli_sync():
+        pass
+
+    q = MemoryTaskQueue()
+    q.enqueue('cli.sync')
+    monkeypatch.setattr(cli, '_build_queue', lambda stream: q)
+
+    assert cli.main(['--once']) == 0
+    out = capsys.readouterr().out
+    assert '单次模式：处理 1 个任务' in out
+
+
 # ------------------------- worker 端到端 -------------------------
 
 

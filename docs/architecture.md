@@ -68,7 +68,7 @@
 | `flask_server/task/` | 后台任务（`@task` 声明） | ✅ worker 启动时自动导入（`auto_import_tasks`） |
 | `flask_server/service/` | 业务编排（可选层） | ❌ 需被 controller 调用 |
 | `flask_server/model/po/` | 声明式 ORM 模型 | ✅ 被 `model` 包导入后进入迁移检测 |
-| `flask_server/module/` | 基础设施单例（DB/缓存/存储/协议服务器） | 需在 `module/__init__.py` 导出 |
+| `flask_server/module/` | 基础设施单例（DB / 缓存 / 存储 / 协议服务器 / 任务队列） | 需在 `module/__init__.py` 导出 |
 | `flask_server/component/` | 横切组件（限流/认证/指标） | 需在 `init_components()` 里装配 |
 | `flask_server/util/` | 无状态工具 | 需在 `util/__init__.py` 导出 |
 | `flask_server/schema/` | marshmallow Schema | ❌ 需被 controller 引用 |
@@ -86,13 +86,20 @@ server.py（开发）        wsgi.py（waitress 生产）        wsgi_gunicorn.p
       │                        │                              │
  启协议服务器*          启协议服务器                     gunicorn 启动
       │                        │                              │
- app.run(debug)      create_server + 信号处理器         post_worker_init：
+ 启内嵌任务 worker†     启内嵌任务 worker†              post_worker_init：
       │                        │                          workers == 1 才启协议服务器
-      │                   run() → 收到信号 → drain → 清理
+ app.run(debug)      create_server + 信号处理器               │
+      │                        │                          （内嵌 worker 见 †）
+      │                   run() → 收到信号 → 停内嵌 worker →
+      │                   停协议服务器 → 释放 DB/Redis → 退出
       └────────────────────────┴──────────────────────────────┘
+
+独立部署（推荐）：python scripts/worker.py --concurrency 4
 ```
 
 \* `server.py` 在 debug + reloader 模式下只由**子进程**启动协议服务器，避免父子抢端口。
+† 仅 `TASK_WORKER_EMBEDDED=true` 且已注册任务时启动；内存后端下任务只在入队的进程内可见，
+  多进程部署请改用独立 `scripts/worker.py`（消费 Redis 队列）。
 
 ### create_app() 装配顺序
 
