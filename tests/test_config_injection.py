@@ -1,5 +1,7 @@
 """配置注入测试：Config 覆盖、create_app(framework_config=...)、配置代理解析优先级"""
 
+import uuid
+
 import pytest
 
 
@@ -125,6 +127,41 @@ def test_proxy_write_inside_app_context_targets_app_config():
         config.api_version = 'v-override'
         assert app.extensions[CONFIG_EXT_KEY].api_version == 'v-override'
     assert default_config.api_version != 'v-override'
+
+
+def test_injected_socketio_enabled_initializes():
+    """create_app 注入 SOCKETIO_ENABLED=true 应真正初始化（不能只看导入期默认配置）"""
+    pytest.importorskip('flask_socketio')
+    app_on = _app(socketio_enabled=True, socketio_async_mode='threading')
+    assert app_on.socketio is not None
+    assert app_on.socketio.async_mode == 'threading'
+    app_off = _app(socketio_enabled=False)
+    assert app_off.socketio is None
+
+
+def test_auth_store_is_per_app():
+    """同一进程两个 app 的 AUTH_STORE 应隔离（不能共用类级 _store）"""
+    from flask_server.component.auth import AuthService
+
+    app_a = _app(auth_enabled=True, auth_store='memory')
+    app_b = _app(auth_enabled=True, auth_store='memory')
+    username = 'iso_' + uuid.uuid4().hex[:8]
+    with app_a.app_context():
+        uid = AuthService.register(username, 'secret123')
+        assert AuthService.get_user_by_uid(uid) is not None
+    with app_b.app_context():
+        assert AuthService.get_user_by_uid(uid) is None
+        assert AuthService._get_store().get_by_username(username) is None
+
+
+def test_auth_store_sqlalchemy_without_uri_per_app():
+    """per-app store：AUTH_STORE=sqlalchemy 漏配 URI 时仍给出清晰报错，不被其它 app 的 memory store 掩盖"""
+    from flask_server.component.auth import AuthService
+
+    app = _app(auth_enabled=True, auth_store='sqlalchemy', sqlalchemy_uri=None)
+    with app.app_context():
+        with pytest.raises(RuntimeError, match='AUTH_STORE=sqlalchemy 需要配置 SQLALCHEMY_URI'):
+            AuthService._get_store()
 
 
 def test_proxy_private_attribute_raises():

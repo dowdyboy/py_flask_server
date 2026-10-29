@@ -67,7 +67,7 @@
 | `DB_POOL_TIMEOUT` | `30` | 获取连接超时（秒） |
 | `INIT_SQL_PATH` | _无_ | SQL 初始化脚本文件路径（整体以 `executescript` 执行，兼容存储过程/注释内的分号） |
 | `REDIS_URL` | _无_ | Redis 连接地址，未配置时使用内存缓存 |
-| `RATE_LIMIT_ENABLED` | `false` | 是否启用接口限流（按 IP+路径 固定窗口计数） |
+| `RATE_LIMIT_ENABLED` | `false` | 是否启用接口限流（按 IP+路径 顺延窗口计数） |
 | `RATE_LIMIT_PER_MINUTE` | `60` | 每个 IP+路径 每分钟允许的请求数，超出返回 429。探针/监控端点（/metrics、healthz、readyz、health，含尾斜杠写法）豁免限流；超长路径的计数键自动哈希截断 |
 | `TRUSTED_PROXIES` | `127.0.0.1,::1` | 可信代理 IP 列表（支持精确 IP 与 CIDR 前缀，如 `172.16.0.0/12` 覆盖 Docker 网关网段）；`get_real_ip` 仅信任来自这些地址的 `X-Forwarded-For`。⚠️ CIDR 内任何主机都可伪造 `X-Forwarded-For`（绕过限流/污染日志），请确保网段内仅含可信服务 |
 | `SECURITY_HEADERS_ENABLED` | `true` | 是否注入安全响应头（X-Frame-Options/CSP 等） |

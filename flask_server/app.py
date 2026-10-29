@@ -269,14 +269,28 @@ def register_error_handlers(app):
 
 
 def _init_socketio(app, cfg):
-    """按配置初始化 SocketIO（默认关闭；未安装依赖时告警降级）"""
-    if not _socketio_will_init:
+    """按配置初始化 SocketIO（默认关闭；未安装依赖时告警降级）
+
+    注意：eventlet 的 monkey_patch 必须在导入 socket 相关模块前执行，属于**导入期**
+    行为；但 create_app(framework_config=...) 可能注入与进程默认不同的
+    SOCKETIO_ENABLED / SOCKETIO_ASYNC_MODE。因此这里以 cfg 为准：
+      - cfg 关闭 → 不初始化；
+      - cfg 开启且 async_mode=threading → 可直接初始化；
+      - cfg 开启且 async_mode=eventlet，但导入期未按该模式 monkey_patch →
+        降级为 threading 并告警（不能事后打 eventlet 补丁）。
+    """
+    if not cfg.socketio_enabled:
         return None
+    async_mode = cfg.socketio_async_mode or 'threading'
+    if async_mode == 'eventlet' and (not _socketio_will_init or _async_mode != 'eventlet'):
+        Logger.warn('SOCKETIO_ASYNC_MODE=eventlet requested by config, but eventlet '
+                    'monkey_patch was not applied at import time; falling back to threading')
+        async_mode = 'threading'
     try:
         from flask_socketio import SocketIO
         return SocketIO(
             app,
-            async_mode=_async_mode,
+            async_mode=async_mode,
             ping_timeout=120,
             ping_interval=30,
             max_http_buffer_size=cfg.socketio_max_http_buffer_size,

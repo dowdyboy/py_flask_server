@@ -13,8 +13,8 @@ from .protocol_server import ProtocolServer
 # 并发防护：UDP_MAX_CONCURRENCY 限制并发处理的数据报数（每数据报一线程，
 # 防数据报洪泛线程爆炸 DoS）。槽位在 spawn 线程前检查（verify_request）：
 # 超限的数据报被直接丢弃、不创建线程，洪泛场景零线程 churn。
-# 注意：数据报超过 UDP_MAX_MESSAGE_LENGTH 会被操作系统静默截断（recvfrom 缓冲），
-# 无感知；请按协议约定的最大报文设置该值。
+# 注意：数据报超过 UDP_MAX_MESSAGE_LENGTH 时，Linux 上会被 recvfrom 缓冲截断，
+# Windows 上会因 WSAEMSGSIZE 被丢弃（handler 收不到回调）；请按协议约定的最大报文设置该值。
 #
 # 处理器（文件放在 flask_server/handler/ 下自动生效）：
 #   @udp_server.on_message   on_message(data, addr)

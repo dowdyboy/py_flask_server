@@ -123,7 +123,7 @@ docker run -p 5000:5000 --env-file .env flask-server
    （`SECURITY_HEADERS_ENABLED=false` 可关闭）。CSP 对 `/docs` 会自动放行 `SWAGGER_UI_URL`
    的 `scheme://host`（CSS/JS 都从该地址取），其余路径收紧为 `script-src 'self'`。
    置于 HTTPS 反代之后建议同时开启 `HSTS_ENABLED=true`。
-5. **限流**：`RATE_LIMIT_ENABLED=true` 按 IP+路径 固定窗口限流（另有 IP 级总配额兜底，
+5. **限流**：`RATE_LIMIT_ENABLED=true` 按 IP+路径 顺延窗口限流（另有 IP 级总配额兜底，
    防随机路径绕过），超限返回 429；`/metrics` 与健康探针端点豁免限流。
 6. **可信代理**：`TRUSTED_PROXIES` 内的来源会被信任其 `X-Forwarded-For` 头，解析规则是从右
    向左取第一个非可信 IP。⚠️ 使用 CIDR（如 Docker 的 `172.16.0.0/12`）时，该网段内**任何**

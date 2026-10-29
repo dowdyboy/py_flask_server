@@ -147,7 +147,8 @@ class ArticleView(MethodView):
 
 ## 限流
 
-`RATE_LIMIT_ENABLED=true` 时启用，固定窗口计数（`RATE_LIMIT_PER_MINUTE`，默认 60 次/分钟），
+`RATE_LIMIT_ENABLED=true` 时启用，顺延窗口计数（`RATE_LIMIT_PER_MINUTE`，默认 60 次/分钟；
+每次请求刷新窗口 TTL，活动期内计数不会按整分钟重置），
 超限返回 429（code=-1）。
 
 **双层配额**（原子 INCR 计数，防并发竞态绕过）：

@@ -3,7 +3,7 @@ from ..config import config
 from ..module import memory_cache, redis_cache
 from ..util import Logger, CommonUtil
 
-# 简单限流组件：按 (客户端IP, 请求路径) 做固定窗口计数
+# 简单限流组件：按 (客户端IP, 请求路径) 做顺延窗口计数（每次请求刷新窗口 TTL）
 # 存储：RATE_LIMIT_STORE=memory（默认，进程内）/ redis（多实例准确，需配置 REDIS_URL）
 # 默认关闭（RATE_LIMIT_ENABLED=false），启用后每个 IP+路径 每分钟最多
 # RATE_LIMIT_PER_MINUTE 次请求，超出返回 429
@@ -18,7 +18,7 @@ from ..util import Logger, CommonUtil
 # 任一超限即返回 429。
 
 
-RATE_LIMIT_WINDOW = 60   # 固定窗口大小（秒）
+RATE_LIMIT_WINDOW = 60   # 窗口大小（秒；每次自增顺延，活动期内计数不重置）
 
 # 豁免限流的端点：监控抓取与探针高频轮询不应被限流。
 # 若 readyz 被 429，编排系统会判实例不健康并摘除流量，导致剩余实例流量更集中、

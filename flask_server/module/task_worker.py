@@ -95,6 +95,10 @@ class TaskWorker:
     def _loop(self):
         backoff = 1.0
         while not self._stop.is_set():
+            # 崩溃恢复检查放在循环顶部（内部按 RECLAIM_INTERVAL 节流）：
+            # 只在 reserve() 返回 None 时检查会让"持续有任务"的队列永远不接管
+            # 崩溃 worker 留下的 stale pending（高负载下任务可能长期滞留）。
+            self._maybe_reclaim()
             try:
                 reserved = self.queue.reserve(timeout=config.task_reserve_timeout)
             except TaskQueueUnavailable as e:
@@ -110,7 +114,6 @@ class TaskWorker:
 
             backoff = 1.0
             if reserved is None:
-                self._maybe_reclaim()
                 continue
             self._handle(reserved)
 

@@ -10,10 +10,18 @@ def fresh_store():
     """每个用例重置内存用户存储与认证缓存，避免用例间污染"""
     _clear_auth_cache()
     AuthService._store = None
+    _clear_app_store()
     yield
     AuthService._store = None
+    _clear_app_store()
     # 清理残留 token / 失败计数 / 锁定标记
     _clear_auth_cache()
+
+
+def _clear_app_store():
+    """清空默认 app 的 per-app 用户存储（create_app 配置注入后 store 挂在 app.extensions）"""
+    from flask_server import app as default_app
+    default_app.extensions.pop('flask_server.auth_store', None)
 
 
 def _clear_auth_cache():
@@ -319,9 +327,10 @@ def test_refresh_after_user_deleted_returns_401_not_500(client, fresh_store):
     client.post('/api/v1/auth/register', json={'username': 'ghost', 'password': 'secret123'})
     data = client.post('/api/v1/auth/login',
                        json={'username': 'ghost', 'password': 'secret123'}).get_json()['data']
-    store = AuthService._get_store()
-    store._users.clear()
-    store._by_uid.clear()
+    with client.application.app_context():
+        store = AuthService._get_store()
+        store._users.clear()
+        store._by_uid.clear()
     r = client.post('/api/v1/auth/refresh', json={'refresh_token': data['refresh_token']})
     assert r.status_code == 401
     assert r.get_json()['code'] == 4002
@@ -332,9 +341,10 @@ def test_refresh_revokes_token_when_user_vanished(client, fresh_store):
     client.post('/api/v1/auth/register', json={'username': 'ghost2', 'password': 'secret123'})
     rt = client.post('/api/v1/auth/login',
                      json={'username': 'ghost2', 'password': 'secret123'}).get_json()['data']['refresh_token']
-    store = AuthService._get_store()
-    store._users.clear()
-    store._by_uid.clear()
+    with client.application.app_context():
+        store = AuthService._get_store()
+        store._users.clear()
+        store._by_uid.clear()
     client.post('/api/v1/auth/refresh', json={'refresh_token': rt})
     # 重新注册同名用户：旧 refresh 已作废，不能用于新用户
     client.post('/api/v1/auth/register', json={'username': 'ghost2', 'password': 'secret123'})
@@ -368,10 +378,11 @@ def test_login_accepts_legacy_username_charset(client, fresh_store):
     from flask_server.component.auth import AuthService, AuthUser
     from flask_server.util import DataEncryptUtil
 
-    store = AuthService._get_store()
-    legacy = AuthUser('uid-legacy', '张 三', DataEncryptUtil.pbkdf2_hmac('secret123'), datetime.now())
-    store._users['张 三'] = legacy
-    store._by_uid['uid-legacy'] = legacy
+    with client.application.app_context():
+        store = AuthService._get_store()
+        legacy = AuthUser('uid-legacy', '张 三', DataEncryptUtil.pbkdf2_hmac('secret123'), datetime.now())
+        store._users['张 三'] = legacy
+        store._by_uid['uid-legacy'] = legacy
 
     r = client.post('/api/v1/auth/login', json={'username': '张 三', 'password': 'secret123'})
     assert r.status_code == 200, r.get_json()

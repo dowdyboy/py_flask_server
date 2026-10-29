@@ -177,7 +177,7 @@ def test_memory_retry_increments_attempts_and_keeps_task(fast_config):
 
 def test_memory_dead_letter(fast_config):
     q = MemoryTaskQueue()
-    task_id = q.enqueue('doomed')
+    task_id = q.enqueue('doomed', args=[1], kwargs={'k': 'v'})
     reserved = q.reserve(timeout=0.5)
     q.dead(reserved, error='fatal')
 
@@ -186,6 +186,12 @@ def test_memory_dead_letter(fast_config):
     letters = q.dead_letters()
     assert letters and letters[-1]['id'] == task_id
     assert letters[-1]['last_error'] == 'fatal'
+    # 死信记录保留原参数，供人工排查/重放
+    assert letters[-1]['args'] == [1]
+    assert letters[-1]['kwargs'] == {'k': 'v'}
+    # 普通状态记录不携带参数（避免状态键膨胀）
+    assert 'args' not in q.get_status(task_id)
+    assert 'kwargs' not in q.get_status(task_id)
 
 
 def test_memory_stats(fast_config):
@@ -263,6 +269,48 @@ def test_worker_process_one_sync(fast_config):
     assert ran == [5]
     assert worker.processed == 1
     assert worker._threads == []                          # 没有启动消费线程
+
+
+def test_worker_reclaims_stale_while_busy(fast_config):
+    """持续有任务时也要触发崩溃恢复检查（修复前只在 reserve() 返回 None 时检查）"""
+    from flask_server.module.task_queue import ReservedTask, TaskEnvelope
+    from flask_server.module.task_worker import TaskWorker
+
+    class BusyQueue:
+        def __init__(self):
+            self.reclaims = 0
+            self.acks = 0
+
+        def reserve(self, timeout=0.01):
+            time.sleep(0.02)
+            return ReservedTask(token='t', envelope=TaskEnvelope(id='t', name='busy.noop'))
+
+        def ack(self, reserved):
+            self.acks += 1
+
+        def reclaim_stale(self, count=10):
+            self.reclaims += 1
+            return 0
+
+        def dead(self, reserved, error=''):
+            pass
+
+        def retry(self, reserved, delay, error=''):
+            pass
+
+    @task('busy.noop')
+    def busy_noop():
+        pass
+
+    q = BusyQueue()
+    worker = TaskWorker(queue=q, concurrency=1)
+    worker.start()
+    try:
+        assert _wait_until(lambda: q.reclaims >= 1, timeout=2), \
+            '有任务可消费时也应执行 reclaim 检查'
+        assert _wait_until(lambda: q.acks >= 1, timeout=2)
+    finally:
+        worker.stop()
 
 
 def test_worker_cli_once_prints_summary(fast_config, monkeypatch, capsys):

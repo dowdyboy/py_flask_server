@@ -7,6 +7,22 @@
 
 ### 修复
 
+- **E2E 测试发现的问题修复**（2026-10-29，新增回归用例后 582 例通过 / 覆盖率 91.3%）：
+  - `RedisTaskQueue.stats()` 兼容 redis-py 5.x 的 `XPENDING` 摘要 dict；修复前
+    `pending` 恒为 0、`ready` 把 pending 也算进去（积压统计虚高）
+  - 内存/Redis 死信记录补存 `args`/`kwargs`；`docs/task-queue.md` 重放示例按原参数重放
+    （此前带参任务重放会丢参数）
+  - `TaskWorker` 的崩溃恢复检查移到消费循环顶部（仍按 30s 节流）；修复前只在
+    `reserve()` 返回 `None` 时检查，持续有任务时不会接管 stale pending
+  - `create_app(framework_config=...)` 的 SocketIO 开关改为按注入配置生效；
+    eventlet 未在导入期 monkey_patch 时降级 threading 并告警
+  - `AuthService` 用户存储改为 per-app（`app.extensions`），修复同进程多 app
+    共用 `AUTH_STORE`、以及 sqlalchemy 漏配 URI 的报错被其它 app 的 memory store 掩盖
+  - `.env.example` 补 `TASK_STATUS_MAX`；`scripts/benchmark.py` 依赖说明改为
+    `requirements-dev.txt`；UDP 超长数据报文档补充 Windows 丢弃行为
+  - 脚手架排除 `.ruff_cache` / `.coverage_html` / `.mypy_cache` / `.tox` / `.nox`
+    与 `test-results.xml`；`examples/api.http` 404 示例补充认证开启时的 401 说明
+  - 限流文档措辞由“固定窗口”改为“顺延窗口”（实现每次自增都会刷新 TTL）
 - **任务队列自查修正**（随功能上线前的一轮自审）：
   - `scripts/worker.py --once` 原先会先 `start()` 起消费线程、主线程再同步消费，语义混乱且
     可能在线程仍工作时退出；改为 `TaskWorker.process_one()` 同步处理（不开线程）
@@ -25,7 +41,7 @@
   - `docs/deployment.md` 多进程注意事项补"任务消费者独立部署"；优雅退出表补
     `scripts/worker.py` 与内嵌 worker 的停止行为
   - `docs/task-queue.md` 死信重放示例改用 `dead_letters()`；配置表补 `TASK_STATUS_MAX`
-  - README：CI 流水线数（七 → 九）、`scripts/` 职责、用例数与覆盖率（576 / 91.1%）
+  - README：CI 流水线数（七 → 九）、`scripts/` 职责、用例数与覆盖率（当时 576 / 91.1%）
   - `docs/development.md` 补 worker 命令；用例数同步
 
 ### 新增

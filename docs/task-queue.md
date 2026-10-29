@@ -125,16 +125,22 @@ redis-cli LLEN tasks:default:dead
 # 死信列表（最近 20 条；也可在代码里 get_task_queue().dead_letters(limit=20)）
 redis-cli LRANGE tasks:default:dead 0 19
 
-# 重放一条死信：取出信封重新入队（示例）
+# 重放一条死信：取出信封（含 args/kwargs）重新入队（示例）
 python - <<'PY'
 import json
 from flask_server.module.task_queue import get_task_queue
 
 q = get_task_queue()
-letter = q.dead_letters(limit=1)[0]          # {'id','name','status','last_error',...}
+letter = q.dead_letters(limit=1)[0]          # {'id','name','args','kwargs','status','last_error',...}
 if letter.get('id'):
-    # 用同一 task_id 重新入队（相当于重跑；handler 需幂等）
-    q.enqueue(letter['name'], delay=0, task_id=letter['id'])
+    # 用同一 task_id + 原参数重新入队（相当于重跑；handler 需幂等）
+    q.enqueue(
+        letter['name'],
+        args=letter.get('args'),
+        kwargs=letter.get('kwargs'),
+        delay=0,
+        task_id=letter['id'],
+    )
 PY
 ```
 

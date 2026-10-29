@@ -10,7 +10,7 @@
     python scripts/benchmark.py --duration 10                            # 时间模式
 
 输出：QPS、平均/中位数/P95/P99 延迟、错误数。
-仅依赖 requests（已含在 requirements.txt）。
+仅依赖 requests（需安装 requirements-dev.txt）。
 """
 
 import argparse

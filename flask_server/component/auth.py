@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from flask import request, jsonify
 
-from ..config import config
+from ..config import config, CONFIG_EXT_KEY
 from ..module import memory_cache, redis_cache
 from ..util import DataEncryptUtil, RandomGenerator, CommonUtil, Logger, GraceResult
 
@@ -35,6 +35,8 @@ _REFRESH_TOKEN_KEY_PREFIX = 'auth:refresh:'
 _LOGIN_FAIL_KEY_PREFIX = 'auth:login_fail:'
 _LOGIN_LOCK_KEY_PREFIX = 'auth:login_lock:'
 _LOGIN_FAIL_GLOBAL_PREFIX = 'auth:login_fail_global:'
+# 每个 app 独立的用户存储（create_app 配置注入时 AUTH_STORE 可不同）
+_AUTH_STORE_EXT_KEY = 'flask_server.auth_store'
 
 # 同一用户名跨 IP 的失败总数达到该值即告警（只观测不阻断）：
 # 按 (用户名, IP) 锁定可防止单点把账号锁死，但分布式撞库仍会绕过单 IP 阈值，
@@ -236,20 +238,43 @@ class SqlAlchemyAuthStore:
 
 class AuthService:
 
+    # 进程默认用户存储（无 app 上下文时使用，如 CLI/后台线程/测试直调）。
+    # 有 app 上下文时优先使用 app.extensions 中按该 app 配置构建的 store，
+    # 避免同进程多个 create_app(framework_config=...) 共用 AUTH_STORE。
     _store = None
 
     @classmethod
+    def _build_store(cls, cfg):
+        """按配置构建用户存储；AUTH_STORE=sqlalchemy 漏配 URI 时给出清晰报错。"""
+        if cfg.auth_store == 'sqlalchemy':
+            if cfg.sqlalchemy_uri is None:
+                raise RuntimeError(
+                    'AUTH_STORE=sqlalchemy 需要配置 SQLALCHEMY_URI（并执行 flask db upgrade 建表）')
+            return SqlAlchemyAuthStore()
+        return MemoryAuthStore()
+
+    @classmethod
     def _get_store(cls):
+        # 请求/任务 app 上下文内：使用该 app 的 store（按 app 配置隔离）
+        try:
+            from flask import current_app, has_app_context
+            if has_app_context():
+                extensions = current_app.extensions
+                store = extensions.get(_AUTH_STORE_EXT_KEY)
+                if store is not None:
+                    return store
+                cfg = extensions.get(CONFIG_EXT_KEY)
+                if cfg is not None:
+                    store = cls._build_store(cfg)
+                    extensions[_AUTH_STORE_EXT_KEY] = store
+                    return store
+        except ImportError:      # Flask 未安装的极端场景：回退进程默认
+            pass
+
+        # 无 app 上下文（CLI/后台线程/服务层直测）：使用进程默认 store
         if cls._store is None:
-            from flask_server.config import config
-            if config.auth_store == 'sqlalchemy':
-                # 配置校验：漏配 SQLALCHEMY_URI 时给出清晰报错，而非运行时 AttributeError
-                if config.sqlalchemy_uri is None:
-                    raise RuntimeError(
-                        'AUTH_STORE=sqlalchemy 需要配置 SQLALCHEMY_URI（并执行 flask db upgrade 建表）')
-                cls._store = SqlAlchemyAuthStore()
-            else:
-                cls._store = MemoryAuthStore()
+            from flask_server.config import config as config_proxy
+            cls._store = cls._build_store(config_proxy)
         return cls._store
 
     @classmethod

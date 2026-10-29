@@ -207,6 +207,18 @@ class BaseTaskQueue:
             'last_error': env.last_error,
         }
 
+    def _dead_letter_record(self, env: TaskEnvelope, error: str = '') -> Dict[str, Any]:
+        """死信记录：在状态记录之外保留 args/kwargs，便于按原参数重放。
+
+        普通状态记录不携带参数（状态查询高频、且参数可能很大/含敏感信息）；
+        只有进入死信、需要人工排查/重放时才保存。
+        """
+        record = self._status_record(env, STATUS_DEAD)
+        record['args'] = list(env.args)
+        record['kwargs'] = dict(env.kwargs)
+        record['last_error'] = error or env.last_error
+        return record
+
 
 # --------------------------------------------------------------------------
 # 内存后端（单进程；开发/测试/未配置 Redis 时的降级）
@@ -291,7 +303,7 @@ class MemoryTaskQueue(BaseTaskQueue):
         env = reserved.envelope
         env.last_error = error or None
         with self._cv:
-            self._dead.append(self._status_record(env, STATUS_DEAD))
+            self._dead.append(self._dead_letter_record(env, error))
             self._set_status(env, STATUS_DEAD)
 
     # -- 查询 --
@@ -471,10 +483,12 @@ class RedisTaskQueue(BaseTaskQueue):
 
     def _dead_letter_raw(self, msg_id, raw, error, env=None):
         try:
-            record = dict(self._status_record(env, STATUS_DEAD)) if env else {
-                'id': None, 'status': STATUS_DEAD, 'last_error': error, 'raw': raw,
-            }
-            record['last_error'] = error
+            if env is not None:
+                record = self._dead_letter_record(env, error)
+            else:
+                record = {
+                    'id': None, 'status': STATUS_DEAD, 'last_error': error, 'raw': raw,
+                }
             self.client.xack(self.stream, self.group, msg_id)
             self.client.xdel(self.stream, msg_id)
             self.client.lpush(self.dead_key, json.dumps(record, ensure_ascii=False, default=str))
@@ -546,7 +560,16 @@ class RedisTaskQueue(BaseTaskQueue):
             total = int(self.client.xlen(self.stream))
             try:
                 pending = self.client.xpending(self.stream, self.group)
-                pending_count = int(pending[0]) if pending else 0
+                # redis-py 5.x 的 XPENDING 摘要返回 dict（{'pending': n, ...}），
+                # 旧版本/部分假客户端返回 [count, min, max, consumers]；两种都要兼容。
+                # 修复前只按 list 取 pending[0]，真实 Redis 下 KeyError 被吞后 pending 恒为 0，
+                # 导致 ready 把 pending 也算进去（积压统计虚高）。
+                if isinstance(pending, dict):
+                    pending_count = int(pending.get('pending', 0) or 0)
+                elif pending:
+                    pending_count = int(pending[0])
+                else:
+                    pending_count = 0
             except Exception:
                 pending_count = 0
             return {

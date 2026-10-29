@@ -39,3 +39,9 @@ Thumbs.db
 # 覆盖率报告
 .coverage
 htmlcov/
+.coverage_html/
+
+# E2E 本地运行产物（脚本本身提交，临时日志/结果不提交）
+_e2e/tmp/
+_e2e/logs/
+test-results.xml

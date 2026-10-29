@@ -199,6 +199,7 @@ app 上下文时作用于进程默认配置，既有测试无需修改。
 | SocketIO | 进程内 | eventlet monkey patch 是**导入期**决定的 |
 | Prometheus 指标 | 进程内 | 需 `PROMETHEUS_MULTIPROC_DIR` 才能聚合 |
 | 内存缓存 / 限流计数 / 认证 token | 进程内 | 需 `REDIS_URL` 才能跨 worker 一致 |
+| 认证用户存储 | 每个 app（`app.extensions`）；无 app 上下文回退进程默认 | 多 app 注入时按 `AUTH_STORE` 隔离；`memory` 为进程内，多 worker 需 `sqlalchemy` |
 | 任务队列 | 内存（默认）/ Redis | 多 worker 必须配 `REDIS_URL`，否则各消费各的；生产用独立 `scripts/worker.py` |
 | 日志 handler | 进程内 | 多 worker 写同一文件有轮转竞态，建议容器日志 |
 | TCP/UDP 协议服务器 | **每进程绑定同一端口** | 由 `post_worker_init` 在 `workers > 1` 时禁启 |

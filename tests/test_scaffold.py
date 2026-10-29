@@ -18,6 +18,9 @@ def test_copy_template_excludes_git_and_caches(tmp_path):
     assert not os.path.exists(os.path.join(dst, '.git'))
     assert not os.path.exists(os.path.join(dst, '.pytest_cache'))
     assert not os.path.exists(os.path.join(dst, '.venv'))
+    assert not os.path.exists(os.path.join(dst, '.ruff_cache'))
+    assert not os.path.exists(os.path.join(dst, '.coverage_html'))
+    assert not os.path.exists(os.path.join(dst, 'test-results.xml'))
     assert not os.path.exists(os.path.join(dst, 'server.log'))
     # .env 排除、.env.example 保留
     assert not os.path.exists(os.path.join(dst, '.env'))

@@ -19,8 +19,9 @@ from datetime import date
 
 # 复制时排除的目录/文件
 ALWAYS_EXCLUDE_DIRS = {'.git', '__pycache__', '.pytest_cache', '.venv', 'venv',
-                       'htmlcov', '.idea', '.vscode', '.opencode'}
-EXCLUDE_FILES = {'.coverage', '.DS_Store', 'Thumbs.db',
+                       'htmlcov', '.coverage_html', '.ruff_cache', '.mypy_cache',
+                       '.tox', '.nox', '.idea', '.vscode', '.opencode'}
+EXCLUDE_FILES = {'.coverage', 'test-results.xml', '.DS_Store', 'Thumbs.db',
                  # 内部评估/审查历史报告，不应随模板分发给新项目
                  'PROJECT_EVALUATION.md'}
 

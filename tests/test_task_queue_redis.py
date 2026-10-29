@@ -91,7 +91,14 @@ class FakeRedis:
 
     def xpending(self, stream, group):
         self._maybe_fail()
-        return [len(self.groups[(stream, group)]['pending']), None, None, None]
+        # 真实 redis-py 5.x 返回摘要 dict；保留这个形状以覆盖 stats() 的 dict 分支
+        pending = self.groups[(stream, group)]['pending']
+        return {
+            'pending': len(pending),
+            'min': None,
+            'max': None,
+            'consumers': [],
+        }
 
     def xautoclaim(self, stream, group, consumer, min_idle_time=0, start_id='0-0', count=10):
         self._maybe_fail()
@@ -299,14 +306,16 @@ def test_init_raises_unavailable_when_backend_down():
 
 
 def test_dead_letters_reader(queue, fake):
-    """死信读取接口（运维排查用）"""
-    task_id = queue.enqueue('doomed')
+    """死信读取接口（运维排查用），记录保留 args/kwargs 供重放"""
+    task_id = queue.enqueue('doomed', args=[1], kwargs={'k': 'v'})
     queue.dead(queue.reserve(timeout=0.01), error='fatal')
 
     letters = queue.dead_letters(limit=5)
     assert len(letters) == 1
     assert letters[0]['id'] == task_id
     assert letters[0]['last_error'] == 'fatal'
+    assert letters[0]['args'] == [1]
+    assert letters[0]['kwargs'] == {'k': 'v'}
 
 
 def test_dead_letters_handles_corrupt_entries(queue, fake):
@@ -325,6 +334,26 @@ def test_stats(queue, fake):
     queue.enqueue('b')
     stats = queue.stats()
     assert stats['ready'] == 1 and stats['delayed'] == 1 and stats['dead'] == 0
+
+
+def test_stats_pending_after_reserve(queue):
+    """reserve 后消息进入 pending：pending=1、ready=0（修复前 pending 恒为 0、ready 虚高）"""
+    queue.enqueue('a')
+    reserved = queue.reserve(timeout=0.01)
+    assert reserved is not None
+    stats = queue.stats()
+    assert stats['pending'] == 1
+    assert stats['ready'] == 0
+
+
+def test_stats_accepts_legacy_list_xpending(queue, fake, monkeypatch):
+    """兼容旧 redis-py / 假客户端返回 [count, min, max, consumers] 的形状"""
+    queue.enqueue('a')
+    queue.reserve(timeout=0.01)
+    monkeypatch.setattr(fake, 'xpending', lambda *a, **k: [1, None, None, None])
+    stats = queue.stats()
+    assert stats['pending'] == 1
+    assert stats['ready'] == 0
 
 
 def test_enqueue_raises_when_backend_down(queue, fake):

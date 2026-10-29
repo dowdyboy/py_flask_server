@@ -149,7 +149,7 @@ head_tail 模式的重同步策略（对脏数据/断流场景自动恢复）：
 | `UDP_ENABLED` | `false` | 是否启用 UDP 服务器 |
 | `UDP_HOST` | `0.0.0.0` | 监听地址 |
 | `UDP_PORT` | `9001` | 监听端口 |
-| `UDP_MAX_MESSAGE_LENGTH` | `65536` | 单数据报大小上限（字节；**超过此大小的数据报会被操作系统静默截断**，请按协议最大报文设置） |
+| `UDP_MAX_MESSAGE_LENGTH` | `65536` | 单数据报大小上限（字节；超过此大小的数据报在 Linux 上会被截断，在 Windows 上会因 `WSAEMSGSIZE` 被丢弃且 handler 收不到回调，请按协议最大报文设置） |
 | `UDP_MAX_CONCURRENCY` | `256` | UDP 并发处理数据报上限（每数据报一线程，**超限数据报在创建线程前即被丢弃**，洪泛零线程 churn；`≤0` 表示不限制） |
 
 ## 部署注意事项

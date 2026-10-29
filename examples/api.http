@@ -59,4 +59,6 @@ Content-Type: application/json
 {}
 
 ### 404 示例
+# 注意：AUTH_ENABLED=true 时全局认证拦截器先于路由执行，未带 token 会返回 401；
+# 想看 404 请先登录并带上 X-AUTH-TOKEN，或改用非 /api/ 路径（如 /missing.js）。
 GET {{host}}/api/nonexistent
