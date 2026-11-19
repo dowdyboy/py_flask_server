@@ -16,7 +16,7 @@ test:               ## 运行测试（含覆盖率门槛）
 	pytest tests/ --cov=flask_server --cov-report=term
 
 lint:               ## 代码风格检查（ruff）
-	ruff check flask_server/ tests/ examples/ server.py wsgi.py wsgi_gunicorn.py
+	ruff check flask_server/ tests/ examples/ scripts/ _e2e/ server.py wsgi.py wsgi_gunicorn.py
 
 audit:              ## 依赖安全审计（pip-audit）
 	pip-audit -r requirements.txt

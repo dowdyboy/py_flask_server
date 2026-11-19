@@ -38,10 +38,23 @@ Thumbs.db
 
 # 覆盖率报告
 .coverage
+.coverage.*
+!.coverage.md
 htmlcov/
 .coverage_html/
+
+# 测试/静态检查缓存（内部有自忽略文件，这里显式声明，避免 clone 后缺失规则）
+.pytest_cache/
+.ruff_cache/
 
 # E2E 本地运行产物（脚本本身提交，临时日志/结果不提交）
 _e2e/tmp/
 _e2e/logs/
 test-results.xml
+
+# ARMv7 部署产物：runtime（CPython 运行时压缩包）与 wheels 是可再生成/可下载的二进制，
+# 不入库；同目录下的 install.sh / uninstall.sh / config / scripts / tools / README 属于源码，
+# 应当提交。重新生成二进制后校验 SHA256SUMS。
+deployments/armv7/runtime/
+deployments/armv7/wheels/
+

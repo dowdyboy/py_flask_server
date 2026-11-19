@@ -23,6 +23,10 @@ services:
       SQLALCHEMY_URI: mysql+pymysql://app:${MYSQL_PASSWORD:-apppass}@mysql:3306/appdb?charset=utf8mb4
       REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
       DB_REFLECT_ON_START: "false"
+      # 显式写文件日志：production 预设 log_to_console=False，不设此项时 app 只会得到
+      # Logger.init 的兜底控制台 handler。配合下面 ./server.log 的 bind mount，
+      # 让宿主能直接采集日志文件。
+      LOG_FILE_PATH: /app/server.log
       # Docker 网络下客户端请求经网关（172.x）进入容器：信任网关网段以解析真实 IP（限流/日志用）。
       # ⚠️ 注意：信任整个 CIDR 意味着该网段内任意容器都能伪造 X-Forwarded-For（可绕过限流），
       #    请确保网络内仅含可信服务；如严格隔离可改为具体网关 IP（docker network inspect 查看）。
@@ -41,9 +45,14 @@ services:
     volumes:
       - ./storage:/app/storage
       - ./webui:/app/webui
+      # 注意：仅当容器内设置了 LOG_FILE_PATH=/app/server.log（见上方 environment）时，
+      # 这个挂载才有采集意义。若宿主上不存在 ./server.log，Docker 会把挂载点建成目录。
       - ./server.log:/app/server.log
     restart: unless-stopped
-    stop_grace_period: 15s
+    # PID 1 用 tini 回收僵尸进程；wsgi.py 的 GRACEFUL_TIMEOUT=15s，
+    # stop_grace_period 必须大于它，否则 Docker 会在 drain 完成前 SIGKILL
+    init: true
+    stop_grace_period: 25s
 
   # 任务队列消费者（独立进程，与 app 分开扩容/重启）
   # 默认不启动（tasks 为空时 worker 会以退出码 1 结束，避免 up 之后反复重启）：
@@ -66,6 +75,8 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # PID 1 用 tini 回收僵尸进程（worker 会起子任务线程/子进程）
+    init: true
     # 收到 SIGTERM 后不再取新任务、等在途任务跑完；长任务请调大
     stop_grace_period: 60s
 

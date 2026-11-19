@@ -10,6 +10,7 @@ storage/*.sqlite*
 tests/
 examples/
 .venv/
+.venv_*/
 venv/
 env/
 .env
@@ -20,3 +21,10 @@ env/
 .idea/
 webui/node_modules
 .pytest_cache/
+.ruff_cache/
+# 构建产物与内部材料不应进入镜像层（COPY . . 会全量复制）
+.coverage
+.coverage.*
+test-results.xml
+deployments/
+_e2e/

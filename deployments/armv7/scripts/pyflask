@@ -1,0 +1,121 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          pyflask
+# Required-Start:    $local_fs $network
+# Required-Stop:     $local_fs $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: py_flask_server (waitress WSGI)
+# Description:       Flask 服务，用 waitress 提供 HTTP 接口
+### END INIT INFO
+#
+# SysV init 脚本（这块板子用 sysvinit，不是 systemd）
+# 安装：cp pyflask /etc/init.d/ && chmod +x /etc/init.d/pyflask
+# 开机自启：update-rc.d pyflask defaults
+# 手动控制：/etc/init.d/pyflask {start|stop|restart|status}
+
+NAME=pyflask
+APP_DIR=/opt/pyflask/app
+PYTHON=/opt/pyflask/venv/bin/python
+PIDFILE=/var/run/${NAME}.pid
+LOGFILE=/var/log/${NAME}.log
+START_TIMEOUT=60
+STOP_TIMEOUT=20
+
+# 从 .env 里读端口（读不到就用 5000）
+PORT=$(sed -n 's/^[[:space:]]*SERVER_PORT[[:space:]]*=[[:space:]]*\([0-9]\+\).*/\1/p' "$APP_DIR/.env" 2>/dev/null | tail -1)
+[ -n "$PORT" ] || PORT=5000
+HEALTH_URL="http://127.0.0.1:${PORT}/api/v1/healthz"
+
+is_running() {
+    [ -f "$PIDFILE" ] || return 1
+    _pid=$(cat "$PIDFILE" 2>/dev/null)
+    [ -n "$_pid" ] || return 1
+    kill -0 "$_pid" 2>/dev/null
+}
+
+do_start() {
+    if is_running; then
+        echo "$NAME 已在运行 (pid $(cat $PIDFILE))"
+        return 0
+    fi
+    if [ ! -x "$PYTHON" ]; then
+        echo "错误：找不到 Python 解释器 $PYTHON"
+        return 1
+    fi
+    if [ ! -f "$APP_DIR/wsgi.py" ]; then
+        echo "错误：找不到 $APP_DIR/wsgi.py"
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null
+    echo "===== $(date '+%Y-%m-%d %H:%M:%S') 启动 $NAME =====" >> "$LOGFILE"
+
+    cd "$APP_DIR" || return 1
+    nohup "$PYTHON" wsgi.py >> "$LOGFILE" 2>&1 &
+    echo $! > "$PIDFILE"
+
+    # 等端口可服务（A9 冷启动约 10 秒）
+    _n=0
+    while [ $_n -lt $START_TIMEOUT ]; do
+        if wget -q -T 1 -O /dev/null "$HEALTH_URL" 2>/dev/null; then
+            echo "$NAME 已启动 (pid $(cat $PIDFILE), ${_n}s)"
+            return 0
+        fi
+        if ! is_running; then
+            echo "错误：$NAME 启动后立即退出，详见 $LOGFILE"
+            rm -f "$PIDFILE"
+            tail -20 "$LOGFILE"
+            return 1
+        fi
+        sleep 1
+        _n=$((_n + 1))
+    done
+
+    echo "警告：${START_TIMEOUT}s 内端口未就绪，但进程还活着 (pid $(cat $PIDFILE))"
+    return 0
+}
+
+do_stop() {
+    if ! is_running; then
+        echo "$NAME 未在运行"
+        rm -f "$PIDFILE"
+        return 0
+    fi
+    _pid=$(cat "$PIDFILE")
+    echo "停止 $NAME (pid $_pid)..."
+    kill -TERM "$_pid" 2>/dev/null
+
+    _n=0
+    while [ $_n -lt $STOP_TIMEOUT ]; do
+        kill -0 "$_pid" 2>/dev/null || { rm -f "$PIDFILE"; echo "$NAME 已停止"; return 0; }
+        sleep 1
+        _n=$((_n + 1))
+    done
+
+    echo "宽限期结束，强制终止"
+    kill -KILL "$_pid" 2>/dev/null
+    rm -f "$PIDFILE"
+    return 0
+}
+
+do_status() {
+    if is_running; then
+        echo "$NAME 运行中 (pid $(cat $PIDFILE))"
+        return 0
+    fi
+    echo "$NAME 未运行"
+    return 3
+}
+
+case "$1" in
+    start)    do_start ;;
+    stop)     do_stop ;;
+    restart)  do_stop; sleep 1; do_start ;;
+    status)   do_status ;;
+    *)
+        echo "用法: $0 {start|stop|restart|status}"
+        exit 2
+        ;;
+esac
+exit $?

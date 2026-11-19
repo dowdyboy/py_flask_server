@@ -1,0 +1,6 @@
+# 部署包里有二进制文件，diff 没意义，标记为 binary
+*.tar.gz binary
+*.whl     binary
+
+# 部署包整体作为类二进制资产处理（可选：如果你的仓库用 LFS）
+# runtime/*.tar.gz filter=lfs diff=lfs merge=lfs -text

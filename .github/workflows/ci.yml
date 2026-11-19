@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.10", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
@@ -104,7 +104,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -c constraints.txt -r requirements-dev.txt
       - name: Install gunicorn
-        run: pip install gunicorn
+        run: pip install "gunicorn>=23.0.0,<24.0"
       - name: Multi-worker smoke
         # 校验：WORKER_NUM=2 + TCP_ENABLED=true 时协议服务器被跳过且所有 worker 存活；
         #       WORKER_NUM=1 时协议服务器正常监听并能回显；SIGTERM 后 master 退出码为 0
@@ -128,9 +128,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ruff
-        run: pip install ruff
+        run: pip install "ruff>=0.16.0,<1.0"
       - name: Ruff check
-        run: ruff check flask_server/ tests/ examples/ scripts/ server.py wsgi.py wsgi_gunicorn.py
+        run: ruff check flask_server/ tests/ examples/ scripts/ _e2e/ server.py wsgi.py wsgi_gunicorn.py
 
   deps-sync:
     runs-on: ubuntu-latest
@@ -170,7 +170,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install pip-audit
-        run: pip install pip-audit
+        run: pip install "pip-audit>=2.7,<3.0"
       - name: Audit Python dependencies
         run: pip-audit -r requirements.txt
 
