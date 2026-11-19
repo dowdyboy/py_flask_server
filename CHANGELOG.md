@@ -5,8 +5,21 @@
 
 ## [Unreleased]
 
+（暂无）
+
+## [0.6.0] - 2026-11-19
+
 ### 修复
 
+- **非法 JSON 统一为参数错误**：`before_request` 的 JSON 解析改用 `get_json(silent=True)`，
+  不再抢先抛 Werkzeug 裸 400（客户端只能看到一句英文 description、code=-1）；带
+  `@blp.arguments` 的接口由 webargs 产出 `400 + code=1001 + 字段级 messages`（与 422 同形状），
+  body 可选的接口（如 `/logout`）按 `payload={}` 继续执行
+- **OpenAPI 补充错误响应**：controller 用 `@blp.alt_response` 声明 400/401/429/503 并统一
+  引用 `GraceResult` schema。此前 `/openapi.json` 只有 200/422/default，用这份 spec 生成的
+  SDK 会把错误响应当成未知
+- **429 补 `Retry-After`**：限流按窗口长度（`RATE_LIMIT_WINDOW`）、登录锁定按锁定秒数写入
+  响应头（RFC 6585），客户端可据此退避而不是盲目重试
 - **生产环境日志黑洞**：`staging`/`production` 预设关闭控制台日志，而未设置
   `LOG_FILE_PATH` 时也不写文件，`Logger.init()` 曾一个 handler 都不加（`propagate=False`），
   INFO 全部被静默丢弃。现在文件与控制台都关闭时兜底启用控制台 handler 并打 WARNING；
@@ -82,8 +95,14 @@
 - **compose 健壮性**：app/worker 服务均启用 `init: true`（tini 回收僵尸进程）；prod app 的
   `stop_grace_period` 提到 25s（大于 `wsgi.py` 的 15s `GRACEFUL_TIMEOUT`，避免 drain 前
   SIGKILL），worker 为 60s；prod app 显式设置 `LOG_FILE_PATH=/app/server.log`
+- **ARM 部署包版本显式化**：`deployments/armv7/requirements.lock.txt` 与实际 `wheels/` 的
+  27 个 wheel 逐一对齐（此前只有 25 条，缺 `async_timeout`/`tomli`），并补来源说明——
+  它是"部署包冻结版本"，与 `constraints.txt`（仓库/CI 锁定版本）是两套，各自漂移，
+  不要为了看起来一致手改其中一份
+- **`deployments/armv7/.gitattributes`**：`*.sh` 与 `pyflask` 固定 `eol=lf`，避免 Windows 上
+  `core.autocrlf=true` 把工作区副本转成 CRLF 后打包到 ARM 设备，导致 shebang 失效
 
-### 修复（历史：2026-10-29 E2E 与任务队列自查）
+### 修复（任务队列与 E2E 自查，2026-10-29）
 
 - **E2E 测试发现的问题修复**（2026-10-29，新增回归用例后 582 例通过 / 覆盖率 91.3%）：
   - `RedisTaskQueue.stats()` 兼容 redis-py 5.x 的 `XPENDING` 摘要 dict；修复前

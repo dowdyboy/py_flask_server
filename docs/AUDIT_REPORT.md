@@ -27,8 +27,8 @@
 >   （本轮只补了回归测试，未重构既有用例）。
 > - `deployments/armv7` 的 install.sh 自检退出码、SHA256 校验、`--prefix` 失效三项未改。
 
-- 仓库：`py_flask_server` v0.5.0（分支 `main`，HEAD `fb7ad20`）
-- 日期：2026-11-18
+- 仓库：`py_flask_server`（审计时 v0.5.0，HEAD `fb7ad20`；修复后随 **v0.6.0** 发布）
+- 日期：2026-11-18（修复状态于 2026-11-19 更新）
 - 范围：`flask_server/**`（全部）、三个入口、`tests/`、`_e2e/`、`scripts/`、`examples/`、`deployments/`、
   `docs/` + `README.md` + `CHANGELOG.md` + 两份历史报告、`Dockerfile` / compose / CI / 依赖锁
 - 方式：只读静态审查 + **可执行验证**（独立 venv 装了 `requirements.txt + -r requirements-dev.txt`，

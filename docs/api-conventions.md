@@ -35,15 +35,15 @@
 |---|---|---|
 | 422 | 参数校验失败（flask-smorest） | 统一格式，字段错误在 `data` |
 | 404 | 资源不存在 | 统一格式（code=-1） |
-| 429 | 触发限流或登录锁定 | 统一格式（限流 code=-1，锁定 code=4003） |
+| 429 | 触发限流或登录锁定 | 统一格式（限流 code=-1，锁定 code=4003）；响应头带 `Retry-After` |
 | 401 | 未登录 / Token 无效或已过期 | 统一格式（code=4001/4002） |
 | 503 | 依赖未就绪（DB/Redis 故障）；登录成功但会话不可读 | 统一格式（code=5030 / 4002） |
 
 业务自定义错误码：`GraceResult.business_error(2001, '用户不存在')`。
 
-> 说明：controller 目前只用 `@blp.response(200, ...)` 声明成功响应（没有 `@blp.alt_response`），
-> `/openapi.json` 里通常只有 200、参数校验产生的 422（如有 `@blp.arguments`）和通用 default 错误；
-> 401/429/503 等实际会返回的错误**未逐个写入 OpenAPI**，调用方请以本页错误码表为准。
+> 说明：controller 除了 `@blp.response(200, ...)` 之外，用 `@blp.alt_response(...)` 把实际
+> 会返回的错误码（400/401/429/503）逐个写进了 `/openapi.json`，并统一引用 `GraceResult`
+> schema。因此用这份 spec 生成的 SDK 能识别错误响应，不必只依赖本页的错误码表。
 
 ### 422 校验错误结构
 
@@ -57,9 +57,12 @@
 }
 ```
 
-**同类字段级错误**：任何携带 webargs `messages` 的 4xx（如 webargs 解析阶段抛出的
-`Invalid JSON body.`）也返回 `code=1001` + `data=messages`，与 422 一致；
-**不带** `messages` 的 4xx（如 Werkzeug 直接抛出的 400/404/405）仍是 `code=-1`。
+**非法 JSON Body**：`before_request` 的 JSON 解析使用 `get_json(silent=True)`，不会抢先抛
+裸 400；请求继续交给视图层——带 `@blp.arguments` 的接口由 webargs 产出
+**400 + `code=1001` + 字段级 `data`**（与 422 同形状），body 可选的接口（如 `/logout`）
+则按 `payload={}` 继续执行。
+
+**其余 4xx**：不带 `messages` 的 4xx（如 Werkzeug 直接抛出的 404/405、未匹配路由）仍是 `code=-1`。
 
 ## 请求参数解析
 
@@ -83,7 +86,8 @@
   一并吊销 refresh（彻底结束会话），不携带则 refresh 到期自然失效（向后兼容）
 
 **防爆破**：同一 **(用户名, 来源 IP)** 连续登录失败 `AUTH_LOGIN_MAX_FAILS`（默认 5）次后锁定
-`AUTH_LOGIN_LOCK_SECONDS`（默认 300）秒，锁定期间正确密码也拒绝（code 4003，HTTP 429）。
+`AUTH_LOGIN_LOCK_SECONDS`（默认 300）秒，锁定期间正确密码也拒绝（code 4003，HTTP 429，
+响应头 `Retry-After` 为锁定秒数）。
 
 > 锁定键按 (用户名, IP) 隔离，而不是只按用户名：否则攻击者遍历已知用户名、各打几次错误密码，
 > 就能把全站账号逐个锁死（锁定型 DoS）。代价是分布式撞库可绕过单 IP 阈值——跨 IP 失败累计
@@ -172,7 +176,7 @@ class ArticleView(MethodView):
 
 `RATE_LIMIT_ENABLED=true` 时启用，顺延窗口计数（`RATE_LIMIT_PER_MINUTE`，默认 60 次/分钟；
 每次请求刷新窗口 TTL，活动期内计数不会按整分钟重置），
-超限返回 429（code=-1）。
+超限返回 429（code=-1），响应头 `Retry-After: 60`（= 窗口长度）供客户端退避。
 
 **双层配额**（原子 INCR 计数，防并发竞态绕过）：
 

@@ -15,8 +15,8 @@ pytest tests/ --cov=flask_server --cov-report=term
 认证模块（Redis 存储降级与内存兜底、防爆破、refresh 轮换、登出吊销 refresh、入参限长）、
 Prometheus 指标、缓存降级恢复（含故障/脏数据自愈）、事务提交/回滚（CI 含真实 MySQL）、
 路径穿越防护、反射与声明式模型共存、雪花 ID 并发、SubprocessTask 哨兵停止等
-**628 个用例**。覆盖率快照（2026-11-18，`pytest tests/ --cov=flask_server --cov-report=term`）：
-**91.11%**，门槛 85%（快照仅供参考，随代码演进会变）。
+**633 个用例**。覆盖率快照（2026-11-19，`pytest tests/ --cov=flask_server --cov-report=term`）：
+**91.22%**，门槛 85%（快照仅供参考，随代码演进会变）。
 
 真实环境自检（云服务器 MySQL/Redis 全链路验证）：
 

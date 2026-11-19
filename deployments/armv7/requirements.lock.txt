@@ -1,5 +1,17 @@
-﻿alembic==1.20.1
+# ARMv7 部署包的实际安装版本（与同目录 wheels/ 一一对应，Python 3.11 / armv7）。
+# 由打包时的 pip freeze 结果生成，用于复现该部署包的环境。
+#
+# ⚠️ 与仓库根目录的 constraints.txt 不是同一套版本：
+#   constraints.txt = 仓库 / CI / Docker 的锁定版本
+#   本文件          = ARM 部署包冻结的版本
+# 两者会随时间各自漂移，不要为了"看起来一致"手改其中一份——正确做法是重新打包
+# （重新下载 wheels → 更新本文件 → 重新计算 SHA256SUMS），再整体验证。
+#
+# 维护：本文件必须与 wheels/ 中的 27 个 wheel 完全对应（数量与版本都要对上），
+# 否则部署包无法用 `pip install --no-index --find-links wheels/ -r requirements.lock.txt` 复现。
+alembic==1.20.1
 apispec==6.10.1
+async_timeout==5.0.1
 blinker==1.9.0
 click==8.5.1
 Flask==3.1.3
@@ -19,6 +31,7 @@ PyMySQL==1.2.4
 python-dotenv==1.2.4
 redis==5.3.1
 SQLAlchemy==2.1.8
+tomli==2.5.0
 typing_extensions==4.16.0
 waitress==3.0.2
 webargs==8.7.1
