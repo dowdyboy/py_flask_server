@@ -2,6 +2,8 @@ import hashlib
 import hmac
 import os
 
+from ..config import PBKDF2_MAX_ITERATIONS
+
 # 数据加密工具类
 
 class DataEncryptUtil:
@@ -52,7 +54,9 @@ class DataEncryptUtil:
                 原默认 100000 偏低）。迭代次数会写入哈希串，历史哈希不受默认值变更影响。
 
         Returns:
-            str: "salt$iterations$hash" 格式的字符串，salt 为16字节十六进制，hash 为64字节十六进制
+            str: "salt$iterations$hash" 格式的字符串；salt 为 16 字节随机数的 **32 位十六进制**，
+                 hash 为 SHA-256 的 **64 位十六进制**（合计约 104 个字符，
+                 不是"64 字节"——64 个 hex 字符 = 32 字节）
         """
         if iterations is None:
             from ..config import config
@@ -91,8 +95,10 @@ class DataEncryptUtil:
                 return False
             # 盐必须是合法 hex；损坏/遗留数据直接视为校验失败，不抛异常（否则登录 500）
             salt_bytes = bytes.fromhex(salt)
-            # iterations 上限防御：防止 DB 中存储的哈希被写入超大迭代数（CPU DoS）
-            if iterations < 1 or iterations > 1_000_000:
+            # iterations 上限防御：防止 DB 中存储的哈希被写入超大迭代数（CPU DoS）。
+            # 上限与配置侧 AUTH_PBKDF2_ITERATIONS 共用 config.PBKDF2_MAX_ITERATIONS，
+            # 避免"配置允许写入、校验侧却拒绝"导致全体登录失败的漂移。
+            if iterations < 1 or iterations > PBKDF2_MAX_ITERATIONS:
                 return False
         except (ValueError, AttributeError, TypeError):
             return False

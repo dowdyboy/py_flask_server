@@ -135,6 +135,30 @@ def test_logger_init_falls_back_to_console_on_oserror(tmp_path):
             h.close()
 
 
+def test_logger_init_falls_back_to_console_when_no_sink():
+    """P0 回归：没有任何 sink 时必须兜底加控制台 handler，不能静默丢弃 INFO。
+
+    修复前 staging/production 预设的 log_to_console=False 叠加"未设置 LOG_FILE_PATH"
+    得到零 handler + propagate=False 的 logger：Logger.info 全部消失，只有 WARNING+
+    经 logging.lastResort 打到 stderr（无格式、无 request_id、不进文件）。
+    """
+    from logging import StreamHandler
+
+    logger = logging.getLogger('flask_server')
+    saved = list(logger.handlers)
+    try:
+        Logger.init(filename=None, level=logging.INFO, to_console=False, to_file=False)
+        streams = [h for h in logger.handlers if isinstance(h, StreamHandler)]
+        assert streams, '无 sink 时必须有兜底控制台 handler'
+    finally:
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
+            if h not in saved:
+                h.close()
+        for h in saved:      # 还原，避免污染其它用例
+            logger.addHandler(h)
+
+
 def test_format_msg_escapes_newlines():
     """日志伪造防护：消息中的 CR/LF 必须转义为字面量，不能拆行"""
     from flask_server.util.logger import _escape_newlines

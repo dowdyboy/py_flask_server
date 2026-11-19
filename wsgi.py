@@ -47,10 +47,15 @@ def _cleanup_resources():
         Logger.warn(f'Protocol servers stop error: {e}')
 
     try:
+        # db.engine 需要 app context（Flask-SQLAlchemy 3.x 内部用 current_app），
+        # 而本函数只从信号处理器 / main() 的 finally / 看门狗线程调用，均无 app context。
+        # 修复前直接调用会抛 RuntimeError("Working outside of application context")，
+        # 被下面 except 吞掉后只打一条 "SQLAlchemy dispose error"，连接池实际从未释放。
         from flask_server.module import sqlalchemy
         db = sqlalchemy()
         if db is not None:
-            db.engine.dispose()
+            with app.app_context():
+                db.engine.dispose()
             Logger.info('SQLAlchemy engine disposed')
     except Exception as e:
         Logger.warn(f'SQLAlchemy dispose error: {e}')
@@ -145,7 +150,9 @@ def _waitress_options():
 def main():
     """启动 waitress 生产服务器（单进程多线程）"""
     global _embedded_worker
-    print_startup_banner()
+    # waitress 是单进程多线程：必须显式传 worker_num=1，否则 _multi_worker 会去读
+    # WORKER_NUM（.env.example 为 gunicorn 设的 4），误报一串"多 worker"告警
+    print_startup_banner(worker_num=1)
     # 协议服务器随主进程启动（TCP_ENABLED / UDP_ENABLED 为 true 时生效）
     start_protocol_servers()
     # 内嵌任务消费者（TASK_WORKER_EMBEDDED=true；生产建议独立进程跑 scripts/worker.py）
@@ -159,7 +166,15 @@ def main():
     try:
         # 收到信号后 close() 已执行，loop 在在途连接处理完后返回 → 正常退出路径
         server.run()
-    finally:
+    except BaseException:
+        # 服务循环异常退出：绝不能伪装成"优雅关闭"。此前用 try/finally 直接走
+        # _graceful_exit()（内部 os._exit(0)），崩溃会变成退出码 0 + 日志写
+        # "Graceful shutdown complete" + 无 traceback —— systemd Restart=on-failure /
+        # K8s 重启策略都不会重启，排障时还会被日志误导。
+        Logger.error('waitress serve loop crashed, exiting with code 1', exc_info=True)
+        _cleanup_resources()
+        os._exit(1)
+    else:
         _graceful_exit('Graceful shutdown complete')
 
 

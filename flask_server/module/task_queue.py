@@ -38,11 +38,13 @@
     - at-least-once：任务至少执行一次。handler 必须**幂等**（或自行去重）。
     - Redis 后端用 consumer group + XACK 保证不丢；worker 崩溃留下的 pending 消息
       超过 TASK_VISIBILITY_TIMEOUT 后被 XAUTOCLAIM 重新投递（会重复执行，属预期）。
+    - 状态流转（ack/retry/dead）用 MULTI/EXEC 管道一次提交：要么全部生效，要么全部不生效。
+      EXEC 失败时消息仍留在 pending，可见性超时后重新投递——这正是 at-least-once 的兜底，
+      而不是"已 ACK 但目标结构没写进去"的永久丢失。
     - 入队失败（Redis 不可用）**抛异常而不是静默丢弃**——任务丢失比接口报错更难发现。
 """
 
 import json
-import logging
 import threading
 import time
 import uuid
@@ -51,6 +53,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from ..config import config
+from ..util import Logger
 
 # 任务状态机：queued → running → succeeded / retrying → dead
 STATUS_QUEUED = 'queued'
@@ -90,8 +93,8 @@ class TaskRegistry:
         with self._lock:
             existing = self._tasks.get(name)
             if existing is not None and existing.func is not func:
-                logging.getLogger('flask_server').warning(
-                    f'task `{name}` already registered, overwriting')
+                # 用统一 Logger（而非 logging.getLogger）才能带上 [rid:...] 请求前缀
+                Logger.warn(f'task `{name}` already registered, overwriting')
             self._tasks[name] = TaskSpec(name=name, func=func, max_retries=max_retries)
         return func
 
@@ -190,6 +193,24 @@ class BaseTaskQueue:
         raise NotImplementedError
 
     def stats(self) -> Dict[str, int]:
+        """队列统计（两种后端返回同一组键，调用方/看板无需按后端分支）。
+
+        Returns:
+            Dict[str, int]: 恒含 `ready` / `pending` / `delayed` / `dead`；
+                内存后端额外返回 `tracked`（状态表条数）。
+                - `ready`：可直接被 worker 取到的任务数
+                - `pending`：已投递但未确认的任务数（内存后端没有可见性超时，恒为 0）
+                - `delayed`：延迟/重试等待中的任务数
+                - `dead`：死信条数
+        """
+        raise NotImplementedError
+
+    def dead_letters(self, limit=20) -> List[Dict[str, Any]]:
+        """读取死信（最多 limit 条，**最新在前**，两种后端的顺序一致）。
+
+        每条记录带 `id/name/args/kwargs`（无法反序列化的脏数据条目没有信封，字段为空），
+        脏数据条目保留 `raw` 原始 payload 供人工排查。
+        """
         raise NotImplementedError
 
     def close(self) -> None:
@@ -317,12 +338,17 @@ class MemoryTaskQueue(BaseTaskQueue):
     def stats(self) -> Dict[str, int]:
         with self._lock:
             self._promote_due()
-            return {'ready': len(self._ready), 'delayed': len(self._delayed),
+            # pending 恒为 0：内存后端没有可见性超时，取出的任务直接执行，没有"已投递待确认"状态。
+            # tracked 是内存后端特有的状态表条数（Redis 的状态在各自 key 上，按 TTL 过期）。
+            return {'ready': len(self._ready), 'pending': 0, 'delayed': len(self._delayed),
                     'dead': len(self._dead), 'tracked': len(self._status)}
 
     def dead_letters(self, limit=20):
+        """读取死信（最近 limit 条，最新在前，与 Redis 后端顺序一致）"""
+        if limit <= 0:
+            return []
         with self._lock:
-            return list(self._dead)[-limit:]
+            return list(reversed(list(self._dead)[-limit:]))
 
     def close(self):
         with self._cv:
@@ -404,24 +430,39 @@ class RedisTaskQueue(BaseTaskQueue):
                         json.dumps(self._status_record(env, status), ensure_ascii=False),
                         ex=config.task_status_ttl)
 
+    def _write_status_best_effort(self, env: TaskEnvelope, status: str):
+        """写状态记录是旁路信息：失败只影响状态查询的展示，绝不能让任务流转报错/回滚"""
+        try:
+            self._write_status(env, status)
+        except Exception as e:
+            Logger.warn(f'task status write failed id={env.id} status={status}: {e}')
+
     # -- 消费 --
     def _promote_delayed(self):
-        """把到期的延迟任务搬回 stream（每 ~1s 做一次，避免每次 reserve 都扫 ZSET）"""
+        """把到期的延迟任务搬回 stream（每 ~1s 做一次，避免每次 reserve 都扫 ZSET）
+
+        Raises:
+            TaskQueueUnavailable: Redis 不可用（与 reserve 的其它失败语义一致）
+        """
         now = time.time()
         if now - self._last_promote < 1.0:
             return
-        self._last_promote = now
+        # 整个回迁过程（ZRANGEBYSCORE/ZREM/XADD）都必须在 try 内：修复前 ZREM 在 try 外，
+        # 连接抖动会以裸 ConnectionError 逃出 reserve()，让只捕获 TaskQueueUnavailable 的
+        # 调用方（如 scripts/worker.py --once）直接崩出 traceback。
         try:
             due = self.client.zrangebyscore(self.delayed_key, '-inf', now, start=0, num=100)
-        except Exception:
-            return
-        for raw in due:
-            # ZREM 返回 1 代表本进程抢到这条，避免多 worker 重复投递
-            if self.client.zrem(self.delayed_key, raw) == 1:
-                try:
-                    self.client.xadd(self.stream, {'data': raw})
-                except Exception:
-                    self.client.zadd(self.delayed_key, {raw: now + 5})   # 失败退回，稍后再试
+            for raw in due:
+                # ZREM 返回 1 代表本进程抢到这条，避免多 worker 重复投递
+                if self.client.zrem(self.delayed_key, raw) == 1:
+                    try:
+                        self.client.xadd(self.stream, {'data': raw})
+                    except Exception:
+                        self.client.zadd(self.delayed_key, {raw: now + 5})   # 失败退回，稍后再试
+        except Exception as e:
+            raise TaskQueueUnavailable(f'延迟任务回迁失败（Redis 不可用？）: {e}') from e
+        # 只有整轮成功才推进节流时间戳：失败后保留旧值，下一次 reserve 立即重试
+        self._last_promote = now
 
     def reserve(self, timeout=1.0) -> Optional[ReservedTask]:
         self._promote_delayed()
@@ -455,26 +496,35 @@ class RedisTaskQueue(BaseTaskQueue):
     def ack(self, reserved: ReservedTask) -> None:
         env = reserved.envelope
         try:
-            self.client.xack(self.stream, self.group, reserved.token)
-            self.client.xdel(self.stream, reserved.token)
-            self._write_status(env, STATUS_SUCCEEDED)
+            # XACK + XDEL 必须原子提交：先 ACK 后 DEL 失败会留下永远不再投递的僵尸条目，
+            # 并让 stats()['ready'] 永久虚高。EXEC 失败时消息仍是 pending，可见性超时后重投。
+            pipe = self.client.pipeline(transaction=True)
+            pipe.xack(self.stream, self.group, reserved.token)
+            pipe.xdel(self.stream, reserved.token)
+            pipe.execute()
         except Exception as e:
             # 已执行成功但确认失败：消息会在 visibility timeout 后被重新投递 → 依赖幂等
-            logging.getLogger('flask_server').error(
-                f'task ack failed id={env.id} name={env.name}: {e}')
+            Logger.error(f'task ack failed id={env.id} name={env.name}: {e}')
+            return
+        self._write_status_best_effort(env, STATUS_SUCCEEDED)
 
     def retry(self, reserved: ReservedTask, delay: float, error: str = '') -> None:
         env = reserved.envelope
         env.attempts += 1
         env.last_error = error or None
         try:
-            self.client.xack(self.stream, self.group, reserved.token)
-            self.client.xdel(self.stream, reserved.token)
-            self.client.zadd(self.delayed_key, {env.to_json(): time.time() + max(0.0, delay)})
-            self._write_status(env, STATUS_RETRYING)
+            # ZADD（延迟集合）+ XACK + XDEL 必须原子：修复前先 ACK+DEL 再 ZADD，
+            # ZADD 失败/进程被杀时任务既不在 stream、也不在 delayed、更不在死信 → 永久丢失。
+            pipe = self.client.pipeline(transaction=True)
+            pipe.zadd(self.delayed_key, {env.to_json(): time.time() + max(0.0, delay)})
+            pipe.xack(self.stream, self.group, reserved.token)
+            pipe.xdel(self.stream, reserved.token)
+            pipe.execute()
         except Exception as e:
-            logging.getLogger('flask_server').error(
-                f'task retry failed id={env.id} name={env.name}: {e}')
+            # 事务失败：消息仍 pending，可见性超时后重新投递（at-least-once 兜底）
+            Logger.error(f'task retry failed id={env.id} name={env.name}: {e}')
+            return
+        self._write_status_best_effort(env, STATUS_RETRYING)
 
     def dead(self, reserved: ReservedTask, error: str = '') -> None:
         env = reserved.envelope
@@ -486,17 +536,26 @@ class RedisTaskQueue(BaseTaskQueue):
             if env is not None:
                 record = self._dead_letter_record(env, error)
             else:
+                # 脏数据（无法反序列化）：没有可用信封，字段置空；raw 必须保留供人工排查
                 record = {
-                    'id': None, 'status': STATUS_DEAD, 'last_error': error, 'raw': raw,
+                    'id': None, 'name': None, 'args': [], 'kwargs': {},
+                    'status': STATUS_DEAD, 'last_error': error, 'raw': raw,
                 }
-            self.client.xack(self.stream, self.group, msg_id)
-            self.client.xdel(self.stream, msg_id)
-            self.client.lpush(self.dead_key, json.dumps(record, ensure_ascii=False, default=str))
-            self.client.ltrim(self.dead_key, 0, config.task_dead_letter_max - 1)
-            if env is not None:
-                self._write_status(env, STATUS_DEAD)
+            payload = json.dumps(record, ensure_ascii=False, default=str)
+            # LPUSH（死信）+ LTRIM（裁剪）+ XACK + XDEL 必须原子：修复前先 ACK+DEL 再 LPUSH，
+            # LPUSH 失败时任务没了、死信也没了——连人工排查的线索都不剩。
+            # EXEC 失败时消息仍 pending，可见性超时后会重新走一次死信流程。
+            pipe = self.client.pipeline(transaction=True)
+            pipe.lpush(self.dead_key, payload)
+            pipe.ltrim(self.dead_key, 0, config.task_dead_letter_max - 1)
+            pipe.xack(self.stream, self.group, msg_id)
+            pipe.xdel(self.stream, msg_id)
+            pipe.execute()
         except Exception as e:
-            logging.getLogger('flask_server').error(f'task dead-letter failed: {e}')
+            Logger.error(f'task dead-letter failed: {e}')
+            return
+        if env is not None:
+            self._write_status_best_effort(env, STATUS_DEAD)
 
     # -- 崩溃恢复 --
     def reclaim_stale(self, count=10):
@@ -541,17 +600,27 @@ class RedisTaskQueue(BaseTaskQueue):
         return json.loads(raw)
 
     def dead_letters(self, limit=20):
-        """读取死信（最近 limit 条，解析失败的条目原样返回）"""
+        """读取死信（最近 limit 条，最新在前，与内存后端顺序一致）
+
+        正常记录由 _dead_letter_record 生成，带 id/name/args/kwargs/status/last_error；
+        无法反序列化的脏数据条目没有信封，字段置空并保留 raw 原始 payload。
+        """
+        if limit <= 0:
+            return []
         try:
-            raws = self.client.lrange(self.dead_key, 0, max(0, limit - 1))
+            raws = self.client.lrange(self.dead_key, 0, limit - 1)
         except Exception as e:
             raise TaskQueueUnavailable(f'读取死信失败: {e}') from e
         out = []
         for raw in raws:
             try:
-                out.append(json.loads(raw))
+                record = json.loads(raw)
             except Exception:
-                out.append({'raw': raw})
+                record = None
+            if isinstance(record, dict):
+                out.append(record)
+            else:
+                out.append({'id': None, 'name': None, 'args': [], 'kwargs': {}, 'raw': raw})
         return out
 
     def stats(self) -> Dict[str, int]:

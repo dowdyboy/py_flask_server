@@ -2,7 +2,13 @@ import datetime
 import time
 
 # 日期时间处理工具类
-# 注意：所有方法依赖服务器本地时区（time.localtime），跨时区部署请同步调整服务器时区配置
+# 注意：
+#   - 绝大多数方法走**服务器本地时区**（time.localtime / time.mktime），跨时区部署请
+#     同步调整服务器时区配置；
+#   - 例外是名字里带 utc 的方法（utc_now_str / format_timestamp_utc），它们显式使用 UTC，
+#     与本地时区无关；
+#   - 因此"本地格式化"与"UTC 格式化"不对称：parse_string_to_timestamp 按本地解析，
+#     与 format_timestamp_utc 配对使用会偏移时区差，往返场景请成对使用同一族方法。
 
 
 class DateTimeUtil:

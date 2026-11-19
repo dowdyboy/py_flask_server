@@ -95,13 +95,20 @@ def metrics():
         payload = generate_latest(_multiprocess_registry())
     else:
         payload = generate_latest()
-    return Response(payload, mimetype=CONTENT_TYPE_LATEST)
+    # 用 content_type= 而不是 mimetype=：CONTENT_TYPE_LATEST 自带 charset，走 mimetype
+    # 会被 Werkzeug 再补一个 → "text/plain; version=1.0.0; charset=utf-8; charset=utf-8"
+    return Response(payload, content_type=CONTENT_TYPE_LATEST)
 
 
 def init_metrics(app):
-    """把 /metrics 路由与请求计时/计数钩子注册到指定 app（由 create_app 调用）"""
+    """把 /metrics 路由与请求计时/计数钩子注册到指定 app（由 create_app 调用）
+
+    注意：即使 prometheus-client 未安装也要注册路由 —— 否则 /metrics 返回 404，
+    与"依赖缺失时优雅降级为 503"的约定不符（编排系统/采集端会把它当成路径写错）。
+    此时 metrics() 自身返回 503，不注册任何计时/计数钩子。
+    """
+    app.add_url_rule('/metrics', 'metrics', metrics, methods=['GET'])
     if not _METRICS_AVAILABLE:
         return
     app.before_request(metrics_start_timer)
     app.after_request(metrics_record)
-    app.add_url_rule('/metrics', 'metrics', metrics, methods=['GET'])

@@ -1,13 +1,11 @@
 """HTTP / 认证 / 限流 / 数据库 端到端测试（真实 waitress 进程 + 真实 Redis/MySQL）。"""
 
-import json
 import os
 import re
 import socket
 import sqlite3
 import time
 import uuid
-from pathlib import Path
 
 import requests
 
@@ -586,7 +584,6 @@ def test_mysql_readonly():
 # --------------------------------------------------------------------------
 
 def test_in_process():
-    from flask import Flask
 
     from flask_server.app import create_app
     from flask_server.component.auth import _is_exempt_path

@@ -133,7 +133,10 @@ class SQLite:
                     pass
                 last_error = e
                 time.sleep(SQLite._LOCKED_RETRY_INTERVAL * (attempt + 1))
-        raise last_error
+        # 不可达：每次迭代要么 return 要么 raise。保留显式抛出仅用于表达"不会正常跑完"，
+        # 修复前这里是 `raise last_error`（last_error 在成功路径上恒为 None，是死变量）
+        raise RuntimeError(   # pragma: no cover - 防御性，正常不可达
+            f'SQLite.execute retry loop exhausted: {last_error}')
 
     # 执行sql语句，返回结果，多用于select语句，用法示例：
     # SQLite.fetch("SELECT * FROM table WHERE id = ?", [1])
@@ -144,9 +147,18 @@ class SQLite:
             raise RuntimeError('SQLite 未启用，请配置 SQLITE_DB_PATH')
         if config.debug and config.debug_sql:
             Logger.info(sql)
-        cur = conn.cursor()
-        cur.execute(sql, params or [])
-        return cur.fetchall()
+        # 与 execute() 一致：数据库被其它连接持有写锁时，读也可能抛 "database is locked"，
+        # 这里做与 execute 相同的退避重试（修复前 fetch 完全不重试，行为不一致）
+        for attempt in range(SQLite._LOCKED_RETRIES + 1):
+            try:
+                cur = conn.cursor()
+                cur.execute(sql, params or [])
+                return cur.fetchall()
+            except sqlite3.OperationalError as e:
+                if 'locked' not in str(e).lower() or attempt >= SQLite._LOCKED_RETRIES:
+                    raise
+                time.sleep(SQLite._LOCKED_RETRY_INTERVAL * (attempt + 1))
+        raise RuntimeError('SQLite.fetch retry loop exhausted')   # pragma: no cover - 正常不可达
 
     # 插入数据，用法示例：
     # SQLite.insert("table", ["column1", "column2"], [1, 2])

@@ -6,6 +6,8 @@ import subprocess
 import sys
 from importlib import import_module
 
+import pytest
+
 # 注意：flask_server 包的 config 属性是 Config 实例（遮蔽了模块），
 # 必须用 importlib 获取真实模块以访问 _parse_int/_ENV_PRESETS
 config_module = import_module('flask_server.config')
@@ -262,6 +264,92 @@ def test_auth_pbkdf2_iterations_too_low_falls_back(monkeypatch, capsys):
     cfg = config_module.Config()
     assert cfg.auth_pbkdf2_iterations == 600000
     assert 'AUTH_PBKDF2_ITERATIONS' in capsys.readouterr().out
+
+
+def test_auth_pbkdf2_iterations_above_verify_limit_falls_back(monkeypatch, capsys):
+    """迭代次数超过校验侧硬上限（1e6）必须回退。
+
+    回归：修复前只校验下限，配置 2000000 不告警、注册成功，但
+    DataEncryptUtil.verify_pbkdf2 会因 `iterations > PBKDF2_MAX_ITERATIONS` 直接返回
+    False —— 此后**所有人登录 401**。
+    """
+    monkeypatch.setenv('AUTH_PBKDF2_ITERATIONS', '2000000')
+    cfg = config_module.Config()
+    assert cfg.auth_pbkdf2_iterations == 600000
+    out = capsys.readouterr().out
+    assert 'AUTH_PBKDF2_ITERATIONS' in out
+    assert str(config_module.PBKDF2_MAX_ITERATIONS) in out
+
+
+def test_pbkdf2_verify_honours_max_iterations(monkeypatch):
+    """校验侧用同一上限常量做 CPU DoS 防御：等于上限可通过，超过上限一律拒绝。
+
+    用 monkeypatch 把上限调小以保持用例快速（真实上限 1e6，直接算两遍太慢）。
+    """
+    from flask_server.util import data_encrypt_util as deu
+
+    monkeypatch.setattr(deu, 'PBKDF2_MAX_ITERATIONS', 1000)
+    ok = deu.DataEncryptUtil.pbkdf2_hmac('pw', salt='00' * 16, iterations=1000)
+    assert deu.DataEncryptUtil.verify_pbkdf2('pw', ok) is True
+    over = deu.DataEncryptUtil.pbkdf2_hmac('pw', salt='00' * 16, iterations=1001)
+    assert deu.DataEncryptUtil.verify_pbkdf2('pw', over) is False
+
+
+def test_thread_num_invalid_falls_back(monkeypatch, capsys):
+    """THREAD_NUM <= 0 会让 ThreadPoolExecutor 在导入期抛 ValueError → 必须告警回退"""
+    monkeypatch.setenv('THREAD_NUM', '0')
+    cfg = config_module.Config()
+    assert cfg.thread_num == 10
+    assert 'THREAD_NUM' in capsys.readouterr().out
+
+
+def test_async_task_queue_max_negative_falls_back(monkeypatch, capsys):
+    """ASYNC_TASK_QUEUE_MAX 为负会让 Semaphore 构造失败 → 告警回退"""
+    monkeypatch.setenv('ASYNC_TASK_QUEUE_MAX', '-1')
+    cfg = config_module.Config()
+    assert cfg.async_task_queue_max == 500
+    assert 'ASYNC_TASK_QUEUE_MAX' in capsys.readouterr().out
+
+
+def test_max_content_length_invalid_falls_back(monkeypatch, capsys):
+    """MAX_CONTENT_LENGTH <= 0 会让所有带 body 的请求 413 → 告警回退默认 16MB"""
+    monkeypatch.setenv('MAX_CONTENT_LENGTH', '0')
+    cfg = config_module.Config()
+    assert cfg.max_content_length == 16 * 1024 * 1024
+    assert 'MAX_CONTENT_LENGTH' in capsys.readouterr().out
+
+
+def test_db_pool_params_invalid_fall_back(monkeypatch, capsys):
+    monkeypatch.setenv('DB_POOL_SIZE', '0')
+    monkeypatch.setenv('DB_POOL_TIMEOUT', '-5')
+    cfg = config_module.Config()
+    assert cfg.db_pool_size == 10
+    assert cfg.db_pool_timeout == 30
+    assert 'DB_POOL_SIZE' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('env_key, bad, good_attr, good_val', [
+    ('AUTH_STORE', 'sqlalchmey', 'auth_store', 'memory'),
+    ('AUTH_STORE', 'sqlalchemy ', 'auth_store', 'memory'),   # 尾空格也会被 strip，属合法
+    ('RATE_LIMIT_STORE', 'radis', 'rate_limit_store', 'memory'),
+    ('SOCKETIO_ASYNC_MODE', 'eventlte', 'socketio_async_mode', 'threading'),
+    ('LOG_FORMAT', 'jsonl', 'log_format', 'text'),
+])
+def test_enum_config_typo_warns_and_falls_back(monkeypatch, capsys, env_key, bad,
+                                               good_attr, good_val):
+    """枚举型配置拼错不再静默退化：告警 + 回退默认值。
+
+    回归：修复前 AUTH_STORE 拼错会静默使用进程内用户表（重启丢用户、多 worker 不一致），
+    RATE_LIMIT_STORE 拼错会让多实例限流静默失效，且都无任何提示。
+    """
+    monkeypatch.setenv(env_key, bad)
+    cfg = config_module.Config()
+    actual = getattr(cfg, good_attr)
+    if bad.strip().lower() in ('sqlalchemy',):
+        assert actual == 'sqlalchemy'      # 合法值（strip 后）不应告警
+    else:
+        assert actual == good_val
+        assert env_key in capsys.readouterr().out
 
 
 def test_snowflake_datacenter_id(monkeypatch, capsys):

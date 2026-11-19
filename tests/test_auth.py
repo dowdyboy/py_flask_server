@@ -1,5 +1,7 @@
 """认证模块测试：注册/登录/登出/me + 全局拦截器逻辑"""
 
+import time
+
 import pytest
 
 from flask_server.component.auth import AuthService, auth_interceptor
@@ -771,3 +773,119 @@ def test_brute_force_counter_atomic_in_redis(client, fresh_store, monkeypatch):
     r = client.post('/api/v1/auth/login', json={'username': 'incruser', 'password': 'secret123'})
     assert r.status_code == 429
     assert r.get_json()['code'] == 4003
+
+
+# ------------------------- P0: 登出/吊销不受 Redis 冷却期影响 -------------------------
+
+
+def test_logout_during_redis_cooldown_still_revokes(client, fresh_store, monkeypatch):
+    """P0 回归：Redis 冷却期内登出仍必须真实 DELETE（否则恢复后旧 token 重新有效）
+
+    修复前 RedisCache.delete 先 `_check()`，冷却期直接 return → 登出是 no-op，
+    30s 后 Redis 恢复，旧 access/refresh（TTL 7/30 天）又能用了。
+    """
+    from flask_server.component import auth as auth_module
+
+    fake = _FakeRedisClient()
+    cache = _fake_redis_cache(fake)
+    monkeypatch.setattr(auth_module.config, 'redis_url', 'redis://fake:6379/0')
+    monkeypatch.setattr(auth_module, 'redis_cache', cache)
+
+    client.post('/api/v1/auth/register', json={'username': 'cooldown', 'password': 'secret123'})
+    data = client.post('/api/v1/auth/login', json={
+        'username': 'cooldown', 'password': 'secret123'}).get_json()['data']
+    token, refresh = data['token'], data['refresh_token']
+    assert f'auth:token:{token}' in fake.store
+    assert f'auth:refresh:{refresh}' in fake.store
+
+    # 模拟 Redis 刚抖动过：进入冷却期（修复前 delete 会因此在 _check() 处短路）
+    cache._unavailable_until = time.time() + 30
+    cache._need_recovery = True
+
+    r = client.post('/api/v1/auth/logout', headers={'X-AUTH-TOKEN': token},
+                    json={'refresh_token': refresh})
+    assert r.status_code == 200
+    assert f'auth:token:{token}' not in fake.store
+    assert f'auth:refresh:{refresh}' not in fake.store
+
+
+def test_cache_delete_reports_failure_when_primary_store_down(monkeypatch):
+    """P0 回归：吊销未送达主存储必须返回 False 并告警，不能静默吞掉"""
+    from flask_server.component import auth as auth_module
+
+    monkeypatch.setattr(auth_module.config, 'redis_url', 'redis://127.0.0.1:6399/0')
+    monkeypatch.setattr(auth_module, 'redis_cache', _fake_redis_cache(_FailingRedisClient()))
+    warnings = []
+    monkeypatch.setattr(auth_module.Logger, 'warn',
+                        lambda msg, exc_info=False: warnings.append(msg))
+
+    assert auth_module._cache_delete('auth:token:deadbeef', what='access token') is False
+    auth_msgs = [msg for msg in warnings if 'AuthService' in msg]
+    assert any('did not reach primary store' in msg for msg in auth_msgs)
+    # 告警不得泄漏 token 明文（只输出键前缀）
+    assert all('deadbeef' not in msg for msg in auth_msgs)
+
+
+# ------------------------- P1: sqlalchemy 占位 UserPO 惰性重绑 -------------------------
+
+
+def test_sqlalchemy_po_rebinds_after_db_initialized(monkeypatch, tmp_path, fresh_store):
+    """P1 回归：进程启动无 DB（占位 UserPO）后注入配置初始化 db，_get_po 应重载为真实 ORM 模型
+
+    修复前的注释声称 import_module "每次取最新定义的 UserPO"，实际返回缓存模块：
+    占位类一直存在，UserPO.query → AttributeError → register/login 500。
+    """
+    from importlib import import_module, reload
+
+    from flask import Flask
+
+    from flask_server import config
+    from flask_server.component.auth import AuthService, SqlAlchemyAuthStore
+
+    sa_module = import_module('flask_server.module.sqlalchemy')
+    user_module = import_module('flask_server.model.po.user')
+
+    monkeypatch.setattr(sa_module, 'db', None)
+    monkeypatch.setattr(config, 'sqlalchemy_uri', f'sqlite:///{tmp_path / "rebind.db"}')
+    monkeypatch.setattr(config, 'db_reflect_on_start', False)
+    AuthService._store = None
+    reload(user_module)                       # 还原"进程启动时没有 DB"的占位状态
+    assert getattr(user_module.UserPO, '__tablename__', None) is None
+
+    app = Flask(__name__)
+    sa_module.init_SQLAlchemy(app)            # 等价于 create_app(framework_config=...) 注入 DB 配置
+    db = sa_module.sqlalchemy()
+    try:
+        # 关键：不手动 reload，_get_po 自己检测占位类并重绑到已初始化的 db
+        UserPO = SqlAlchemyAuthStore._get_po()
+        assert getattr(UserPO, '__tablename__', None) == 'user'
+        with app.app_context():
+            db.create_all()
+        AuthService._store = SqlAlchemyAuthStore()
+        uid = AuthService.register('rebind_user', 'secret123')
+        tokens, err = AuthService.login('rebind_user', 'secret123')
+        assert err is None and tokens is not None
+        assert AuthService.get_user_by_token(tokens[0]).uid == uid
+    finally:
+        with app.app_context():
+            db.session.remove()
+            db.engine.dispose()
+        AuthService._store = None
+        monkeypatch.setattr(sa_module, 'db', None)
+        reload(user_module)                   # 恢复占位态，避免污染后续用例
+
+
+def test_sqlalchemy_po_placeholder_without_db_raises_clear_error(monkeypatch):
+    """DB 确实未就绪时抛明确 RuntimeError，而不是等到 `.query` 的 AttributeError → 500"""
+    from importlib import import_module, reload
+
+    from flask_server.component.auth import SqlAlchemyAuthStore
+
+    sa_module = import_module('flask_server.module.sqlalchemy')
+    user_module = import_module('flask_server.model.po.user')
+    monkeypatch.setattr(sa_module, 'db', None)
+    reload(user_module)
+    assert getattr(user_module.UserPO, '__tablename__', None) is None
+
+    with pytest.raises(RuntimeError, match='SQLAlchemy 未就绪'):
+        SqlAlchemyAuthStore._get_po()

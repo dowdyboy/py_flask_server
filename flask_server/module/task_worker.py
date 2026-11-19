@@ -42,9 +42,12 @@ class TaskWorker:
     # ---------------- 生命周期 ----------------
 
     def start(self):
-        """启动消费线程（幂等）"""
+        """启动消费线程（幂等：重复调用不应重复创建线程）"""
         if self._threads:
             return self
+        # 支持 stop() 之后再次 start()：_stop 是 Event，stop() 会置位且不会自动复位，
+        # 不复位的话重启出来的线程会立即退出（"静默重启失效"）。
+        self._stop.clear()
         for i in range(max(1, self.concurrency)):
             t = threading.Thread(target=self._loop, name=f'task-worker-{i}', daemon=True)
             t.start()
@@ -64,7 +67,9 @@ class TaskWorker:
 
     @property
     def running(self):
-        return bool(self._threads) and not self._stop.is_set()
+        """是否真的有存活的消费线程（不能只看 _threads 非空：线程可能已崩溃/已结束）"""
+        return bool(self._threads) and not self._stop.is_set() \
+            and any(t.is_alive() for t in self._threads)
 
     def run_forever(self):
         """阻塞运行直到 stop() 被调用（或收到 KeyboardInterrupt）"""
@@ -85,6 +90,9 @@ class TaskWorker:
         供 `scripts/worker.py --once`（联调/定时触发）与测试使用。
         与 `_loop` 的区别：不做后端故障退避，异常直接抛给调用方。
         """
+        # 也要做一次崩溃恢复检查：--once 模式（尤其被 cron 高频拉起时）是唯一入口，
+        # 若不做，崩溃 worker 遗留的 pending 消息永远不会被接管（_loop 才调 _maybe_reclaim）。
+        self._maybe_reclaim()
         reserved = self.queue.reserve(
             config.task_reserve_timeout if timeout is None else timeout)
         if reserved is None:
@@ -115,7 +123,13 @@ class TaskWorker:
             backoff = 1.0
             if reserved is None:
                 continue
-            self._handle(reserved)
+            try:
+                self._handle(reserved)
+            except BaseException as e:
+                # _handle 内部已捕获 handler 的普通异常；这里兜的是 BaseException
+                # （例如 handler 调了 sys.exit()）——否则会直接打死消费线程且不留任何日志，
+                # 线上表现为"并发消费能力悄悄下降"。
+                Logger.error(f'TaskWorker _handle crashed: {e}', exc_info=True)
 
     def _maybe_reclaim(self):
         """Redis 后端：定期接管 worker 崩溃遗留的 pending 消息"""

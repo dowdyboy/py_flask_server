@@ -6,6 +6,8 @@
 """
 
 from collections import deque
+import copy
+import time
 
 import pytest
 
@@ -156,8 +158,64 @@ class FakeRedis:
         items = list(self.lists.get(key, []))
         return items[start:end + 1]
 
+    # ---- pipeline（MULTI/EXEC）----
+    def pipeline(self, transaction=True):
+        """返回缓冲式管道：execute 时原子应用，失败回滚（对应 redis-py 的事务管道）"""
+        return _FakePipeline(self)
+
+    def _snapshot(self):
+        return copy.deepcopy({
+            'kv': self.kv,
+            'streams': self.streams,
+            'by_id': self.by_id,
+            'groups': self.groups,
+            'zsets': self.zsets,
+            'lists': self.lists,
+            'deleted': self.deleted,
+            '_seq': self._seq,
+        })
+
+    def _restore(self, snapshot):
+        for name, value in snapshot.items():
+            setattr(self, name, value)
+
     def close(self):
         pass
+
+
+class _FakePipeline:
+    """最小 MULTI/EXEC 假实现：先缓冲命令，execute 时再原子应用。
+
+    任意一条命令失败则回滚到执行前快照（与 Redis 事务"要么全部生效、要么全部不生效"
+    一致），这样测试才能覆盖"管道失败不得留下半成品状态"。
+    """
+
+    def __init__(self, client):
+        self._client = client
+        self._commands = []
+
+    def __getattr__(self, name):
+        if name.startswith('_'):
+            raise AttributeError(name)
+
+        def _queue(*args, **kwargs):
+            self._commands.append((name, args, kwargs))
+            return self
+
+        return _queue
+
+    def execute(self):
+        if not self._commands:
+            return []
+        snapshot = self._client._snapshot()
+        try:
+            results = []
+            for name, args, kwargs in self._commands:
+                results.append(getattr(self._client, name)(*args, **kwargs))
+            return results
+        except Exception:
+            self._client._restore(snapshot)
+            raise
 
 
 @pytest.fixture
@@ -259,14 +317,138 @@ def test_dead_letter_is_trimmed(queue, fake, monkeypatch):
     assert fake.llen(queue.dead_key) == 3
 
 
+# ------------------------- P0: 状态流转原子性（MULTI/EXEC）-------------------------
+
+
+def test_ack_pipeline_failure_keeps_message_unacked(queue, fake, monkeypatch):
+    """ack 的 XACK/XDEL 必须整体生效：部分失败不能留下"已 ACK 未 DEL"的僵尸条目"""
+    queue.enqueue('ok')
+    reserved = queue.reserve(timeout=0.01)
+    token = reserved.token
+
+    def broken_xdel(*args, **kwargs):
+        raise ConnectionError('xdel failed')
+
+    monkeypatch.setattr(fake, 'xdel', broken_xdel)
+    queue.ack(reserved)
+
+    # XACK 已执行但 XDEL 失败 → 事务回滚，消息仍 pending 且仍在流里（不会被永久跳过）
+    assert token in fake.groups[(queue.stream, queue.group)]['pending']
+    assert token in fake.by_id
+    assert token not in fake.deleted
+    assert queue.get_status(reserved.envelope.id)['status'] == STATUS_RUNNING
+
+
+def test_ack_status_write_failure_does_not_undo_ack(queue, fake, monkeypatch):
+    """状态记录是旁路：写失败不能回滚已生效的确认（否则任务会被重复执行）"""
+    queue.enqueue('ok')
+    reserved = queue.reserve(timeout=0.01)
+    token = reserved.token
+
+    def broken_set(*args, **kwargs):
+        raise ConnectionError('status store down')
+
+    monkeypatch.setattr(fake, 'set', broken_set)
+    queue.ack(reserved)
+
+    assert token not in fake.groups[(queue.stream, queue.group)]['pending']
+    assert token in fake.deleted
+    assert token not in fake.by_id
+
+
+def test_retry_pipeline_failure_keeps_message_pending(queue, fake, monkeypatch):
+    """P0 回归：retry 事务失败时必须保留消息（修复前 XACK+XDEL 已生效 → 任务永久丢失）"""
+    queue.enqueue('flaky')
+    reserved = queue.reserve(timeout=0.01)
+    token = reserved.token
+
+    def broken_zadd(*args, **kwargs):
+        raise ConnectionError('zadd failed')
+
+    monkeypatch.setattr(fake, 'zadd', broken_zadd)
+    queue.retry(reserved, delay=5, error='boom')
+
+    assert token in fake.groups[(queue.stream, queue.group)]['pending']
+    assert token in fake.by_id
+    assert token not in fake.deleted
+    assert fake.zsets.get(queue.delayed_key, {}) == {}
+    assert queue.get_status(reserved.envelope.id)['status'] == STATUS_RUNNING
+
+
+def test_retry_pipeline_is_all_or_nothing(queue, fake, monkeypatch):
+    """P0 回归：retry 中 XACK 失败时已入队的 ZADD 也必须回滚（不能留半成品延迟任务）"""
+    queue.enqueue('flaky')
+    reserved = queue.reserve(timeout=0.01)
+    token = reserved.token
+
+    def broken_xack(*args, **kwargs):
+        raise ConnectionError('xack failed')
+
+    monkeypatch.setattr(fake, 'xack', broken_xack)
+    queue.retry(reserved, delay=5, error='boom')
+
+    assert fake.zsets.get(queue.delayed_key, {}) == {}
+    assert token in fake.groups[(queue.stream, queue.group)]['pending']
+
+
+def test_dead_pipeline_failure_keeps_message_for_retry(queue, fake, monkeypatch):
+    """P0 回归：死信事务失败时不得先 ACK+DEL，否则任务与死信一起消失，无从排查"""
+    queue.enqueue('doomed')
+    reserved = queue.reserve(timeout=0.01)
+    token = reserved.token
+
+    def broken_lpush(*args, **kwargs):
+        raise ConnectionError('lpush failed')
+
+    monkeypatch.setattr(fake, 'lpush', broken_lpush)
+    queue.dead(reserved, error='fatal')
+
+    assert fake.llen(queue.dead_key) == 0
+    assert token in fake.groups[(queue.stream, queue.group)]['pending']
+    assert token in fake.by_id
+    assert token not in fake.deleted
+    assert queue.get_status(reserved.envelope.id)['status'] == STATUS_RUNNING
+
+
+# ------------------------- P0: 延迟回迁异常语义 -------------------------
+
+
+def test_promote_delayed_zrem_error_surfaces_as_unavailable(queue, fake, monkeypatch):
+    """P0 回归：ZREM 在 try 外时 ConnectionError 会裸奔出 reserve()（--once 直接 traceback）"""
+    fake.zadd(queue.delayed_key, {'env-json': time.time() - 1})
+    queue._last_promote = 0
+
+    def broken_zrem(*args, **kwargs):
+        raise ConnectionError('redis down')
+
+    monkeypatch.setattr(fake, 'zrem', broken_zrem)
+    with pytest.raises(TaskQueueUnavailable):
+        queue.reserve(timeout=0.01)
+    assert queue._last_promote == 0     # 失败不推进节流，恢复后立即重试
+
+
+def test_promote_delayed_scan_error_surfaces_as_unavailable(queue, fake):
+    """延迟回迁的 ZRANGEBYSCORE 失败同样统一成 TaskQueueUnavailable"""
+    fake.fail = ConnectionError('redis down')
+    queue._last_promote = 0
+    with pytest.raises(TaskQueueUnavailable):
+        queue.reserve(timeout=0.01)
+    assert queue._last_promote == 0
+
+
 # ------------------------- 健壮性 -------------------------
 
 
 def test_corrupt_message_goes_to_dead_letter(queue, fake):
-    """脏数据（非法 JSON）不能让整条流阻塞"""
+    """脏数据（非法 JSON）不能让整条流阻塞；记录保留 raw 且字段齐备"""
     fake.xadd(queue.stream, {'data': 'not-json'})
     assert queue.reserve(timeout=0.01) is None
     assert fake.llen(queue.dead_key) == 1
+    letter = queue.dead_letters()[0]
+    assert letter['raw'] == 'not-json'
+    assert letter['id'] is None and letter['name'] is None
+    assert letter['args'] == [] and letter['kwargs'] == {}
+    assert letter['status'] == STATUS_DEAD
 
 
 def test_reclaim_stale_takes_over_other_consumer(queue, fake, monkeypatch):
@@ -320,7 +502,43 @@ def test_dead_letters_reader(queue, fake):
 
 def test_dead_letters_handles_corrupt_entries(queue, fake):
     fake.lpush(queue.dead_key, 'not-json')
-    assert queue.dead_letters()[0]['raw'] == 'not-json'
+    letter = queue.dead_letters()[0]
+    assert letter['raw'] == 'not-json'
+    assert letter['id'] is None and letter['name'] is None
+    assert letter['args'] == [] and letter['kwargs'] == {}
+
+
+def test_dead_letters_order_is_newest_first_on_both_backends(queue, fake):
+    """两种后端的 dead_letters 都是最新在前（docs/task-queue.md 的重放示例取 [0]）"""
+    from flask_server.module.task_queue import MemoryTaskQueue
+
+    memory = MemoryTaskQueue()
+    for q in (queue, memory):
+        q.enqueue('first', args=[1])
+        q.dead(q.reserve(timeout=0.01), error='e1')
+        q.enqueue('second', args=[2])
+        q.dead(q.reserve(timeout=0.01), error='e2')
+
+        letters = q.dead_letters(limit=5)
+        assert [letter['last_error'] for letter in letters] == ['e2', 'e1']
+        assert [letter['name'] for letter in letters] == ['second', 'first']
+
+
+def test_stats_key_parity_between_backends(queue, fake):
+    """两种后端的 stats 键集一致：恒有 ready/pending/delayed/dead；内存额外 tracked"""
+    from flask_server.module.task_queue import MemoryTaskQueue
+
+    memory = MemoryTaskQueue()
+    memory.enqueue('a')
+    queue.enqueue('b')
+
+    memory_stats = memory.stats()
+    redis_stats = queue.stats()
+
+    assert set(redis_stats) == {'ready', 'pending', 'delayed', 'dead'}
+    assert set(memory_stats) == set(redis_stats) | {'tracked'}
+    assert memory_stats['pending'] == 0     # 内存后端没有可见性超时
+    assert redis_stats['pending'] == 0
 
 
 def test_status_unknown_raises(queue):
@@ -333,7 +551,9 @@ def test_stats(queue, fake):
     queue.retry(queue.reserve(timeout=0.01), delay=10, error='e')
     queue.enqueue('b')
     stats = queue.stats()
+    assert set(stats) == {'ready', 'pending', 'delayed', 'dead'}
     assert stats['ready'] == 1 and stats['delayed'] == 1 and stats['dead'] == 0
+    assert stats['pending'] == 0
 
 
 def test_stats_pending_after_reserve(queue):

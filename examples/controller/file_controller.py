@@ -39,8 +39,13 @@ def upload_file():
 
 
 @app.route('/api/example/file/download', methods=['GET'])
+@json_response
 def download_file():
-    """下载文件（参数 path = 上传时返回的相对路径）"""
+    """下载文件（参数 path = 上传时返回的相对路径）
+
+    注意必须带 @json_response：否则返回的 GraceResult 元组不会被归一成
+    {"code","msg","data"}，Flask 会直接抛 TypeError → 所有错误分支变成 500。
+    """
     path = request.params.get('path')
     if not path:
         return GraceResult.param_error('缺少 path 参数'), 400
@@ -63,6 +68,9 @@ def delete_file():
         return GraceResult.param_error('缺少 path 参数')
     try:
         local_file_storage.delete(path)
+    except ValueError:
+        # 路径穿越、或 path 归一后就是存储根自身（会被 _gen_mutation_path 拒绝）
+        return GraceResult.param_error('非法路径'), 400
     except FileNotFoundError:
         return GraceResult.business_error(4004, '文件不存在'), 404
     return GraceResult.ok()

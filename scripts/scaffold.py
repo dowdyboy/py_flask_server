@@ -20,27 +20,39 @@ from datetime import date
 # 复制时排除的目录/文件
 ALWAYS_EXCLUDE_DIRS = {'.git', '__pycache__', '.pytest_cache', '.venv', 'venv',
                        'htmlcov', '.coverage_html', '.ruff_cache', '.mypy_cache',
-                       '.tox', '.nox', '.idea', '.vscode', '.opencode'}
+                       '.tox', '.nox', '.idea', '.vscode', '.opencode', '.venv_audit'}
 EXCLUDE_FILES = {'.coverage', 'test-results.xml', '.DS_Store', 'Thumbs.db',
                  # 内部评估/审查历史报告，不应随模板分发给新项目
-                 'PROJECT_EVALUATION.md'}
+                 'PROJECT_EVALUATION.md', 'E2E_TEST_REPORT.md'}
+# 相对模板根目录的路径（目录）：再生成的二进制产物，体积大且不应分发给新项目
+EXCLUDE_REL_PATHS = {
+    os.path.join('deployments', 'armv7', 'runtime'),
+    os.path.join('deployments', 'armv7', 'wheels'),
+}
 
 
 def copy_template(src_dir, dst_dir, author='Your Name', exclude_dirs=None):
     """复制脚手架模板到新目录，返回复制文件数。
 
-    排除：版本控制、缓存、日志、数据库文件、本地环境配置。
+    排除：版本控制、缓存、日志、数据库文件、本地环境配置、构建产物。
     替换：LICENSE 中的署名（Copyright (c) <year> <author>）。
     """
     exclude_dirs = set(exclude_dirs or []) | ALWAYS_EXCLUDE_DIRS
 
     def _ignore(current, names):
         ignored = set()
+        rel = os.path.relpath(current, src_dir)
         for name in names:
             full = os.path.join(current, name)
-            if name in exclude_dirs:
+            rel_path = os.path.normpath(os.path.join(rel, name))
+            if rel_path in EXCLUDE_REL_PATHS:
+                ignored.add(name)
+            elif name in exclude_dirs:
                 ignored.add(name)
             elif name in EXCLUDE_FILES:
+                ignored.add(name)
+            # .coverage / .coverage.<host>.<pid>.<rand> / .coverage.xxx
+            elif name == '.coverage' or name.startswith('.coverage.'):
                 ignored.add(name)
             elif os.path.isfile(full) and name == '.env':
                 ignored.add(name)

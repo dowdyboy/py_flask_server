@@ -123,11 +123,30 @@ def _cache_incr(key, ttl=None):
     return memory_cache.incr(key, ttl=ttl)
 
 
-def _cache_delete(key):
-    """删除认证缓存：主存储与内存兜底都清理，防止轮换/登出后残留。"""
-    _token_cache().delete(key)
+def _cache_delete(key, what='认证缓存'):
+    """删除认证缓存：主存储与内存兜底都清理，防止轮换/登出后残留。
+
+    登出/refresh 吊销对失败零容忍：RedisCache.delete 在冷却期内也会真实尝试，
+    但连接故障时仍可能失败（返回 False）。此时必须告警——否则旧令牌会在 Redis
+    恢复后重新生效（TTL 7/30 天），表现为"登出没生效"。
+
+    Args:
+        key (str): 缓存键（含 token 明文，日志只输出前缀，避免泄漏）
+        what (str): 用途描述（access token / refresh token 等），用于告警文案
+
+    Returns:
+        bool: 主存储删除是否成功；内存缓存不可失败，恒为 True
+    """
+    cache = _token_cache()
+    ok = cache.delete(key)
     if config.redis_url is not None:
         memory_cache.delete(key)
+    if cache is memory_cache:
+        return True
+    if not ok:
+        Logger.warn(f'AuthService: {what} revocation did not reach primary store '
+                    f'(key prefix {key.rsplit(":", 1)[0]}); it may stay valid until TTL')
+    return bool(ok)
 
 # ------------------------- AuthUser -------------------------
 
@@ -170,15 +189,49 @@ class MemoryAuthStore:
         return self._by_uid.get(uid)
 
 
+# UserPO 占位类 → 真实 ORM 模型的重绑锁：并发首次认证请求只允许一个线程执行 reload
+_PO_RELOAD_LOCK = threading.Lock()
+
+
 class SqlAlchemyAuthStore:
     """SQLAlchemy 用户存储（AUTH_STORE=sqlalchemy，需配置 SQLALCHEMY_URI）"""
 
     @staticmethod
     def _get_po():
-        # 每次调用取模块最新定义的 UserPO（flask_server/__init__.py 的加载顺序保证：
-        # app → init_SQLAlchemy → model，配置了 SQLALCHEMY_URI 时导入的即为真实 ORM 模型）
+        """取当前可用的 UserPO（占位类会在 db 就绪后惰性重绑为真实 ORM 模型）。
+
+        flask_server/model/po/user.py 在**首次导入**时按 `sqlalchemy()` 的返回值决定定义：
+        db 为 None（进程默认未配置 SQLALCHEMY_URI）时定义的是没有 query 的占位类。
+        之后 create_app(framework_config=...) 注入 DB 配置并初始化 db 时，该模块早已
+        被 import 缓存，import_module 只会返回旧的占位类，不会重新执行模块代码。
+
+        因此这里检测到占位类后用 importlib.reload 重新执行模块（此时 sqlalchemy() 已返回
+        真实 db，UserPO 变成 ORM 模型）。reload 后仍是占位类说明 DB 确实未就绪，抛
+        RuntimeError 给出明确原因，而不是等到 `.query` 时 AttributeError → 500。
+        """
         import importlib
-        return importlib.import_module('flask_server.model.po.user').UserPO
+
+        from flask_server.module.sqlalchemy import sqlalchemy
+
+        user_module = importlib.import_module('flask_server.model.po.user')
+
+        def _bound_to_db():
+            # 不能用 hasattr(UserPO, 'query') 判断：真实模型的 query 是 Flask-SQLAlchemy
+            # 的描述符，在 app 上下文外访问会抛 RuntimeError（本方法常在 app 上下文外调用）
+            db = sqlalchemy()
+            po = user_module.UserPO
+            return db is not None and isinstance(po, type) and issubclass(po, db.Model)
+
+        if _bound_to_db():
+            return user_module.UserPO
+        with _PO_RELOAD_LOCK:
+            if not _bound_to_db():      # 等锁期间可能已被其它线程重载
+                importlib.reload(user_module)
+        if not _bound_to_db():
+            raise RuntimeError(
+                'UserPO 仍是占位模型：SQLAlchemy 未就绪'
+                '（请配置 SQLALCHEMY_URI，并确保 create_app/init_SQLAlchemy 已执行）')
+        return user_module.UserPO
 
     @staticmethod
     def create(username, passwd_hash):
@@ -325,7 +378,14 @@ class AuthService:
 
     @classmethod
     def login(cls, username, password, client_ip=None):
-        """校验用户名密码，成功返回 (access_token, refresh_token)，失败返回 None。
+        """校验用户名密码，返回 `(tokens, err)` 二元组。
+
+        Returns:
+            tuple: `((access_token, refresh_token), None)` 表示成功；
+            `(None, 'locked')` 表示已被锁定（调用方应返回 429 / code 4003）；
+            `(None, 'invalid')` 表示用户名或密码错误（应返回 401 / code 4001）。
+            统一返回二元组是为了让控制器区分"锁定"和"密码错"——早期实现只返回
+            `None`，无法区分两种失败原因。
 
         防爆破：同一 (用户名, 来源 IP) 连续失败 AUTH_LOGIN_MAX_FAILS 次后锁定
         AUTH_LOGIN_LOCK_SECONDS 秒，锁定期间即使密码正确也拒绝。
@@ -385,11 +445,14 @@ class AuthService:
 
         方案 A：logout 请求可携带可选 refresh_token，吊销后旧 refresh 无法再换取新令牌——
         "登出"后会话真正结束（设备丢失/账号被盗场景可踢下线）。
+
+        吊销失败（Redis 故障）由 _cache_delete 告警，但不阻塞登出响应：
+        本地会话状态已不可恢复，报错也帮不上用户，告警用于运维发现"登出未生效"。
         """
         if token:
-            _cache_delete(f'{_TOKEN_KEY_PREFIX}{token}')
+            _cache_delete(f'{_TOKEN_KEY_PREFIX}{token}', what='access token')
         if refresh_token:
-            _cache_delete(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
+            _cache_delete(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}', what='refresh token')
 
     @classmethod
     def get_user_by_token(cls, token):

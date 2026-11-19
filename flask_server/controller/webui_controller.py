@@ -65,7 +65,9 @@ def _redirect_to_registered_route(path):
         rule, _ = adapter.match(target, 'GET', return_rule=True)
     except (NotFound, RequestRedirect):
         return None
-    if rule.rule == '/<path:filename>':
+    # 按 endpoint 判断而不是硬编码规则字符串 '/<path:filename>'：
+    # 规则文本一旦调整（例如加前缀），硬编码判断会静默失效
+    if rule.endpoint == 'webui':
         return None   # 目标仍是本 catch-all（SPA 路由带尾斜杠），不回退重定向
     return redirect(target, code=308)
 
@@ -84,36 +86,30 @@ def webui(filename):
         abort(404)
 
     filepath = os.path.join(config.webui_dir, filename)
-    file_exists = os.path.exists(filepath)
-
-    # 带静态资源扩展名且不存在的路径返回 404（而非回退 index.html）
     _, ext = os.path.splitext(filename)
-    if ext.lower() in STATIC_EXT_SET and not file_exists:
-        abort(404)
+    is_static_ext = ext.lower() in STATIC_EXT_SET
 
+    # 先查缓存、再 stat：修复前无条件 os.path.exists(filepath) 在查缓存之前执行，
+    # 命中也照样 stat 一次，"减少磁盘 IO"的注释并没有兑现。
     if path_exist_cache is not None:
-        cached = _cache_get(filepath)
-        if cached is not None:
-            if cached:
-                return send_from_directory(config.webui_dir, filename)
-            index_path = os.path.join(config.webui_dir, 'index.html')
-            if os.path.exists(index_path):
-                return send_from_directory(config.webui_dir, 'index.html')
-            abort(404)
+        file_exists = _cache_get(filepath)
+        if file_exists is None:
+            file_exists = os.path.exists(filepath)
+            _cache_set(filepath, file_exists)
     else:
-        cached = None
+        # debug 模式不做缓存，保证改动静态文件后立即生效
+        file_exists = os.path.exists(filepath)
 
     if file_exists:
-        if path_exist_cache is not None:
-            _cache_set(filepath, True)
         return send_from_directory(config.webui_dir, filename)
-    else:
-        if path_exist_cache is not None:
-            _cache_set(filepath, False)
-        index_path = os.path.join(config.webui_dir, 'index.html')
-        if os.path.exists(index_path):
-            return send_from_directory(config.webui_dir, 'index.html')
+
+    # 不存在：带静态资源扩展名直接 404（而不是回退 index.html，避免前端拿到 HTML 当 JS）
+    if is_static_ext:
         abort(404)
+    index_path = os.path.join(config.webui_dir, 'index.html')
+    if os.path.exists(index_path):
+        return send_from_directory(config.webui_dir, 'index.html')
+    abort(404)
 
 
 def register(app):

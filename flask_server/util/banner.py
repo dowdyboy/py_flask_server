@@ -44,11 +44,16 @@ def _db_desc():
         return f'SQLAlchemy ({CommonUtil.mask_uri(config.sqlalchemy_uri)})'
     if config.db_file_path:
         return f'SQLite ({config.db_file_path})'
-    return 'not configured (in-memory)'
+    # 注意措辞：未配置数据库时并没有"内存数据库"，只是 SQLAlchemy 未初始化
+    return 'not configured (SQLAlchemy disabled)'
 
 
 def check_production_config(worker_num=None):
-    """生产环境配置自检：返回警告列表（非生产环境返回空列表）。
+    """生产环境配置自检：返回警告列表。
+
+    仅 `APP_ENV=development` 视为非生产并返回空列表。`staging` 与未知取值
+    （未知值会回退 development 预设，但 `app_env` 仍保留原字符串）都会输出生产告警。
+    `production` / `staging` 的差异只在预设档，自检项对两者同样适用。
 
     Args:
         worker_num (int, optional): 实际部署的 worker 数（由入口显式传入）。

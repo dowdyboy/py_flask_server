@@ -6,6 +6,7 @@ from ..util import Logger, CommonUtil
 
 # Redis 缓存模块，用于替代内存缓存（多进程/多实例场景）
 # 各操作有异常降级：Redis 不可达时 Logger.warn 并返回安全默认值，不中断业务
+# 例外：delete() 是登出/令牌吊销等"必须送达"的操作，冷却期内也绕过降级、真实执行并返回 bool
 # 探测策略：正常时零探测直通（操作成功即证明可用）；操作失败进入冷却期，
 # 冷却结束后首次操作前 ping 探测恢复，成功即恢复可用
 
@@ -93,18 +94,31 @@ class RedisCache:
             return json.loads(data)
         except Exception as e:
             Logger.warn(f'RedisCache get parse failed key={key}: {e}')
-            self.client.delete(key)
+            try:
+                self.client.delete(key)
+            except Exception as del_err:
+                # 自愈清理失败（连接在 GET 与 DELETE 之间断开）不能抛出：
+                # get 的契约是"异常时返回 None"，不能把缓存故障升级成业务 500
+                Logger.warn(f'RedisCache get cleanup failed key={key}: {del_err}')
             return None
 
-    def delete(self, key: str) -> None:
-        """删除键"""
-        if not self._check():
-            return
+    def delete(self, key: str) -> bool:
+        """删除键（必须送达的一次性操作，绕过冷却期降级）
+
+        登出/refresh token 吊销等场景对失败零容忍：若冷却期内直接跳过 DELETE，
+        Redis 恢复后旧令牌会重新生效（TTL 7/30 天）。因此这里不调用 `_check()`，
+        始终尝试真实删除，并把结果返回给调用方决定是否告警/降级。
+
+        Returns:
+            bool: True 表示删除命令已成功执行；False 表示 Redis 异常（未真正删除）
+        """
         try:
             self.client.delete(key)
+            return True
         except Exception as e:
             Logger.warn(f'RedisCache delete failed key={key}: {e}')
             self._mark_unavailable()
+            return False
 
     def getdel(self, key: str) -> Any:
         """原子读取并删除（GETDEL，供 refresh token 轮换等单次使用场景）"""
@@ -149,7 +163,11 @@ class RedisCache:
             return int(results[0])
         except (TypeError, ValueError):
             # 损坏/非数字值：视为计数丢失，由调用方按 0 重计，不抛异常
-            self.client.delete(key)
+            try:
+                self.client.delete(key)
+            except Exception as del_err:
+                # 同 get/getdel：清理失败不能违反"失败返回 None"的契约
+                Logger.warn(f'RedisCache incr cleanup failed key={key}: {del_err}')
             return None
 
     def exists(self, key: str) -> bool:

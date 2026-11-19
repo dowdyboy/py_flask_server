@@ -50,7 +50,9 @@ class CommonUtil:
             only (bool, optional): 是否仅保留映射规则中指定的键。True时只保留映射键，False时保留所有键。默认为True
 
         Returns:
-            dict: 转换后的新字典对象，包含映射后的键名和原值
+            dict: 转换后的新字典对象，包含映射后的键名和原值。
+            注意：mapper 与 mapper_list **都为空**时直接返回入参 `obj` 本身（不做复制），
+            调用方若需要独立副本请自行 copy。
         """
         if mapper is None and mapper_list is None:
             return obj
@@ -139,7 +141,7 @@ class CommonUtil:
         return str(obj)
 
     @staticmethod
-    def get_real_ip(request, trusted_proxies: Optional[list] = None) -> str:
+    def get_real_ip(request, trusted_proxies: Optional[list] = None) -> Optional[str]:
         """
         从HTTP请求中获取客户端的真实IP地址
 
@@ -151,7 +153,9 @@ class CommonUtil:
                 支持精确 IP 与 CIDR 前缀（如 172.16.0.0/12，覆盖 Docker 网关网段）
 
         Returns:
-            str: 客户端的真实IP地址
+            Optional[str]: 客户端的真实 IP 地址；`request.remote_addr` 为 None
+            （如非 TCP 传输、部分测试客户端）时同样返回 None，调用方需自行兜底
+            （限流/认证侧用 `or 'unknown'`）。
 
         X-Forwarded-For 解析规则（从右往左，跳过可信代理）：
             主流反向代理（nginx `$proxy_add_x_forwarded_for`、Traefik 等）采用**追加**

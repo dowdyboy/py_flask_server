@@ -184,14 +184,25 @@ def test_memory_dead_letter(fast_config):
     assert q.get_status(task_id)['status'] == STATUS_DEAD
     assert q.stats()['dead'] == 1
     letters = q.dead_letters()
-    assert letters and letters[-1]['id'] == task_id
-    assert letters[-1]['last_error'] == 'fatal'
+    assert letters and letters[0]['id'] == task_id
+    assert letters[0]['last_error'] == 'fatal'
     # 死信记录保留原参数，供人工排查/重放
-    assert letters[-1]['args'] == [1]
-    assert letters[-1]['kwargs'] == {'k': 'v'}
+    assert letters[0]['args'] == [1]
+    assert letters[0]['kwargs'] == {'k': 'v'}
     # 普通状态记录不携带参数（避免状态键膨胀）
     assert 'args' not in q.get_status(task_id)
     assert 'kwargs' not in q.get_status(task_id)
+
+
+def test_memory_dead_letters_are_newest_first(fast_config):
+    """内存后端死信顺序与 Redis 一致：最新在前（docs 的重放示例取 [0]）"""
+    q = MemoryTaskQueue()
+    for i in range(3):
+        q.enqueue('doomed', args=[i])
+        q.dead(q.reserve(timeout=0.5), error=f'e{i}')
+
+    assert [letter['last_error'] for letter in q.dead_letters()] == ['e2', 'e1', 'e0']
+    assert [letter['args'] for letter in q.dead_letters(limit=2)] == [[2], [1]]
 
 
 def test_memory_stats(fast_config):
@@ -199,7 +210,11 @@ def test_memory_stats(fast_config):
     q.enqueue('a')
     q.enqueue('b', delay=10)
     stats = q.stats()
-    assert stats['ready'] == 1 and stats['delayed'] == 1
+    # 与 Redis 后端同一组键（另加内存后端特有的 tracked），调用方无需按后端分支
+    assert set(stats) == {'ready', 'pending', 'delayed', 'dead', 'tracked'}
+    assert stats['ready'] == 1 and stats['delayed'] == 1 and stats['dead'] == 0
+    assert stats['pending'] == 0          # 内存后端没有可见性超时
+    assert stats['tracked'] == 2
 
 
 def test_memory_status_is_lru_capped(fast_config, monkeypatch):
@@ -392,7 +407,7 @@ def test_worker_dead_letters_after_max_retries(fast_config):
         assert _wait_until(lambda: q.get_status(task_id)['status'] == STATUS_DEAD, timeout=10)
         # 状态先落死信、计数随后累加，这里等计数（避免与 worker 线程竞态）
         assert _wait_until(lambda: worker.failed == 1, timeout=2)
-        assert q.dead_letters()[-1]['last_error'].startswith('ValueError')
+        assert q.dead_letters()[0]['last_error'].startswith('ValueError')
     finally:
         worker.stop()
 
@@ -405,7 +420,7 @@ def test_worker_dead_letters_unregistered_task(fast_config):
     worker = TaskWorker(queue=q, concurrency=1).start()
     try:
         assert _wait_until(lambda: q.get_status(task_id)['status'] == STATUS_DEAD, timeout=5)
-        assert 'not registered' in q.dead_letters()[-1]['last_error']
+        assert 'not registered' in q.dead_letters()[0]['last_error']
     finally:
         worker.stop()
 

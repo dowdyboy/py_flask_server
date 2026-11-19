@@ -34,14 +34,16 @@ async def async_run_func(func, **kwargs):
 
 def do_run_func(func, **kwargs):
     """
-    同步执行异步函数
+    阻塞执行一个可调用对象（在独立线程中跑，避免占用调用方的 asyncio/事件循环）
 
     Args:
-        func (coroutine): 需要执行的异步函数
-        **kwargs: 传递给异步函数的参数
+        func (callable): 需要执行的**普通可调用对象**（不是 coroutine 对象；
+            协程请用 asyncio.run / async_run_func）
+        **kwargs: 传递给 func 的关键字参数
 
     Raises:
-        RuntimeError: 如果异步函数执行失败
+        Exception: func 抛出的异常原样透出（asyncio.to_thread 会重新抛出，
+            这里不做任何包装——不要期待固定的 RuntimeError）
     """
     asyncio.run(async_run_func(func, **kwargs))
 
@@ -91,8 +93,9 @@ def do_run_cmd(cmd, extra_param, on_success, on_error):
     Args:
         cmd: 要执行的命令列表，例如 ['python', 'script.py']
         extra_param: 传递给回调函数的额外参数
-        on_success: 成功回调函数，接收参数 (extra_param, stdout)
-        on_error: 错误回调函数，接收参数 (extra_param, returncode, stderr)
+        on_success: 成功回调函数，接收参数 (extra_param, [stdout])
+        on_error: 错误回调函数，接收参数 (extra_param, [returncode, stderr])
+            —— 注意第二项是**列表**（与 async_run_command 的契约一致），不是两个位置参数
 
     Note:
         此函数是async_run_command的同步包装器，使用asyncio.run来运行异步函数
@@ -107,13 +110,19 @@ class BoundedExecutor:
     """
 
     def __init__(self, max_workers, max_pending):
+        self._max_workers = max_workers
         self._max_pending = max_pending
-        self._semaphore = threading.Semaphore(max_workers + max_pending)
+        # 信号量额度 = 线程池容量 + 排队上限：max_pending 是"等待执行"的额度，
+        # max_workers 是"正在执行"的额度，两者相加才是真正允许的未完成任务总数
+        self._limit = max_workers + max_pending
+        self._semaphore = threading.Semaphore(self._limit)
         self._executor = ThreadPoolExecutor(max_workers)
 
     def submit(self, fn, *args, **kwargs):
         if not self._semaphore.acquire(blocking=False):
-            Logger.warn(f'AsyncTask queue full (limit={self._max_pending}), task rejected')
+            # 报真实上限（修复前报的是 max_pending，排障时会对不上实际拒绝时的并发数）
+            Logger.warn(f'AsyncTask queue full (in-flight+pending limit={self._limit}), '
+                        'task rejected')
             return None
         try:
             future = self._executor.submit(fn, *args, **kwargs)
@@ -139,10 +148,14 @@ class AsyncTaskUtil:
         Args:
             cmd_arr (list): 要执行的命令及其参数列表
             extra_param (Any, optional): 传递给回调函数的额外参数
-            on_success (Callable, optional): 任务成功时的回调函数，格式为 (extra_param, stdout)
-            on_error (Callable, optional): 任务失败时的回调函数，格式为 (extra_param, returncode, stderr)
+            on_success (Callable, optional): 成功回调，格式为 (extra_param, [stdout])
+            on_error (Callable, optional): 失败回调，格式为 (extra_param, [returncode, stderr])
+
+        Returns:
+            concurrent.futures.Future | None: 提交成功返回 Future；队列已满返回 None
+            （调用方可据此降级，例如改为同步执行或返回 503）
         """
-        AsyncTaskUtil.executor.submit(
+        return AsyncTaskUtil.executor.submit(
             do_run_cmd, cmd_arr, extra_param, on_success, on_error
         )
 
@@ -165,7 +178,7 @@ class AsyncTaskUtil:
             parts = [p.strip('"') for p in shlex.split(cmd, posix=False)]
         else:
             parts = shlex.split(cmd)
-        AsyncTaskUtil.submit_cmd_task(
+        return AsyncTaskUtil.submit_cmd_task(
             parts,
             extra_param,
             on_success,
@@ -180,8 +193,11 @@ class AsyncTaskUtil:
         Args:
             func: 要执行的函数对象
             **kwargs: 传递给函数的命名参数
+
+        Returns:
+            concurrent.futures.Future | None: 提交成功返回 Future；队列已满返回 None
         """
-        AsyncTaskUtil.executor.submit(
+        return AsyncTaskUtil.executor.submit(
             do_run_func, func, **kwargs
         )
 

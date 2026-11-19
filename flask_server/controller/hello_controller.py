@@ -14,11 +14,12 @@ Logger.info("hello_controller.py loaded")
 _start_time = time.time()
 
 # 依赖检查结果缓存：探针高频轮询时避免每次真实连库/连 Redis。
-# 仅非 debug 模式启用（与 webui_controller 的静态缓存同模式，保证开发/测试实时）。
-# readyz（就绪探针）保持实时检查，不受此缓存影响。
-_HEALTH_CACHE_TTL = 5
+# 进程级共享（模块级字典）：这是刻意的已知单例，同进程多个 app 会共用同一份结果。
+# 是否启用缓存改由**请求期**判断（TESTING / debug），不再在导入期按 config.debug 决定——
+# 导入期决策会让 create_app(framework_config=Config({'debug': True})) 无法关闭缓存。
+_health_cache_ttl = 5
 _health_cache = {'ts': 0.0, 'db': 'ok', 'redis': 'ok'}
-_health_cache_lock = threading.Lock() if not config.debug else None
+_health_cache_lock = threading.Lock()
 
 
 # === @app.route 风格（最简示例，无校验无文档） ===
@@ -70,24 +71,25 @@ class HealthzView(MethodView):
 def _check_dependencies():
     """实时检查 DB/Redis 连通性，返回 (db_ok, redis_ok)。
 
-    非 debug / 非测试模式下结果缓存 _HEALTH_CACHE_TTL 秒，避免探针高频轮询压垮依赖。
+    非 debug / 非测试模式下结果缓存 _health_cache_TTL 秒，避免探针高频轮询压垮依赖。
     """
-    # debug 或 TESTING 模式（开发/测试）不缓存，保证每次真实探测
-    testing = has_app_context() and current_app.config.get('TESTING')
-    if _health_cache_lock is None or testing:
-        return _live_db_check(), _live_redis_check()
+    # debug 或 TESTING 模式（开发/测试）不缓存，保证每次真实探测。
+    # 这里读的是**当前 app** 的 debug 标志，而不是导入期的 config.debug。
+    cached_ok = has_app_context() and not (current_app.config.get('TESTING') or current_app.debug)
 
     now = time.time()
-    with _health_cache_lock:
-        if now - _health_cache['ts'] < _HEALTH_CACHE_TTL:
-            return _health_cache['db'] == 'ok', _health_cache['redis'] == 'ok'
+    if cached_ok:
+        with _health_cache_lock:
+            if now - _health_cache['ts'] < _health_cache_ttl:
+                return _health_cache['db'] == 'ok', _health_cache['redis'] == 'ok'
 
     db_ok = _live_db_check()
     redis_ok = _live_redis_check()
-    with _health_cache_lock:
-        _health_cache['ts'] = now
-        _health_cache['db'] = 'ok' if db_ok else 'error'
-        _health_cache['redis'] = 'ok' if redis_ok else 'error'
+    if cached_ok:
+        with _health_cache_lock:
+            _health_cache['ts'] = now
+            _health_cache['db'] = 'ok' if db_ok else 'error'
+            _health_cache['redis'] = 'ok' if redis_ok else 'error'
     return db_ok, redis_ok
 
 
@@ -101,8 +103,10 @@ def _live_db_check():
         with db.engine.connect() as conn:
             conn.execute(db.text('SELECT 1'))
         return True
-    except Exception:
-        Logger.warn('health db check failed', exc_info=True)
+    except Exception as e:
+        # 不带 exc_info：探针每几秒就跑一次，DB 故障（含"app 未绑定 SQLAlchemy"这类
+        # 多实例场景）会持续刷完整 traceback，把真正的告警淹掉。异常摘要已足够定位。
+        Logger.warn(f'health db check failed: {e}')
         return False
 
 
@@ -113,8 +117,8 @@ def _live_redis_check():
         return True   # 未配置 Redis 视为通过
     try:
         return bool(redis_cache.ping())
-    except Exception:
-        Logger.warn('health redis check failed', exc_info=True)
+    except Exception as e:
+        Logger.warn(f'health redis check failed: {e}')
         return False
 
 
@@ -125,31 +129,17 @@ class ReadyzView(MethodView):
         """就绪探针（readiness）：依赖故障时返回 503（供容器/编排系统判定就绪）"""
         status = {'status': 'ready'}
 
-        # 检查数据库连通性
-        from flask_server.module import sqlalchemy
-        db = sqlalchemy()
-        if db is not None:
-            try:
-                with db.engine.connect() as conn:
-                    conn.execute(db.text('SELECT 1'))
-                status['db'] = 'ok'
-            except Exception:
-                status['db'] = 'error'
-                return GraceResult.business_error(5030, 'dependency not ready', status), 503
-
-        # 检查 Redis 连通性（尊重冷却逻辑，故障期间快速返回 error）
-        from flask_server.module import redis_cache
+        # 直接复用 health 的探测实现（不经过缓存）：修复前这里内联复制了一份逻辑，
+        # 且失败分支一行日志都不记，两处实现必然继续漂移。
+        from flask_server.module import redis_cache, sqlalchemy
+        db_ok = _live_db_check()
+        redis_ok = _live_redis_check()
+        if sqlalchemy() is not None:
+            status['db'] = 'ok' if db_ok else 'error'
         if redis_cache is not None:
-            try:
-                if redis_cache.ping():
-                    status['redis'] = 'ok'
-                else:
-                    status['redis'] = 'error'
-                    return GraceResult.business_error(5030, 'dependency not ready', status), 503
-            except Exception:
-                status['redis'] = 'error'
-                return GraceResult.business_error(5030, 'dependency not ready', status), 503
-
+            status['redis'] = 'ok' if redis_ok else 'error'
+        if not db_ok or not redis_ok:
+            return GraceResult.business_error(5030, 'dependency not ready', status), 503
         return GraceResult.ok(status)
 
 

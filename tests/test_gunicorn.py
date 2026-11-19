@@ -30,13 +30,29 @@ def test_build_options_default(monkeypatch):
     assert '5000' in options['bind']
 
 
-def test_worker_class_eventlet_when_socketio(monkeypatch):
-    """SOCKETIO_ENABLED=true 时应使用 eventlet worker（WebSocket 支持）"""
+def test_worker_class_eventlet_only_when_async_mode_eventlet(monkeypatch):
+    """只有 SOCKETIO_ENABLED=true **且** SOCKETIO_ASYNC_MODE=eventlet 才用 eventlet worker。
+
+    回归：修复前只看 SOCKETIO_ENABLED 就返回 eventlet，导致默认组合
+    （enabled + threading）也走 eventlet 分支；eventlet 是可选依赖，未安装时
+    gunicorn 加载 worker class 直接失败，整个入口起不来。
+    """
     mod = _load_module(monkeypatch)
-    monkeypatch.setattr(mod.config, 'socketio_enabled', True)
-    assert mod._worker_class() == 'eventlet'
+    # 关闭 → sync
     monkeypatch.setattr(mod.config, 'socketio_enabled', False)
+    monkeypatch.setattr(mod.config, 'socketio_async_mode', 'eventlet')
     assert mod._worker_class() == 'sync'
+    # 开启但 threading 模式 → sync（不需要 eventlet）
+    monkeypatch.setattr(mod.config, 'socketio_enabled', True)
+    monkeypatch.setattr(mod.config, 'socketio_async_mode', 'threading')
+    assert mod._worker_class() == 'sync'
+    # 开启 + eventlet 模式 + eventlet 未安装 → 降级 sync（不炸掉入口）
+    monkeypatch.setattr(mod.config, 'socketio_async_mode', 'eventlet')
+    monkeypatch.setattr(mod.importlib.util, 'find_spec', lambda name: None)
+    assert mod._worker_class() == 'sync'
+    # 开启 + eventlet 模式 + eventlet 已安装 → eventlet worker
+    monkeypatch.setattr(mod.importlib.util, 'find_spec', lambda name: object())
+    assert mod._worker_class() == 'eventlet'
 
 
 def test_build_options_includes_post_worker_init(monkeypatch):
@@ -61,6 +77,26 @@ def test_multi_worker_skips_protocol_servers(monkeypatch):
     for age in range(4):
         hook(_FakeWorker(age=age))
     assert calls == [], '多 worker 下不应尝试绑定协议端口'
+
+
+def test_multi_worker_warns_exactly_once(monkeypatch):
+    """多 worker 跳过协议服务器时**只告警一次**。
+
+    回归：修复前用 `getattr(worker, 'age', 1) == 0` 判断"0 号 worker"，但 gunicorn 的
+    age 是递增派生计数（首个 worker 已是 1），该条件永不成立 → 告警永远不打印。
+    现在改用闭包标志，与 age 语义解耦。
+    """
+    mod = _load_module(monkeypatch)
+    warns = []
+    import flask_server.util as util_mod
+    monkeypatch.setattr(util_mod.Logger, 'warn',
+                        staticmethod(lambda msg, **kw: warns.append(msg)))
+
+    hook = mod._make_post_worker_init(4)
+    for _ in range(4):
+        hook(_FakeWorker())
+    assert len(warns) == 1, f'应只告警一次，实际 {len(warns)} 次'
+    assert 'not started with multiple gunicorn workers' in warns[0]
 
 
 def test_single_worker_starts_protocol_servers(monkeypatch):

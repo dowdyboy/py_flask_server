@@ -13,13 +13,22 @@ def _mask_uri(uri):
 
 Logger.info(f'SQLALCHEMY_DATABASE_URI : {_mask_uri(config.sqlalchemy_uri)}')
 
-db: SQLAlchemy = None
-migrate: Migrate = None
-_app = None   # 初始化时绑定的 Flask app（单应用场景）
+db = None         # SQLAlchemy 实例（进程级单例；首次 init_SQLAlchemy 时创建）
+migrate = None    # Migrate 实例
+_app = None       # 初始化时绑定的 Flask app（单应用场景）
 
 
 # 初始化SQLAlchemy对象，并根据配置决定是否反射数据库表结构
 def init_SQLAlchemy(app, cfg=None):
+    """为进程绑定唯一的 SQLAlchemy 实例（**进程级单例**）。
+
+    已知约束（刻意，不是 bug）：Flask-SQLAlchemy 的扩展对象只能 `init_app` 一次绑定，
+    因此同一进程内 create_app() 多次调用时：
+      - 第一次带 SQLALCHEMY_URI 的调用完成绑定，`_app` 固定为它；
+      - 后续 app 即使注入了不同的 URI/池参数也会被忽略，且**不会被注册**，
+        其请求内访问 db.engine 会抛 RuntimeError（health 探针会显示 db=error）。
+    需要同时跑多个不同数据库的应用实例，请用多进程部署。
+    """
     global db, _app
     cfg = cfg if cfg is not None else config
     # 已初始化：进程级单例直接复用（create_app() 二次调用时不得把它重置为 None，
@@ -33,12 +42,22 @@ def init_SQLAlchemy(app, cfg=None):
     app.config['SQLALCHEMY_DATABASE_URI'] = cfg.sqlalchemy_uri
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = cfg.sqlalchemy_track_modify
     # S3: 数据库连接池参数
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'pool_size': cfg.db_pool_size,
-        'pool_recycle': cfg.db_pool_recycle,
-        'pool_pre_ping': cfg.db_pool_pre_ping,
-        'pool_timeout': cfg.db_pool_timeout,
-    }
+    # 只对 QueuePool 族生效：sqlite:///:memory: 用的是 StaticPool/SingletonThreadPool，
+    # 传 pool_size/pool_timeout 会让 create_engine 直接抛 TypeError（应用导入即崩溃）。
+    # 这里按后端判断，非池化后端（SQLite）只保留 pool_pre_ping。
+    _backend = (cfg.sqlalchemy_uri or '').split(':', 1)[0].lower()
+    if _backend.startswith('sqlite'):
+        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+            'pool_pre_ping': cfg.db_pool_pre_ping,
+        }
+    else:
+        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+            'pool_size': cfg.db_pool_size,
+            'pool_recycle': cfg.db_pool_recycle,
+            'pool_pre_ping': cfg.db_pool_pre_ping,
+            'pool_timeout': cfg.db_pool_timeout,
+        }
+    # 必须在上面所有 app.config 赋值之后创建扩展：SQLAlchemy(app) 会立即读这些配置建 engine
     db = SQLAlchemy(app)
     if cfg.db_reflect_on_start:
         # 容错：反射失败（如 DB 短暂不可达）不应导致应用启动崩溃，

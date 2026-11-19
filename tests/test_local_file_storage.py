@@ -141,3 +141,43 @@ def test_delete_directory(storage):
     storage.save('dir/a.txt', b'x')
     storage.delete('dir')
     assert not storage.exists('dir')
+
+
+@pytest.mark.parametrize('path', ['.', '', './', 'sub/..'])
+def test_mutation_on_storage_root_refused(storage, path):
+    """变更类操作一律拒绝"存储根自身"。
+
+    回归：修复前 _gen_final_path 显式放行根目录，delete('.') 会把整个存储根交给
+    shutil.rmtree —— 一次请求就能删空 storage。
+    """
+    storage.save('keep.txt', b'important')
+    with pytest.raises(ValueError, match='storage root'):
+        storage.delete(path)
+    # 根目录与其内容必须完好
+    assert storage.exists('keep.txt')
+
+
+def test_copy_root_refused(storage):
+    """copy 的源/目标同样拒绝根目录（否则会复制整个存储根）"""
+    storage.save('a.txt', b'x')
+    with pytest.raises(ValueError, match='storage root'):
+        storage.copy('.', 'dst')
+    with pytest.raises(ValueError, match='storage root'):
+        storage.copy('a.txt', '.')
+
+
+def test_move_root_refused(storage):
+    storage.save('a.txt', b'x')
+    with pytest.raises(ValueError, match='storage root'):
+        storage.move('.', 'dst')
+
+
+def test_save_root_refused(storage):
+    with pytest.raises(ValueError, match='storage root'):
+        storage.save('.', b'x')
+
+
+def test_read_operations_still_allow_root(storage):
+    """只读操作不受影响：resolve_path('.') 仍可解析（供下载/校验等场景使用）"""
+    resolved = storage.resolve_path('.')
+    assert resolved == os.path.realpath(str(storage.root_path))

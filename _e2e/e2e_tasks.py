@@ -1,14 +1,12 @@
 """任务队列端到端测试：内存后端语义、worker 生命周期、真实 Redis、CLI、内嵌 worker。"""
 
-import json
 import os
 import time
 import uuid
-from pathlib import Path
 
 from common import (
     Results, Server, TMP_DIR, base_env, cleanup_redis, dump_exception, free_port,
-    get_json, install_probe_modules, redis_url, remove_probe_modules, run_py, run_script,
+    install_probe_modules, redis_url, remove_probe_modules, run_py, run_script,
 )
 
 os.environ.update(base_env())
@@ -47,7 +45,7 @@ def _restore_config(saved):
 
 def test_memory_queue_semantics():
     from flask_server.module.task_queue import (
-        MemoryTaskQueue, TaskNotFound, TaskQueueUnavailable, reset_task_queue,
+        MemoryTaskQueue, TaskNotFound, reset_task_queue,
         enqueue_task, get_task_status, task_queue_stats, registry, task,
     )
 
@@ -127,7 +125,8 @@ def test_memory_queue_semantics():
         q3.dead(r, f'e{i}')
     letters = q3.dead_letters()
     R.eq('死信上限 2', len(letters), 2)
-    R.eq('死信保留最新一条', letters[-1]['last_error'], 'e2')
+    # dead_letters() 统一为"最新在前"（与 Redis 后端一致），所以最新一条是 [0]
+    R.eq('死信保留最新一条', letters[0]['last_error'], 'e2')
 
     # 关闭后不再出队
     q4 = MemoryTaskQueue()
@@ -264,7 +263,7 @@ def test_redis_queue_semantics():
         print('  SKIP  Redis 未配置，跳过 Redis 队列测试')
         return
     from flask_server.module.task_queue import (
-        RedisTaskQueue, TaskNotFound, TaskQueueUnavailable,
+        RedisTaskQueue, TaskNotFound,
     )
 
     stream = f'e2e:tasks:{uuid.uuid4().hex[:8]}'
@@ -411,7 +410,7 @@ def test_worker_cli():
     if not URL:
         print('  SKIP  Redis 未配置，跳过 worker CLI 测试')
         return
-    from flask_server.module.task_queue import RedisTaskQueue, TaskNotFound
+    from flask_server.module.task_queue import RedisTaskQueue
 
     stream = f'e2e:cli:{uuid.uuid4().hex[:8]}'
     group = f'e2e-cg-{uuid.uuid4().hex[:6]}'

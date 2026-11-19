@@ -160,8 +160,22 @@ def step_migrate(args):
         step_ok(f'migrations: `user` table present on real MySQL ({url.database})')
         return
     migrations_dir = os.path.join(PROJECT_ROOT, 'migrations')
+    alembic_ini = os.path.join(PROJECT_ROOT, 'alembic.ini')
+    # 安全护栏：migrations/ 是项目的迁移历史（可能已提交、需要评审/回滚）。
+    # 修复前这里无条件 shutil.rmtree(migrations) 并在 finally 里删掉 alembic.ini，
+    # 在真实项目上跑一次 make verify 就会毁掉整条迁移链。现在默认拒绝覆盖已有产物，
+    # 只有显式 --force-migrations 才允许删除。
+    if (os.path.exists(migrations_dir) or os.path.exists(alembic_ini)) \
+            and not args.force_migrations:
+        raise RuntimeError(
+            'migrations/ 或 alembic.ini 已存在，拒绝覆盖（本步骤会 init/migrate/upgrade 并清理现场，'
+            '可能删除已有迁移历史）。确认可以删除请加 --force-migrations；'
+            '若只是验证建表，可等 user 表存在后本步骤会自动跳过。')
+    # 只清理"本次运行新生成"的产物，不碰用户已有文件
+    created_migrations = not os.path.exists(migrations_dir)
+    created_alembic = not os.path.exists(alembic_ini)
     if os.path.exists(migrations_dir):
-        shutil.rmtree(migrations_dir)
+        shutil.rmtree(migrations_dir)   # 仅在 --force-migrations 下可达
     try:
         for cmd, label in (
             (['init'], 'flask db init'),
@@ -180,7 +194,14 @@ def step_migrate(args):
         step_ok(f'migrations: `user` table created on real MySQL ({url.database})')
     finally:
         if not args.keep_migrations:
-            for p in ('migrations', 'alembic.ini'):
+            # 只删本次运行新建的文件（created_* 为 False 时说明是 --force-migrations 覆盖的
+            # 用户产物，清理前已由其显式授权，这里仍按原行为清理，但需分别判断）
+            for p, created in (
+                ('migrations', created_migrations),
+                ('alembic.ini', created_alembic),
+            ):
+                if not created:
+                    continue
                 full = os.path.join(PROJECT_ROOT, p)
                 if os.path.isdir(full):
                     shutil.rmtree(full)
@@ -426,6 +447,9 @@ def main():
     parser.add_argument('--skip-reflect', action='store_true', help='跳过反射容错冒烟')
     parser.add_argument('--skip-boot', action='store_true', help='跳过 server.py 启动冒烟')
     parser.add_argument('--keep-migrations', action='store_true', help='保留 migrations/ 目录')
+    parser.add_argument('--force-migrations', action='store_true',
+                        help='允许覆盖已存在的 migrations/ 与 alembic.ini（会删除现有迁移历史，'
+                             '默认拒绝以免误删真实项目的迁移链）')
     parser.add_argument('--boot-port', type=int, default=5057, help='启动冒烟端口（默认 5057）')
     parser.add_argument('--reflect-db', default=None, help='反射测试临时库名（默认 应用库_reflect）')
     parser.add_argument('--reflect-port', type=int, default=5058, help='反射冒烟端口（默认 5058）')
@@ -483,7 +507,7 @@ def main():
 
         print()
         print(f'[PASS] 全部步骤通过: {", ".join(steps)}')
-        print(f'       测试库: {args.test_db} / 应用库: {app_db}（均未改动 halo* 库）')
+        print(f'       测试库: {args.test_db} / 应用库: {app_db}（仅创建/清理测试相关库，未改动其它库）')
         sys.exit(0)
     except Exception as e:
         import traceback

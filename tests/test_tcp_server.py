@@ -309,6 +309,185 @@ def _start_head_tail_server(**kwargs):
     return _start_echo_server(framing='head_tail', **params)
 
 
+class _FakeConn:
+    """按块喂数据的伪连接（单测 _read_head_tail_frame 的跨块解析）"""
+
+    def __init__(self, chunks):
+        self._chunks = iter(chunks)
+        self.recv_calls = 0
+
+    def recv(self, n):
+        self.recv_calls += 1
+        return next(self._chunks, b'')
+
+
+def _head_tail_parser(head=b'\xaa', tail=b'\xbb', **kwargs):
+    """构造不启动的 head_tail 服务器（单测直接调用帧解析器）"""
+    params = dict(host='127.0.0.1', port=0, framing='head_tail',
+                  frame_head=head, frame_tail=tail)
+    params.update(kwargs)
+    return TcpServer(**params)
+
+
+def _drain_frames(server, chunks):
+    """把 chunks 依次喂给 _read_head_tail_frame（None 结束），返回 (帧列表, state, conn)"""
+    conn = _FakeConn(chunks)
+    buffer = bytearray()
+    state = {'resyncs': 0}
+    frames = []
+    while True:
+        data = server._read_head_tail_frame(conn, buffer, state)
+        if data is None:
+            break
+        frames.append(data)
+    return frames, state, conn
+
+
+def test_head_tail_frame_chunking_independent():
+    """回归（P0）：同一字节流按 1/2/3 包或逐字节投递，切出的帧必须完全一致。
+
+    修复前：帧头后尚未见到帧尾时，代码按"更靠后的帧头"重同步，把负载内合法的
+    帧头字节当成新帧起点——整帧一次到达切出 `a<HEAD>b`，分成 2/3 包或逐字节到达
+    却丢掉 `a<HEAD>` 只切出 `b`。现在帧 = 首个帧头 → 其后首个帧尾。
+    """
+    head, tail = b'\xaa\x55', b'\xbb'
+    stream = head + b'a' + head + b'b' + tail          # 一帧，负载 = b'a' + HEAD + b'b'
+    expected = [b'a' + head + b'b']
+    chunkings = {
+        '1 recv': [stream],
+        '2 recvs': [stream[:5], stream[5:]],           # HEAD+a+HEAD | b+TAIL
+        '3 recvs': [stream[:3], stream[3:5], stream[5:]],   # HEAD+a | HEAD | b+TAIL
+        'byte-by-byte': [stream[i:i + 1] for i in range(len(stream))],
+    }
+    results = {}
+    for name, chunks in chunkings.items():
+        frames, state, _ = _drain_frames(_head_tail_parser(head, tail), chunks)
+        results[name] = frames
+        assert frames == expected, f'{name} 投递切出的帧不一致: {frames!r}'
+        assert state['resyncs'] == 0                   # 合法流不消耗重同步额度
+    assert len({tuple(f) for f in results.values()}) == 1
+
+
+def test_head_tail_same_stream_different_packets_on_socket():
+    """回归（P0，真实连接）：同一字节流按 1/2/3 包发送，回调帧必须一致"""
+    head, tail = b'\xaa\x55', b'\xbb'
+    stream = head + b'a' + head + b'b' + tail
+    expected = b'a' + head + b'b'
+    patterns = [
+        [stream],                                      # 一包
+        [stream[:5], stream[5:]],                      # 包边界落在"内层帧头之后"，旧实现会丢帧
+        [stream[:3], stream[3:5], stream[5:]],         # 三包（内层帧头单独成包）
+    ]
+    for chunks in patterns:
+        server, port, records = _start_echo_server(
+            framing='head_tail', frame_head=head, frame_tail=tail)
+        try:
+            sock = _connect(port)
+            try:
+                for chunk in chunks:
+                    sock.sendall(chunk)
+                    time.sleep(0.05)      # 让每块落在不同的 recv（复现旧 bug 的分包）
+                assert _recv_exact(sock, len(b'echo: ' + expected)) == b'echo: ' + expected
+            finally:
+                sock.close()
+        finally:
+            server.stop()
+        assert records['messages'] == [expected], f'分包 {chunks!r} 的回调帧不一致'
+
+
+def test_head_tail_head_straddles_chunks():
+    """帧头本身被拆到两个 recv（\\xaa | \\x55...）仍能识别（含帧头前垃圾）"""
+    head, tail = b'\xaa\x55', b'\xbb'
+    frames, _, _ = _drain_frames(_head_tail_parser(head, tail), [b'\xaa', b'\x55hi\xbb'])
+    assert frames == [b'hi']
+    # 帧头前有垃圾且帧头跨块：垃圾丢弃、末尾半截帧头保留
+    frames, _, _ = _drain_frames(_head_tail_parser(head, tail), [b'junk\xaa', b'\x55hi\xbb'])
+    assert frames == [b'hi']
+
+
+def test_head_tail_junk_before_head_discarded():
+    """帧头前的垃圾字节丢弃；不完整的伪帧头（\\xaa 后不是 \\x55）按垃圾处理"""
+    head, tail = b'\xaa\x55', b'\xbb'
+    frames, _, _ = _drain_frames(
+        _head_tail_parser(head, tail), [b'junkjunk', head + b'hi' + tail])
+    assert frames == [b'hi']
+    frames, _, _ = _drain_frames(
+        _head_tail_parser(head, tail), [b'\xaajunk' + head + b'hi' + tail])
+    assert frames == [b'hi']
+
+
+def test_head_tail_payload_may_contain_head():
+    """负载内出现帧头字节是合法的：300 轮"帧头+帧头+负载+帧尾"稳定切出完整负载"""
+    server = _head_tail_parser(b'\xaa', b'\xbb')
+    chunks = []
+    for _ in range(300):
+        chunks.extend([b'\xaa', b'\xaay', b'\xbb'])
+    frames, state, _ = _drain_frames(server, chunks)
+    assert len(frames) == 300
+    assert all(f == b'\xaay' for f in frames)   # 内层帧头属于负载，不再被丢弃
+    assert state['resyncs'] == 0                # 合法流不触发重同步
+
+
+def test_head_tail_multiple_frames_in_one_buffer():
+    """粘包：一次缓冲内的多帧按顺序切出（帧间垃圾丢弃、空负载帧保留）"""
+    head, tail = b'\xaa\x55', b'\xbb'
+    stream = head + b'a' + tail + b'junk' + head + b'b' + tail + head + tail
+    frames, _, _ = _drain_frames(_head_tail_parser(head, tail), [stream])
+    assert frames == [b'a', b'b', b'']
+
+
+def test_head_tail_empty_payload_frame():
+    """帧头紧邻帧尾：回调空负载帧（心跳等信号帧，与 line 模式空帧跳过不同）"""
+    head, tail = b'\xaa\x55', b'\xbb'
+    frames, _, _ = _drain_frames(
+        _head_tail_parser(head, tail), [head + tail + head + b'x' + tail])
+    assert frames == [b'', b'x']
+
+
+def test_head_tail_max_length_payload_with_split_tail_ok():
+    """负载恰好达到上限且帧尾被拆包：不得误判超长（帧尾前缀不算负载）"""
+    head, tail = b'\xaa\x55', b'\x0d\x0a'
+    payload = b'12345678'                  # 恰好 8 字节 = 上限
+    frames, _, _ = _drain_frames(
+        _head_tail_parser(head, tail, max_message_length=8),
+        [head + payload + b'\x0d', b'\x0a'])
+    assert frames == [payload]
+
+
+def test_head_tail_oversized_without_tail_disconnects():
+    """超长且无帧尾、且没有可重同步的帧头 → 立即按协议错误断开（不继续缓冲）"""
+    server = _head_tail_parser(b'\xaa', b'\xbb', max_message_length=8)
+    conn = _FakeConn([b'\xaa' + b'x' * 20, b'more-data-without-a-head'])
+    buffer = bytearray()
+    state = {'resyncs': 0}
+    assert server._read_head_tail_frame(conn, buffer, state) is None
+    assert conn.recv_calls == 1      # 判定即断开：没有为了等下一个帧头再多读一块
+    assert state['resyncs'] == 0     # 无重同步点，不消耗额度
+
+
+def test_head_tail_corrupt_frame_resyncs_to_next_head():
+    """损坏帧（超长且缓冲中无帧尾）之后仍有帧头：按最后手段重同步，后续帧正常切出"""
+    head, tail = b'\xaa', b'\xbb'
+    server = _head_tail_parser(head, tail, max_message_length=8)
+    # 首块：帧头 + 超长垃圾 + 新帧头 + 负载；帧尾在下一块才到达
+    corrupt = head + b'x' * 20 + head + b'y'
+    frames, state, _ = _drain_frames(server, [corrupt, tail])
+    assert frames == [b'y']
+    assert state['resyncs'] == 0     # 成功切帧后计数重置（"连续损坏"语义）
+
+
+def test_head_tail_resync_cap_terminates():
+    """最后手段重同步仍受 256 次上限约束：持续损坏的流必定终止（不无限持有连接）"""
+    head, tail = b'\xaa', b'\xbb'
+    server = _head_tail_parser(head, tail, max_message_length=8)
+    # 每块 = 帧头 + 超长垃圾，块尾又是下一个帧头 → 每次超长判定都能重同步
+    conn = _FakeConn([(head + b'x' * 20) * 600])
+    buffer = bytearray()
+    state = {'resyncs': 0}
+    assert server._read_head_tail_frame(conn, buffer, state) is None
+    assert state['resyncs'] > 256
+
+
 def test_head_tail_strips_markers():
     """head_tail 模式：回调帧头帧尾之间的负载（剥离定界开销）"""
     server, port, records = _start_head_tail_server()
@@ -324,8 +503,8 @@ def test_head_tail_strips_markers():
     assert records['messages'] == [b'hello']
 
 
-def test_head_tail_garbage_resync():
-    """head_tail 模式：帧头前的垃圾字节自动丢弃（重同步）"""
+def test_head_tail_garbage_before_head_discarded():
+    """head_tail 模式：帧头前的垃圾字节（脏数据/半帧前缀）直接丢弃"""
     server, port, records = _start_head_tail_server()
     try:
         sock = _connect(port)
@@ -358,25 +537,29 @@ def test_head_tail_split_markers():
     assert records['messages'] == [b'hi']
 
 
-def test_head_tail_inner_head_resync():
-    """head_tail 模式：首帧帧尾缺失（流中断），新帧头出现 → 以更靠后的帧头重同步"""
+def test_head_tail_inner_head_stays_in_payload():
+    """head_tail 模式：负载内的帧头字节属于负载（不再按"更靠后的帧头"重同步）
+
+    旧实现：首帧未见到帧尾时把 `\\xaay` 当新帧起点，丢掉了 `abc\\xaa`；
+    新语义：帧 = 首个帧头 → 其后首个帧尾，与分包边界无关。
+    """
     server, port, records = _start_echo_server(
         framing='head_tail', frame_head=b'\xaa', frame_tail=b'\xbb')
     try:
         sock = _connect(port)
         try:
-            # 第一帧 \xaa+abc 帧尾缺失，随后第二帧 \xaa+y+\xbb 到达
-            sock.sendall(b'\xaaabc')          # 首帧无帧尾
+            sock.sendall(b'\xaaabc')          # 帧头 + 负载开头
             time.sleep(0.1)
-            sock.sendall(b'\xaay')            # 新的帧头出现 → 重同步到它
+            sock.sendall(b'\xaay')            # 负载内的帧头字节（旧实现会在此重同步）
             time.sleep(0.1)
             sock.sendall(b'\xbb')             # 帧尾到达
-            assert _recv_exact(sock, len(b'echo: y')) == b'echo: y'
+            expected = b'echo: abc\xaay'
+            assert _recv_exact(sock, len(expected)) == expected
         finally:
             sock.close()
     finally:
         server.stop()
-    assert records['messages'] == [b'y']
+    assert records['messages'] == [b'abc\xaay']
 
 
 def test_head_tail_multiple_frames():
@@ -396,12 +579,12 @@ def test_head_tail_multiple_frames():
 
 
 def test_head_tail_missing_tail_disconnects():
-    """head_tail 模式：帧尾缺失且超限 → 协议错误断开连接"""
+    """head_tail 模式：帧尾缺失、负载超限且无可重同步帧头 → 协议错误断开连接"""
     server, port, records = _start_head_tail_server(max_message_length=8)
     try:
         sock = _connect(port)
         try:
-            sock.sendall(b'\xaa\x55xxxxxxxxxx')   # 无帧尾且超限
+            sock.sendall(b'\xaa\x55xxxxxxxxxx')   # 无帧尾且超限（缓冲中再无帧头）
             sock.settimeout(5)
             received = b''
             while True:
@@ -409,10 +592,12 @@ def test_head_tail_missing_tail_disconnects():
                 if not chunk:
                     break
                 received += chunk
+            assert received == b''   # 未回显任何消息：连接已被服务端关闭
         finally:
             sock.close()
     finally:
         server.stop()
+    assert records['messages'] == []
     assert _wait_until(lambda: len(records['disconnect']) == 1)
 
 
@@ -552,50 +737,6 @@ def test_verify_request_slot_check():
         inner.server_close()   # 释放端口（未启动，仅关闭绑定）
 
 
-class _FakeConn:
-    """按块喂数据的伪连接（单测 _read_head_tail_frame 的跨块解析）"""
-
-    def __init__(self, chunks):
-        self._chunks = iter(chunks)
-
-    def recv(self, n):
-        return next(self._chunks, b'')
-
-
-def test_head_tail_resync_counter_resets_on_frame():
-    """重同步计数在成功切帧后重置（"连续未完成帧"语义）：
-    300 轮"孤儿帧头+垃圾（重同步 1 次）→ 完整帧（重置计数）"，连接不被误断"""
-    server = TcpServer(host='127.0.0.1', port=0, framing='head_tail',
-                       frame_head=b'\xaa', frame_tail=b'\xbb')
-    # 每轮三块：孤儿帧头 / 新帧头+负载 / 帧尾 —— 触发 1 次重同步 + 1 次成功切帧
-    chunks = []
-    for _ in range(300):
-        chunks.extend([b'\xaa', b'\xaay', b'\xbb'])
-    conn = _FakeConn(chunks)
-    buffer = bytearray()
-    state = {'resyncs': 0}
-    frames = []
-    while True:
-        data = server._read_head_tail_frame(conn, buffer, state)
-        if data is None:
-            break
-        frames.append(data)
-    assert len(frames) == 300, f'修复前累计计数在第 257 轮断开，实际切出 {len(frames)} 帧'
-    assert all(f == b'y' for f in frames)
-
-
-def test_head_tail_resync_cap_still_disconnects_without_frames():
-    """攻击模式（永不完成帧）：计数持续增长，256 上限照常断开（重置不影响攻击防护）"""
-    server = TcpServer(host='127.0.0.1', port=0, framing='head_tail',
-                       frame_head=b'\xaa', frame_tail=b'\xbb')
-    conn = _FakeConn([b'\xaa\xaajunk' for _ in range(600)])
-    buffer = bytearray()
-    state = {'resyncs': 0}
-    data = server._read_head_tail_frame(conn, buffer, state)
-    assert data is None   # 重同步超限断开
-    assert state['resyncs'] > 256
-
-
 def test_oversized_frame_in_single_packet_disconnects():
     """line 模式：分隔符与超长帧同包到达也断开（硬上限，无 recv 块粒度窗口）"""
     server, port, records = _start_echo_server(max_message_length=8)
@@ -643,31 +784,38 @@ def test_head_tail_oversized_payload_disconnects():
     assert _wait_until(lambda: len(records['disconnect']) == 1)
 
 
-def test_head_tail_resync_cap_disconnects():
-    """head_tail 模式：反复"帧头+垃圾"重同步超上限 → 断开连接（防无限持有）"""
+def test_head_tail_corrupt_stream_disconnects_on_socket():
+    """head_tail 模式：持续"帧头+超长垃圾"的损坏流 → 服务端主动断开（防无限持有）
+
+    每条消息都是"帧头 + 超长无帧尾"，块尾再留一个帧头：损坏判定必然触发，随后或按
+    "最后手段"重同步累计到上限，或因缓冲中已无帧头直接断开——两条路径都必须断开。
+    """
     server, port, records = _start_echo_server(
-        framing='head_tail', frame_head=b'\xaa', frame_tail=b'\xbb')
+        framing='head_tail', frame_head=b'\xaa', frame_tail=b'\xbb', max_message_length=8)
+    unit = b'\xaa' + b'x' * 10 + b'\xaa'   # 超长无帧尾，块尾留有下一个帧头
     try:
         sock = _connect(port)
         try:
             for _ in range(600):
                 try:
-                    sock.sendall(b'\xaajunk')
+                    sock.sendall(unit)
                 except OSError:
                     break   # 服务端已断开
+                if records['disconnect']:
+                    break
                 time.sleep(0.001)
+            assert _wait_until(lambda: len(records['disconnect']) == 1), '损坏流未断开连接'
             sock.settimeout(5)
             try:
                 data = sock.recv(1024)
             except OSError:
-                data = b''
+                data = b''   # 服务端关闭时可能以 RST 通知（Windows: WinError 10053）
             assert data == b''
         finally:
             sock.close()
     finally:
         server.stop()
     assert records['messages'] == []
-    assert _wait_until(lambda: len(records['disconnect']) == 1)
 
 
 # ---------------- 空闲连接超时（慢连接耗尽 DoS 防护） ----------------

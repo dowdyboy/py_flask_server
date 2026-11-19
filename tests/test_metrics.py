@@ -133,3 +133,34 @@ def test_metrics_single_process_path_when_not_configured(client, monkeypatch):
 
     monkeypatch.setattr(metrics_module, '_multiprocess_registry', boom)
     assert client.get('/metrics').status_code == 200
+
+
+def test_metrics_content_type_has_single_charset(client):
+    """/metrics 的 Content-Type 只能有一个 charset。
+
+    回归：用 `Response(payload, mimetype=CONTENT_TYPE_LATEST)` 会被 Werkzeug 再补一个
+    charset，得到 `text/plain; version=1.0.0; charset=utf-8; charset=utf-8`。
+    """
+    ctype = client.get('/metrics').headers.get('Content-Type')
+    assert ctype is not None
+    assert ctype.count('charset') == 1, ctype
+    assert 'text/plain' in ctype
+
+
+def test_metrics_returns_503_when_prometheus_client_missing(client, monkeypatch):
+    """依赖缺失时 /metrics 必须 503（采集端据此区分"路径写错"与"未启用"）"""
+    from flask_server.component import metrics as metrics_module
+    monkeypatch.setattr(metrics_module, '_METRICS_AVAILABLE', False)
+    assert client.get('/metrics').status_code == 503
+
+
+def test_metrics_route_registered_even_without_dependency(monkeypatch):
+    """init_metrics 在依赖缺失时也要注册路由，否则 /metrics 是 404 而非承诺的 503"""
+    from flask import Flask
+    from flask_server.component import metrics as metrics_module
+
+    monkeypatch.setattr(metrics_module, '_METRICS_AVAILABLE', False)
+    app = Flask(__name__)
+    metrics_module.init_metrics(app)
+    assert 'metrics' in app.view_functions
+    assert app.test_client().get('/metrics').status_code == 503

@@ -208,6 +208,14 @@ def http_exception_handler(e):
         Logger.error(f'http_exception_handler : {e}', exc_info=True)
     if e.code == 404:
         return GraceResult.error(data='资源不存在'), 404
+    # 参数类客户端错误（如 webargs 的 400 invalid JSON / 缺字段）会附带字段级 messages。
+    # 这类错误的业务码应与 422 保持一致（code=1001 参数错误 + data=messages），
+    # 而不是落到下面通用分支被标成 -1（内部错误）——否则客户端无法区分"我发错了"和"服务端炸了"。
+    err_data = getattr(e, 'data', None)
+    if isinstance(err_data, dict):
+        messages = err_data.get('messages') or err_data.get('errors')
+        if messages:
+            return GraceResult.param_error(data=messages), e.code
     # 5xx 脱敏：只回显通用消息；4xx 客户端错误信息可安全回显，
     # 但只回显 description（去掉 "405 Method Not Allowed:" 这类英文前缀长句，保持响应文案简洁）
     if e.code is not None and e.code < 500:
@@ -220,8 +228,10 @@ def http_exception_handler(e):
 @json_response
 def unprocessable_entity_handler(e):
     # 参数校验失败（flask-smorest/webargs 422）：统一为 GraceResult 格式，
-    # 保留字段级错误信息供客户端定位问题
-    Logger.error(f'unprocessable_entity_handler : {e}', exc_info=True)
+    # 保留字段级错误信息供客户端定位问题。
+    # 记 WARNING 且不带 traceback：这是客户端错误，与 http_exception_handler 的 4xx
+    # 一致；否则客户端每次发错参数都会产生一条 ERROR+traceback，易刷屏并触发误告警。
+    Logger.warn(f'unprocessable_entity_handler : {e}')
     data = getattr(e, 'data', None) or {}
     errors = data.get('messages') or data.get('errors')
     return GraceResult.param_error(data=errors), 422
@@ -229,7 +239,8 @@ def unprocessable_entity_handler(e):
 
 @json_response
 def param_exception_handler(e):
-    Logger.error(f'param_exception_handler : {e}', exc_info=True)
+    # 视图按字段取值时抛的 KeyError（缺少 payload 字段）→ 400 参数错误，同属客户端错误
+    Logger.warn(f'param_exception_handler : {e}')
     return GraceResult.param_error(data=str(e)), 400
 
 
@@ -332,14 +343,19 @@ def create_app(app_config=None, framework_config=None):
     cfg = framework_config if framework_config is not None else default_config
 
     app = Flask(__name__)
+    # app_config 必须在任何装配之前合并：Api / SQLAlchemy / SocketIO / 组件开关都在
+    # 装配期读 app.config，放在 create_app 末尾合并对它们完全不生效（历史缺陷）。
+    app_config = dict(app_config or {})
+    app.config.update(app_config)
     # 先落配置：组件注册与请求期钩子都从这里解析（必须早于任何装配）
     app.extensions[CONFIG_EXT_KEY] = cfg
 
     CORS(app, origins=cfg.cors_origins)
 
-    # 安全配置
-    app.config['SECRET_KEY'] = cfg.secret_key
-    app.config['MAX_CONTENT_LENGTH'] = cfg.max_content_length
+    # 安全配置：framework_config 派生值，但 app_config 显式指定时以其为准
+    # （保持旧的"后写覆盖"语义，便于测试/调用方覆盖 SECRET_KEY 等）
+    app.config['SECRET_KEY'] = app_config.get('SECRET_KEY', cfg.secret_key)
+    app.config['MAX_CONTENT_LENGTH'] = app_config.get('MAX_CONTENT_LENGTH', cfg.max_content_length)
 
     # 非 development 环境使用默认 SECRET_KEY 时告警（生产环境必须修改）
     if cfg.app_env != 'development' and cfg.secret_key_is_default:
@@ -368,9 +384,6 @@ def create_app(app_config=None, framework_config=None):
     # 组件按 限流 → 认证 → 指标 的顺序注册（与历史 import 顺序一致，决定 before_request 执行序）
     init_components(app, cfg)
     register_controllers(app, api)
-
-    if app_config:
-        app.config.update(app_config)
 
     # 便于调用方拿到与本 app 绑定的扩展对象（不依赖模块级全局）
     app.api = api

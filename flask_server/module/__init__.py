@@ -40,10 +40,18 @@ def start_protocol_servers():
     """
     from ..util import Logger
     started = []
-    if config.tcp_enabled and tcp_server.start():
-        started.append('tcp')
-    if config.udp_enabled and udp_server.start():
-        started.append('udp')
+    try:
+        if config.tcp_enabled and tcp_server.start():
+            started.append('tcp')
+        if config.udp_enabled and udp_server.start():
+            started.append('udp')
+    except BaseException:
+        # 部分成功不做回滚时，TCP 已在监听而 UDP bind 失败会把异常抛给入口，
+        # 进程带着一个"半启动"的协议服务器退出。先回滚已启动的再上抛。
+        for name in started:
+            (tcp_server if name == 'tcp' else udp_server).stop()
+        Logger.error(f'protocol servers start failed, rolled back: {", ".join(started) or "none"}')
+        raise
     if started:
         Logger.info(f'protocol servers started: {", ".join(started)}')
     return started
@@ -75,4 +83,14 @@ def start_embedded_task_worker(app=None):
     if not config.redis_url:
         Logger.warn('TASK_WORKER_EMBEDDED=true 且未配置 REDIS_URL：使用进程内内存队列，'
                     '只有本进程入队的任务会被消费（多 worker 部署请改用 scripts/worker.py + Redis）')
-    return TaskWorker(app=app).start()
+    # 任务子系统的可用性问题不能拖死 Web 进程：Redis 配置了但启动瞬间不可达时，
+    # get_task_queue() → RedisTaskQueue.__init__ 会抛 TaskQueueUnavailable。
+    # 修复前该异常从 server.py / wsgi.py 的入口直接逃逸 → 进程退出 → 容器重启循环。
+    # 这里降级为"不启动内嵌 worker 并明确告警"，HTTP 服务照常可用（与缓存降级策略一致）。
+    from .task_queue import TaskQueueUnavailable
+    try:
+        return TaskWorker(app=app).start()
+    except TaskQueueUnavailable as e:
+        Logger.error('内嵌任务 worker 未启动（任务队列不可用），HTTP 服务继续运行：'
+                     f'{e}')
+        return None

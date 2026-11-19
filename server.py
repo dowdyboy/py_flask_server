@@ -22,7 +22,8 @@ def should_start_protocol_servers():
 
 if __name__ == '__main__':
     # 启动服务（开发调试）
-    print_startup_banner()
+    # 单进程 dev server：显式 worker_num=1，避免读 WORKER_NUM 误报多 worker 告警
+    print_startup_banner(worker_num=1)
     # 启动 TCP/UDP 协议服务器（TCP_ENABLED / UDP_ENABLED 为 true 时生效；
     # debug+reloader 模式下仅真实服务进程启动，避免父子进程端口冲突）
     if should_start_protocol_servers():

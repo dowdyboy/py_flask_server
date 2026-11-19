@@ -25,6 +25,19 @@ class LocalFileStorage:
             )
         return final_path
 
+    def _gen_mutation_path(self, path):
+        """变更类操作（save/copy/move/delete）的路径校验：额外拒绝"存储根自身"。
+
+        修复前 _gen_final_path 显式放行了根目录（`final_path != root_real` 为合法），
+        于是 delete('.') / delete('') 会把存储根交给 shutil.rmtree —— 一次输入就能删空
+        整个 storage。任何变更类操作针对根都是误用，这里一律拒绝。
+        """
+        final_path = self._gen_final_path(path)
+        if final_path == os.path.realpath(self.root_path):
+            raise ValueError(
+                f'refusing to operate on the storage root itself: {path!r}')
+        return final_path
+
     # 公开的路径解析接口：将存储相对路径解析为受校验的绝对路径（供外部按路径取用文件）
     def resolve_path(self, path, create_dirs=False):
         """解析相对路径为绝对路径（校验在存储根目录内，防路径穿越）。
@@ -43,7 +56,7 @@ class LocalFileStorage:
 
     # 存储到所配置的目录中
     def save(self, path, obj):
-        final_path = self._gen_final_path(path)
+        final_path = self._gen_mutation_path(path)
         if isinstance(obj, FileStorage):
             obj.save(str(final_path))
             return
@@ -75,8 +88,8 @@ class LocalFileStorage:
 
     # 复制文件或目录
     def copy(self, src_path, dst_path):
-        src_path = self._gen_final_path(src_path)
-        dst_path = self._gen_final_path(dst_path)
+        src_path = self._gen_mutation_path(src_path)
+        dst_path = self._gen_mutation_path(dst_path)
         if not os.path.exists(src_path):
             raise FileNotFoundError(f"{src_path} not exist")
         if os.path.isdir(src_path):
@@ -86,15 +99,15 @@ class LocalFileStorage:
 
     # 移动文件或目录
     def move(self, src_path, dst_path):
-        src_path = self._gen_final_path(src_path)
-        dst_path = self._gen_final_path(dst_path)
+        src_path = self._gen_mutation_path(src_path)
+        dst_path = self._gen_mutation_path(dst_path)
         if not os.path.exists(src_path):
             raise FileNotFoundError(f"{src_path} not exist")
         shutil.move(str(src_path), str(dst_path))
 
     # 删除文件或目录
     def delete(self, path):
-        path = self._gen_final_path(path)
+        path = self._gen_mutation_path(path)
         if not os.path.exists(path):
             raise FileNotFoundError(f"{path} not exist")
         if os.path.isdir(path):

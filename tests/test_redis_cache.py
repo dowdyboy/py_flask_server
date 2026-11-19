@@ -120,7 +120,7 @@ def test_exists_delete():
     c = _make_cache()
     c.set('k', 'v')
     assert c.exists('k')
-    c.delete('k')
+    assert c.delete('k') is True
     assert not c.exists('k')
 
 
@@ -204,11 +204,47 @@ def test_get_parse_failure_deletes_key():
     assert 'bad' not in client.store
 
 
+def test_get_cleanup_delete_error_still_returns_none():
+    """自愈 DELETE 失败（GET 与 DELETE 之间连接断开）不能破坏"异常返回 None"的契约"""
+    client = _FakeClient()
+    c = _make_cache(client)
+    client.store['bad'] = 'not-json{{{'
+
+    def broken_delete(key):
+        raise ConnectionError('down between GET and DELETE')
+
+    client.delete = broken_delete
+    assert c.get('bad') is None      # 不抛异常
+
+
 def test_delete_failure_enters_cooldown():
     client = _FakeClient(fail=True)
     c = _make_cache(client)
-    c.delete('k')                    # 不抛异常
+    assert c.delete('k') is False    # 不抛异常，但必须如实报告失败
     assert c._unavailable_until > 0
+
+
+def test_delete_bypasses_cooldown_and_still_reaches_redis():
+    """P0 回归：冷却期内 delete 不能短路——登出/吊销必须每次都真实送达主存储
+
+    修复前 delete 先 `_check()`，冷却期直接 return，登出静默失效：
+    Redis 恢复后旧 access/refresh token（TTL 7/30 天）重新生效。
+    """
+    client = _FakeClient()
+    c = _make_cache(client, cooldown=30)
+    client.store['auth:token:t'] = '"uid"'
+    c._unavailable_until = time.time() + 30      # 模拟刚发生故障、处于冷却期
+    c._need_recovery = True
+
+    assert c.delete('auth:token:t') is True
+    assert 'auth:token:t' not in client.store
+
+
+def test_delete_success_returns_true():
+    client = _FakeClient()
+    c = _make_cache(client)
+    c.set('k', 'v')
+    assert c.delete('k') is True
 
 
 def test_exists_failure_enters_cooldown():
@@ -311,6 +347,29 @@ def test_incr_corrupted_value_cleaned():
     client.pipeline = lambda: _WeirdPipeline()
     assert c.incr('cnt') is None
     assert 'cnt' not in client.store
+
+
+def test_incr_cleanup_delete_error_still_returns_none():
+    """INCR 损坏值的自愈 DELETE 失败也不能抛出（契约：失败返回 None）"""
+    class _WeirdPipeline:
+        def incr(self, key):
+            return self
+
+        def expire(self, key, ttl):
+            return self
+
+        def execute(self):
+            return ['not-a-number']
+
+    client = _FakeClient()
+    c = _make_cache(client)
+    client.pipeline = lambda: _WeirdPipeline()
+
+    def broken_delete(key):
+        raise ConnectionError('down between INCR and DELETE')
+
+    client.delete = broken_delete
+    assert c.incr('cnt') is None
 
 
 def test_incr_without_ttl_skips_expire():

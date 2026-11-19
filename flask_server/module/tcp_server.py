@@ -11,10 +11,16 @@ from .protocol_server import ProtocolServer
 #   - line（默认）：按分隔符（TCP_FRAME_SEPARATOR，默认 \n）切分消息，
 #     单条消息超过 TCP_MAX_MESSAGE_LENGTH 视为协议错误并断开连接（防内存 DoS）
 #   - fixed：固定长度（TCP_FRAME_LENGTH 字节）切分消息，粘包/拆包自动处理
-#   - head_tail：帧头（TCP_FRAME_HEAD）帧尾（TCP_FRAME_TAIL）定界，
-#     回调帧头帧尾之间的负载；帧头前垃圾字节自动丢弃、帧尾缺失时以新帧头重同步
-#     （重同步次数超上限视为协议错误）、帧尾缺失且超限断开连接
+#   - head_tail：帧头（TCP_FRAME_HEAD）帧尾（TCP_FRAME_TAIL）定界，回调首个帧头
+#     与其后首个帧尾之间的负载；帧头前垃圾字节直接丢弃，负载内可含帧头、但不得含
+#     帧尾（无转义协议的固有约束）。切帧只看字节流内容，与 TCP 分包边界无关：
+#     整帧一次到达 / 分 N 包 / 逐字节到达，切出的帧序列完全一致
 #   - raw：每次 recv 的原始数据直接回调，由用户自行处理粘包/拆包
+#
+# head_tail 防内存 DoS（仅在"该帧已必然损坏"时触发，不是每帧规则）：从帧头起累计
+# 缓冲超过 TCP_MAX_MESSAGE_LENGTH（外加帧尾长度容差）仍无帧尾 → 帧尾后到只会让负载
+# 更长，该帧必然超限。此时若其后缓冲中还有帧头，按"最后手段"重同步到该帧头（计数
+# 累计，超 _MAX_FRAME_RESYNCS 断开）；没有可重同步的帧头则直接按协议错误断开。
 #
 # 并发防护：TCP_MAX_CONNECTIONS 限制并发连接数（每连接一线程，防线程耗尽 DoS）。
 # 槽位在 spawn 线程前检查（verify_request）：超限的新连接被直接关闭、不创建线程，
@@ -30,8 +36,11 @@ from .protocol_server import ProtocolServer
 #   @tcp_server.on_disconnect  on_disconnect(conn, addr)
 #   @tcp_server.on_error       on_error(e, *原处理器参数)
 
-# head_tail 模式单连接最大重同步次数：帧尾连续缺失时按新帧头重同步，
-# 超限视为协议错误断开（防"帧头+垃圾"反复重同步无限持有连接）
+# head_tail 模式单连接"最后手段"重同步次数上限：只有从帧头起累计缓冲已超过
+# TCP_MAX_MESSAGE_LENGTH 仍无帧尾（该帧必然超限、已确认损坏）时才允许重同步到
+# 缓冲区中其后的帧头；超限即视为协议错误断开（防"帧头+超长垃圾"反复重同步无限
+# 持有连接）。正常帧——包括负载内含帧头字节的合法帧——不触发重同步，因此该计数
+# 不再是每帧规则；成功切帧后计数重置（"连续损坏"语义）。
 _MAX_FRAME_RESYNCS = 256
 
 
@@ -55,7 +64,7 @@ class _TcpConnectionHandler(socketserver.BaseRequestHandler):
             tcp._prepare_connection(conn)
             # 跨帧累积缓冲：一次 recv 可能含多帧，未读完的残帧留给下一轮（粘包/拆包处理）
             buffer = bytearray()
-            state = {'resyncs': 0}   # head_tail 模式重同步计数（帧协议状态）
+            state = {'resyncs': 0}   # head_tail 重同步计数（仅损坏流兜底恢复用）
             if tcp._has_handler('on_connect'):
                 tcp._dispatch('on_connect', (conn, addr), ctx=f' addr={addr}')
             try:
@@ -213,7 +222,7 @@ class TcpServer(ProtocolServer):
         """从累积缓冲读取一帧消息（按 framing 分发到具体定界实现）。
 
         buffer 为跨帧累积缓冲（bytearray），一次 recv 含多帧时残帧留在其中；
-        state 为帧协议状态（head_tail 重同步计数）；
+        state 为帧协议状态（head_tail 损坏流的"最后手段"重同步计数）；
         连接关闭 / 帧协议错误 / recv 异常：返回 None（调用方结束该连接）。
         """
         if self.framing == 'fixed':
@@ -282,28 +291,39 @@ class TcpServer(ProtocolServer):
         return frame
 
     def _read_head_tail_frame(self, conn, buffer, state=None):
-        """head_tail 模式：帧头帧尾定界，返回帧头帧尾之间的负载。
+        """head_tail 模式：首个帧头与其后首个帧尾定界，返回二者之间的负载。
 
-        重同步策略：
-          - 帧头前的垃圾字节自动丢弃（脏数据/半帧前缀）
-          - 帧头后、帧尾前再次出现帧头 → 以更靠后的帧头重新同步
-            （上一帧帧尾丢失时自动恢复；连续重同步次数超 _MAX_FRAME_RESYNCS
-            （成功切帧后重置）视为协议错误断开，防"帧头+垃圾"反复重同步
-            无限持有连接，又不误断偶发损坏的合法长连接）
-          - 从帧头起超过 max_message_length 仍未找到帧尾 → 协议错误断开（防内存 DoS）
+        定界语义（只取决于字节流内容，与 TCP 分包边界无关）：
+          - 帧 = 缓冲中首个帧头与其后首个帧尾之间的字节；帧头前的垃圾字节直接丢弃
+          - 整帧一次 recv、分 N 包、逐字节到达，切出的帧完全一致；帧头/帧尾被拆到
+            两个 recv 时由跨帧累积缓冲补齐（无帧头时只保留末尾可能的半截帧头）
+          - 负载内可以出现帧头字节（不再按"更靠后的帧头"重同步），但不得出现帧尾
+            ——帧尾是唯一的帧终止标志，这是无转义协议的固有约束
+
+        防内存 DoS（只在"该帧已必然损坏"时触发，不是每帧规则）：
+          - 从帧头起累计缓冲超过 max_message_length（外加帧尾长度容差：末尾不足
+            一个帧尾的字节可能是被拆包的帧尾前缀，不计入超长判定）仍无帧尾 →
+            帧尾后到只会让负载更长，该帧必然超限：若其后缓冲中还有帧头，按
+            "最后手段"重同步到该帧头（计数累计，超 _MAX_FRAME_RESYNCS 断开连接）；
+            没有可重同步的帧头时直接按协议错误断开（不无界缓冲、不静默跳过数据）
+          - 连接关闭 / 空闲超时 / 协议错误：返回 None（调用方结束该连接）
         """
         head, tail = self.frame_head, self.frame_tail
         state = state if state is not None else {}
+        # 帧尾长度容差：尾部不足一个帧尾的字节可能是被拆包的帧尾前缀，不能算作负载
+        tail_slack = len(tail) - 1
         while True:
             head_pos = buffer.find(head)
             if head_pos < 0:
-                if len(buffer) > self.max_message_length:
-                    self._frame_too_long(len(buffer))
-                    return None
+                # 没有帧头：全部是帧头前的垃圾字节，直接丢弃；
+                # 仅保留末尾可能的半截帧头，帧头跨包拆分时不丢帧
+                keep = len(head) - 1
+                if len(buffer) > keep:
+                    del buffer[:len(buffer) - keep]
                 if not self._recv_more(conn, buffer):
                     return None
                 continue
-            # 丢弃帧头前的垃圾字节（重同步）
+            # 丢弃首个帧头前的垃圾字节
             del buffer[:head_pos]
             # 从帧头之后查找帧尾（避免帧尾是帧头子串时误判）
             tail_pos = buffer.find(tail, len(head))
@@ -314,24 +334,24 @@ class TcpServer(ProtocolServer):
                 if len(payload) > self.max_message_length:
                     self._frame_too_long(len(payload))
                     return None
-                # 成功切帧：重置连续重同步计数（"连续未完成帧"语义——
-                # 合法流在损坏帧之间有成功帧，计数反复重置，不会被累计误断；
-                # 攻击者永不完成帧，计数持续增长，上限照常生效）
+                # 成功切帧：重置连续损坏计数
                 state['resyncs'] = 0
                 return payload
-            # 帧尾未找到：若帧头后再次出现帧头，重同步到更靠后的帧头
-            inner_head = buffer.find(head, len(head))
-            if inner_head >= 0:
-                del buffer[:inner_head]
+            # 尚无帧尾，且从帧头起累计的负载已必然超过上限 → 该帧已损坏
+            if len(buffer) - len(head) > self.max_message_length + tail_slack:
+                next_head = buffer.find(head, len(head))
+                if next_head < 0:
+                    # 没有可重同步的帧头：协议错误断开（继续缓冲只会无界增长）
+                    self._frame_too_long(len(buffer) - len(head))
+                    return None
+                # 最后手段：丢弃损坏帧的前缀，从其后的帧头重新对齐
+                del buffer[:next_head]
                 state['resyncs'] = state.get('resyncs', 0) + 1
                 if state['resyncs'] > _MAX_FRAME_RESYNCS:
                     Logger.warn(f'{self.name}: too many frame resyncs '
                                 f'({state["resyncs"]}), closing connection')
                     return None
                 continue
-            if len(buffer) > self.max_message_length:
-                self._frame_too_long(len(buffer))
-                return None
             if not self._recv_more(conn, buffer):
                 return None
 

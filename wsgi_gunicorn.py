@@ -1,3 +1,4 @@
+import importlib.util
 import sys
 
 # gunicorn 生产入口（Linux 专用）
@@ -31,10 +32,24 @@ from flask_server import app, config   # noqa: E402
 
 
 def _worker_class():
-    """SOCKETIO_ENABLED=true 时使用 eventlet worker（waitress 不支持 WebSocket）"""
-    if config.socketio_enabled:
-        return 'eventlet'
-    return 'sync'
+    """按"实际生效的 async_mode"选择 worker class。
+
+    修复前只看 SOCKETIO_ENABLED 就返回 eventlet：SOCKETIO_ENABLED=true +
+    SOCKETIO_ASYNC_MODE=threading（.env.example 的默认组合）也会走 eventlet 分支，
+    而 eventlet 是可选依赖（requirements.txt 中为注释）。未安装时 gunicorn 在解析
+    worker class 阶段直接失败，整个入口起不来——app.py 里的降级逻辑被完全绕过。
+    即使装了 eventlet，也会出现"SocketIO 实为 threading、worker 却是 eventlet"的错配。
+    """
+    if not config.socketio_enabled:
+        return 'sync'
+    if config.socketio_async_mode != 'eventlet':
+        # threading（默认）模式不需要 eventlet worker
+        return 'sync'
+    if importlib.util.find_spec('eventlet') is None:
+        print('[WARN] SOCKETIO_ASYNC_MODE=eventlet but eventlet is not installed; '
+              'falling back to sync worker (SocketIO will run in threading mode)')
+        return 'sync'
+    return 'eventlet'
 
 
 def _make_post_worker_init(worker_num):
@@ -46,14 +61,19 @@ def _make_post_worker_init(worker_num):
     异常穿出钩子 → gunicorn 记 "Exception in worker process" → 子进程退出 →
     master 重新拉起 → **无限重启循环**，HTTP 只剩 1 个 worker 可用。
 
-    因此多 worker 时直接跳过（只在 0 号 worker 打一条告警），
+    因此多 worker 时直接跳过（只打一条告警），
     需要 TCP/UDP 时请 WORKER_NUM=1 或将协议服务器独立进程部署。
     """
+    # "只打一次告警"用闭包标志而不是 worker.age：gunicorn 的 age 是递增的派生计数
+    # （首个 worker 已经是 1），用 `age == 0` 判断永不成立，告警永远不会打印。
+    warned = {'multi_worker_skip': False}
+
     def _post_worker_init(worker):
         from flask_server.module import start_protocol_servers
         from flask_server.util import Logger
         if worker_num > 1:
-            if getattr(worker, 'age', 1) == 0:
+            if not warned['multi_worker_skip']:
+                warned['multi_worker_skip'] = True
                 Logger.warn('TCP/UDP protocol servers are not started with multiple gunicorn '
                             f'workers (workers={worker_num}): same port would conflict. '
                             'Use WORKER_NUM=1 or deploy protocol servers as a separate process.')

@@ -25,8 +25,42 @@ def test_copy_template_excludes_git_and_caches(tmp_path):
     # .env 排除、.env.example 保留
     assert not os.path.exists(os.path.join(dst, '.env'))
     assert os.path.exists(os.path.join(dst, '.env.example'))
-    # 内部评估报告不随模板分发
+    # 内部评估/E2E 报告不随模板分发
     assert not os.path.exists(os.path.join(dst, 'PROJECT_EVALUATION.md'))
+    assert not os.path.exists(os.path.join(dst, 'E2E_TEST_REPORT.md'))
+
+
+def test_copy_template_excludes_coverage_artifacts(tmp_path):
+    """覆盖率产物（.coverage 与 .coverage.<host>.<pid>.<rand> 变体）都不得进入新项目。
+
+    回归：修复前只精确匹配 `.coverage`，`.coverage.WIN-xxx.1234.567` 会被整个复制过去。
+    """
+    src = tmp_path / 'tmpl'
+    (src / 'pkg').mkdir(parents=True)
+    (src / 'pkg' / 'a.py').write_text('x = 1\n', encoding='utf-8')
+    (src / '.coverage').write_text('main', encoding='utf-8')
+    (src / '.coverage.WIN-abc.1234.5678').write_text('shard', encoding='utf-8')
+    dst = str(tmp_path / 'out')
+    copy_template(str(src), dst)
+    assert os.path.exists(os.path.join(dst, 'pkg', 'a.py'))
+    assert not os.path.exists(os.path.join(dst, '.coverage'))
+    assert not os.path.exists(os.path.join(dst, '.coverage.WIN-abc.1234.5678'))
+
+
+def test_copy_template_excludes_deployment_binaries(tmp_path):
+    """deployments 下可再生成的二进制（runtime/wheels）不随模板分发，源码脚本保留。"""
+    src = tmp_path / 'tmpl2'
+    arm = src / 'deployments' / 'armv7'
+    (arm / 'runtime').mkdir(parents=True)
+    (arm / 'wheels').mkdir(parents=True)
+    (arm / 'runtime' / 'cpython.tar.gz').write_text('bin', encoding='utf-8')
+    (arm / 'wheels' / 'x-1.0-py3-none-any.whl').write_text('bin', encoding='utf-8')
+    (arm / 'install.sh').write_text('#!/bin/sh\n', encoding='utf-8')
+    dst = str(tmp_path / 'out2')
+    copy_template(str(src), dst)
+    assert not os.path.exists(os.path.join(dst, 'deployments', 'armv7', 'runtime'))
+    assert not os.path.exists(os.path.join(dst, 'deployments', 'armv7', 'wheels'))
+    assert os.path.exists(os.path.join(dst, 'deployments', 'armv7', 'install.sh'))
 
 
 def test_copy_template_replaces_license_author(tmp_path):

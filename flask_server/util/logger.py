@@ -83,8 +83,14 @@ class Logger:
         # 使用命名 logger，不污染 root
         logger = logging.getLogger('flask_server')
         # 清理已有 handler，避免重复初始化
+        # 必须 close()：只 removeHandler 不关闭会泄漏文件描述符，Windows 下文件还会被占用
+        # 导致无法删除/轮转（tests/test_logger.py 里手工 close 正是为了绕过这个缺陷）
         for h in list(logger.handlers):
             logger.removeHandler(h)
+            try:
+                h.close()
+            except Exception:
+                pass   # 关闭失败不应阻断日志初始化
         logger.setLevel(level)
         logger.propagate = False   # 不向 root 传播
         if log_format == 'json':
@@ -115,6 +121,19 @@ class Logger:
             console_handler = logging.StreamHandler()
             console_handler.setFormatter(formatter)
             logger.addHandler(console_handler)
+        # 最后一道兜底：保证 logger 至少有一个 sink。
+        # staging/production 预设的 log_to_console 为 False，而 LOG_FILE_PATH 未设置时
+        # log_to_file 也是 False —— 两者叠加会得到一个"零 handler + propagate=False"的
+        # logger：INFO 级别日志被静默丢弃，只有 WARNING+ 经 logging.lastResort 打到 stderr
+        # （无格式、无 request_id、不进文件），表现为"生产环境什么都看不到"。
+        if not logger.handlers:
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(formatter)
+            logger.addHandler(console_handler)
+            logger.warning(
+                'no log sink configured (LOG_FILE_PATH unset/empty and LOG_TO_CONSOLE=false); '
+                'falling back to console logging'
+            )
 
     @staticmethod
     def info(txt):

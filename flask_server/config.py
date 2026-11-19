@@ -30,6 +30,12 @@ def _parse_worker_num(default: int = 1) -> int:
     return val
 
 
+def _warn_invalid(name, value, expectation, fallback):
+    """统一格式的非法配置告警（返回 fallback，便于 `x = _warn_invalid(...)` 就地回退）"""
+    print(f'[Config WARNING] {name}={value!r} is invalid ({expectation}), using {fallback!r}')
+    return fallback
+
+
 def _parse_bytes_env(name: str, default: bytes, warn_on_empty: bool = True) -> bytes:
     """安全解析字节串环境变量（支持转义写法：\\n / \\r\\n / \\xaa\\x55）。
 
@@ -54,6 +60,12 @@ def _parse_bytes_env(name: str, default: bytes, warn_on_empty: bool = True) -> b
         print(f'[Config WARNING] {name}={raw!r} is empty/invalid, using default {default!r}')
         return default
     return value
+
+
+# PBKDF2 迭代次数硬上限（单一事实来源）：
+# 校验侧 DataEncryptUtil.verify_pbkdf2 用它防 CPU DoS（攻击者构造超大 iterations 的哈希）；
+# 配置侧 AUTH_PBKDF2_ITERATIONS 用它防"配了个永远校验不过的值"。两处引用同一常量，避免漂移。
+PBKDF2_MAX_ITERATIONS = 1_000_000
 
 
 # APP_ENV 预设档：development / staging / production
@@ -81,12 +93,27 @@ class Config:
         self.port = _parse_int('SERVER_PORT', 5000)
         self.host = os.environ.get('SERVER_HOST', _preset['host'])
         self.thread_num = _parse_int('THREAD_NUM', 10)
+        if self.thread_num <= 0:
+            # ThreadPoolExecutor(0) 会在 import flask_server.util 时抛 ValueError，
+            # 报错信息与配置项完全无关（"max_workers must be greater than 0"）
+            self.thread_num = _warn_invalid('THREAD_NUM', self.thread_num, 'must be > 0', 10)
         self.async_task_queue_max = _parse_int('ASYNC_TASK_QUEUE_MAX', 500)   # 异步任务队列上限
+        if self.async_task_queue_max < 0:
+            # 负数会让 BoundedExecutor 内部的 threading.Semaphore 构造失败（同样是导入期崩溃）
+            self.async_task_queue_max = _warn_invalid(
+                'ASYNC_TASK_QUEUE_MAX', self.async_task_queue_max, 'must be >= 0', 500)
         self.debug = os.environ.get('DEBUG', str(_preset['debug'])).lower() in ('1', 'true', 'yes')
 
         # SocketIO 配置（默认关闭，纯 HTTP 项目零负担）
         self.socketio_enabled = os.environ.get('SOCKETIO_ENABLED', 'false').lower() in ('1', 'true', 'yes')
-        self.socketio_async_mode = os.environ.get('SOCKETIO_ASYNC_MODE', 'threading')
+        self.socketio_async_mode = (os.environ.get('SOCKETIO_ASYNC_MODE', 'threading')
+                                    or 'threading').strip().lower()
+        if self.socketio_async_mode not in ('threading', 'eventlet'):
+            # 拼错时 Flask-SocketIO 会在 create_app 阶段抛 ValueError（错误信息与本配置项无关）；
+            # 与 tcp_framing 一致：告警并回退到默认模式
+            self.socketio_async_mode = _warn_invalid(
+                'SOCKETIO_ASYNC_MODE', self.socketio_async_mode,
+                'must be threading/eventlet', 'threading')
         # WebSocket 单条消息大小上限（默认 1MB，防止超大消息内存 DoS）
         self.socketio_max_http_buffer_size = _parse_int('SOCKETIO_MAX_HTTP_BUFFER_SIZE', 1_000_000)
 
@@ -173,6 +200,11 @@ class Config:
         self.secret_key = os.environ.get('SECRET_KEY', self.default_secret_key)
         self.secret_key_is_default = (self.secret_key == self.default_secret_key)
         self.max_content_length = _parse_int('MAX_CONTENT_LENGTH', 16 * 1024 * 1024)   # 默认 16MB
+        if self.max_content_length <= 0:
+            # 0/负数会让所有带 body 的请求直接 413（常见误用是"0 表示不限制"，
+            # 实际表示"任何 body 都超标"），按本项目惯例回退默认
+            self.max_content_length = _warn_invalid(
+                'MAX_CONTENT_LENGTH', self.max_content_length, 'must be > 0', 16 * 1024 * 1024)
         # HSTS（Strict-Transport-Security）：默认关闭——HTTP 明文下浏览器会忽略该头，
         # 本地开发/内网 HTTP 场景无需开启；置于 HTTPS 反向代理之后时建议开启
         self.hsts_enabled = os.environ.get('HSTS_ENABLED', 'false').lower() in ('1', 'true', 'yes')
@@ -182,7 +214,9 @@ class Config:
                   '(must be >= 0), using default 31536000')
             self.hsts_max_age = 31536000
         # logger配置
-        # LOG_FILE_PATH：日志文件路径（默认项目根 server.log）；设为空字符串则禁用文件日志（仅控制台）
+        # LOG_FILE_PATH：日志文件路径。未设置或设为空字符串 → 不写文件日志；
+        # 此时输出是否可见取决于 LOG_TO_CONSOLE / APP_ENV 预设（两者皆关闭时
+        # Logger.init 会兜底启用控制台日志并告警，不会静默丢弃 INFO）
         _log_file_path = os.environ.get('LOG_FILE_PATH')
         self.log_to_file = _log_file_path is not None and bool(_log_file_path.strip())
         self.log_filename = _log_file_path.strip() if _log_file_path and _log_file_path.strip() \
@@ -194,7 +228,10 @@ class Config:
         # 空字符串视为未设置（.env.example 中留空时不应覆盖 APP_ENV 预设档）
         self.log_to_console = (_log_to_console_env.strip().lower() in ('1', 'true', 'yes')) \
             if (_log_to_console_env is not None and _log_to_console_env.strip()) else _preset['log_to_console']
-        self.log_format = os.environ.get('LOG_FORMAT', 'text')   # text / json
+        self.log_format = (os.environ.get('LOG_FORMAT', 'text') or 'text').strip().lower()   # text / json
+        if self.log_format not in ('text', 'json'):
+            self.log_format = _warn_invalid(
+                'LOG_FORMAT', self.log_format, 'must be text/json', 'text')
         # 是否打印 SQL 语句（开发调试用，默认关闭）
         self.debug_sql = os.environ.get('DEBUG_SQL', 'false').lower() in ('1', 'true', 'yes')
 
@@ -219,9 +256,16 @@ class Config:
 
         # S3: 数据库连接池参数
         self.db_pool_size = _parse_int('DB_POOL_SIZE', 10)
+        if self.db_pool_size <= 0:
+            # QueuePool 不接受非正数（会在 init_SQLAlchemy 建 engine 时抛 TypeError）
+            self.db_pool_size = _warn_invalid('DB_POOL_SIZE', self.db_pool_size, 'must be > 0', 10)
         self.db_pool_recycle = _parse_int('DB_POOL_RECYCLE', 3600)
         self.db_pool_pre_ping = os.environ.get('DB_POOL_PRE_PING', 'true').lower() in ('1', 'true', 'yes')
         self.db_pool_timeout = _parse_int('DB_POOL_TIMEOUT', 30)
+        if self.db_pool_timeout <= 0:
+            # pool_timeout=0 表示"取连接不等待"，高并发下会大量抛 TimeoutError
+            self.db_pool_timeout = _warn_invalid(
+                'DB_POOL_TIMEOUT', self.db_pool_timeout, 'must be > 0', 30)
 
         # Redis 缓存配置（默认不启用；空值视为未配置）
         self.redis_url = os.environ.get('REDIS_URL') or None
@@ -235,7 +279,11 @@ class Config:
                   'is invalid (must be > 0), using default 60')
             self.rate_limit_per_minute = 60
         # 限流存储：memory（默认，进程内）/ redis（多实例准确，需配置 REDIS_URL）
-        self.rate_limit_store = os.environ.get('RATE_LIMIT_STORE', 'memory')
+        self.rate_limit_store = (os.environ.get('RATE_LIMIT_STORE', 'memory') or 'memory').strip().lower()
+        if self.rate_limit_store not in ('memory', 'redis'):
+            # 拼错会静默退化成内存存储 → 多实例下限流实际失效且无任何提示
+            self.rate_limit_store = _warn_invalid(
+                'RATE_LIMIT_STORE', self.rate_limit_store, 'must be memory/redis', 'memory')
 
         # 认证模块配置（默认关闭；AUTH_STORE=sqlalchemy 时需配置 SQLALCHEMY_URI 并迁移建表）
         self.auth_enabled = os.environ.get('AUTH_ENABLED', 'false').lower() in ('1', 'true', 'yes')
@@ -250,7 +298,12 @@ class Config:
             print(f'[Config WARNING] AUTH_REFRESH_TOKEN_TTL={self.auth_refresh_token_ttl!r} '
                   'is invalid (must be > 0), using default 2592000')
             self.auth_refresh_token_ttl = 30 * 24 * 3600
-        self.auth_store = os.environ.get('AUTH_STORE', 'memory')             # memory / sqlalchemy
+        self.auth_store = (os.environ.get('AUTH_STORE', 'memory') or 'memory').strip().lower()   # memory / sqlalchemy
+        if self.auth_store not in ('memory', 'sqlalchemy'):
+            # 拼错（或带尾空格的 'sqlalchemy '）会静默使用进程内用户表：重启丢用户、
+            # 多 worker 数据不一致，且没有任何告警——必须显式提示
+            self.auth_store = _warn_invalid(
+                'AUTH_STORE', self.auth_store, 'must be memory/sqlalchemy', 'memory')
         # 登录防爆破：同一 (用户名, 来源 IP) 连续失败 N 次锁定 M 秒
         # 注意：锁定键按 (用户名, IP) 隔离——若只按用户名计数，攻击者遍历已知用户名
         # 各打 5 次错误密码即可把全站账号逐个锁死（锁定型 DoS）
@@ -274,6 +327,12 @@ class Config:
             print(f'[Config WARNING] AUTH_PBKDF2_ITERATIONS={self.auth_pbkdf2_iterations!r} '
                   'is too low (must be >= 10000), using default 600000')
             self.auth_pbkdf2_iterations = 600000
+        elif self.auth_pbkdf2_iterations > PBKDF2_MAX_ITERATIONS:
+            # 校验侧（DataEncryptUtil.verify_pbkdf2）有硬上限 PBKDF2_MAX_ITERATIONS（防 CPU DoS）。
+            # 配置超过它时，新写入的哈希永远无法通过校验 → 全体登录 401。两处共用同一常量。
+            self.auth_pbkdf2_iterations = _warn_invalid(
+                'AUTH_PBKDF2_ITERATIONS', self.auth_pbkdf2_iterations,
+                f'must be <= {PBKDF2_MAX_ITERATIONS} (verify-side hard limit)', 600000)
 
         # Prometheus 指标（/metrics，依赖 prometheus-client，未安装或关闭时自动降级）
         self.metrics_enabled = os.environ.get('METRICS_ENABLED', 'true').lower() in ('1', 'true', 'yes')

@@ -1,6 +1,5 @@
 """端到端测试公共设施（不导入 flask_server，避免测试进程被 .env 污染）。"""
 
-import json
 import os
 import re
 import socket

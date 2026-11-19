@@ -1,6 +1,5 @@
 """TCP/UDP 协议服务器端到端测试（真实 loopback，四种定界与并发/超时防护）。"""
 
-import logging
 import os
 import socket
 import time
@@ -168,39 +167,33 @@ def test_head_tail_framing():
         server.stop()
     R.eq('head_tail 消息序列', records['messages'], [b'hello', b'a', b'b', b'split'])
 
-    # 文档语义：帧尾缺失时，若新帧头到达（且尚未看到帧尾）→ 重同步到更靠后的帧头；
-    # 但若新帧头与帧尾同包到达，则按“首帧头+首帧尾”解析（负载可含帧头字节）。
-    server, port, records = _start_echo(framing='head_tail', frame_head=b'\xaa', frame_tail=b'\xbb')
-    try:
-        sock = _connect(port)
+    # 定界契约：帧 = 首个帧头 → 其后首个帧尾，与 TCP 分包**无关**。
+    # 负载内出现帧头字节是合法的：HEAD+abc+HEAD+y+TAIL 只有一帧，负载 = b'abc'+HEAD+b'y'。
+    # 下面把同一字节流按 1/2/3 包投递，断言三种投递切出的帧完全一致（旧实现按包数出不同结果）。
+    head1, tail1 = b'\xaa', b'\xbb'
+    stream = head1 + b'abc' + head1 + b'y' + tail1
+    expected = b'abc' + head1 + b'y'
+    patterns = [
+        ('单包', [stream]),
+        ('两包', [stream[:5], stream[5:]]),          # 包边界落在内层帧头之后（旧的 bug 触发点）
+        ('三包', [stream[:4], stream[4:5], stream[5:]]),
+    ]
+    for label, chunks in patterns:
+        server, port, records = _start_echo(framing='head_tail',
+                                            frame_head=head1, frame_tail=tail1)
         try:
-            sock.sendall(b'\xaaabc')
-            time.sleep(0.05)
-            sock.sendall(b'\xaay\xbb')
-            R.eq('head_tail 同包内层帧头按首帧头+首帧尾（文档语义）',
-                 _recv_exact(sock, 10), b'echo:abc\xaay')
+            sock = _connect(port)
+            try:
+                for chunk in chunks:
+                    sock.sendall(chunk)
+                    time.sleep(0.05)      # 让每块落在不同的 recv
+                R.eq(f'head_tail {label}投递切帧一致',
+                     _recv_exact(sock, len(b'echo:' + expected)), b'echo:' + expected)
+            finally:
+                sock.close()
         finally:
-            sock.close()
-    finally:
-        server.stop()
-    R.eq('head_tail 同包消息序列（文档语义）', records['messages'], [b'abc\xaay'])
-
-    # 同一场景但新帧头与帧尾分两包到达：现有实现可以正确重同步（说明 bug 与分包边界相关）
-    server, port, records = _start_echo(framing='head_tail', frame_head=b'\xaa', frame_tail=b'\xbb')
-    try:
-        sock = _connect(port)
-        try:
-            sock.sendall(b'\xaaabc')
-            time.sleep(0.05)
-            sock.sendall(b'\xaay')
-            time.sleep(0.05)
-            sock.sendall(b'\xbb')
-            R.eq('head_tail 分包新帧头重同步', _recv_exact(sock, 6), b'echo:y')
-        finally:
-            sock.close()
-    finally:
-        server.stop()
-    R.eq('head_tail 分包重同步消息序列', records['messages'], [b'y'])
+            server.stop()
+        R.eq(f'head_tail {label}投递消息序列', records['messages'], [expected])
 
     # 帧尾缺失且超限断开
     server, port, records = _start_echo(framing='head_tail', frame_head=head, frame_tail=tail,
