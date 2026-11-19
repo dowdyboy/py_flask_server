@@ -31,10 +31,12 @@ WORKER_NUM=4 python wsgi_gunicorn.py
 4. **登录锁定**：防爆破计数按 (用户名, IP) 隔离并缓存在上述存储，多 worker 下同样需 Redis 才能全局生效
 5. **定时任务**：若使用 APScheduler，多 worker 下任务会重复执行——建议单 worker 运行
    或加分布式锁（参考 `examples/scheduler_demo.py`）
-6. **日志**：每个 worker 都向 `LOG_FILE_PATH`（默认 `server.log`）写入，
-   多进程并发轮转同一文件存在竞态（可能丢行）。生产建议：将日志重定向到 stdout
-   （如 `LOG_FILE_PATH=` 禁用文件日志 + 容器日志采集器），或将 `LOG_FILE_PATH`
-   指向共享挂载卷后由外部工具统一轮转
+6. **日志**：`LOG_FILE_PATH` 未设置/为空时**不写任何日志文件**（不存在"默认写 `server.log`"）。
+   控制台输出由独立的 `LOG_TO_CONSOLE` 决定（`staging`/`production` 预设为 false）；
+   若文件与控制台都关闭，`Logger.init` 会兜底启用控制台并打一条 WARNING，避免 INFO 被静默丢弃。
+   显式设置 `LOG_FILE_PATH` 时每个 worker 都会写同一文件，多进程并发轮转存在竞态（可能丢行）。
+   生产建议：保持 `LOG_FILE_PATH` 为空、交给容器日志采集（Docker logs 同时收 stdout/stderr）；
+   或让每个 worker 写不同文件后由外部工具统一轮转，而不是多个进程轮转同一文件
 7. **Prometheus 指标**：多 worker 下必须设置 `PROMETHEUS_MULTIPROC_DIR`（指向一个目录，
    不存在会自动创建），框架会自动用多进程聚合模式返回全局指标，并在 worker 退出时
    清理其指标文件；未设置时 `/metrics` 只含被刮到的那个 worker 的计数
@@ -70,6 +72,12 @@ docker-compose ps
 服务：app 在 `http://localhost:5000`，MySQL `3306`，Redis `6379`（均带 healthcheck，
 app 依赖 MySQL/Redis 就绪后启动）。
 
+> compose 中的 app 服务（以及 prod 的 worker 服务）均启用 `init: true`
+> （tini 作为 PID 1 回收僵尸进程）。开发编排的 `stop_grace_period` 为 10s
+> （入口是 `server.py` 开发服务器）；生产入口
+> `wsgi.py` 的 `GRACEFUL_TIMEOUT` 是 15s，prod 编排已把 app 的 `stop_grace_period`
+> 设为 **25s**（必须大于 15s，否则 Docker 会在 drain 完成前 SIGKILL；worker 为 60s）。
+
 ### 容器化生产部署
 
 ```bash
@@ -80,23 +88,40 @@ prod 编排与开发版的差异：
 - app 使用 waitress 入口（`python wsgi.py`）
 - MySQL/Redis 不暴露宿主端口（仅内网互通）
 - `SECRET_KEY` / `MYSQL_ROOT_PASSWORD` 必填校验（缺失直接拒绝启动）
-- `server.log` 挂载到宿主便于日志采集
+- `LOG_FILE_PATH=/app/server.log`，并把 `./server.log` 挂载到宿主便于日志采集
+  （若容器未设置 `LOG_FILE_PATH`，该挂载不会有内容）
+- app 与 worker 启用 `init: true`；app 的 `stop_grace_period: 25s` >
+  `wsgi.py` 的 `GRACEFUL_TIMEOUT=15s`，worker 为 60s
 
 > ⚠️ 镜像内以非 root 用户（`appuser`，uid 1000）运行，compose 将宿主目录
 > `./storage`（文件上传落盘）与 `./server.log` 以 bind mount 挂载进容器。
-> **Linux 宿主上若这些目录/文件属 root 且权限不足（如 755），appuser 无法写入**，
-> 文件上传/日志写入会报错。请确保宿主目录可写：
+> `./server.log` 只有在容器设置了 `LOG_FILE_PATH`（prod compose 已设为 `/app/server.log`）时
+> 才会有日志写入；未设置时该挂载只是空文件。**Linux 宿主上若这些目录/文件属 root 且权限不足
+> （如 755），appuser 无法写入**，文件上传/日志写入会报错。请确保宿主目录可写：
 > `chmod -R a+w storage`（或改属主 `chown 1000:1000`），或改用 named volume。
 
 ### 单独构建镜像
 
 ```bash
 docker build -t flask-server .
-docker run -p 5000:5000 --env-file .env flask-server
+docker run -p 5000:5000 \
+  -e APP_ENV=production \
+  -e SERVER_HOST=0.0.0.0 \
+  -e SECRET_KEY='请替换为强随机值' \
+  -e SQLALCHEMY_URI='mysql+pymysql://user:pass@host:3306/db?charset=utf8mb4' \
+  flask-server
 ```
 
+> ⚠️ 不要直接照搬 `--env-file .env`：模板 `.env.example` 里是 `SERVER_HOST=127.0.0.1`，
+> 容器只会监听回环地址，宿主 `-p 5000:5000` 映射不可达；而且 `APP_ENV=development` +
+> `DEBUG=true` 会覆盖镜像内置的 `APP_ENV=production`。
+> 若坚持用 `.env`，先改成 `SERVER_HOST=0.0.0.0`、`APP_ENV=production`、`DEBUG=false`，
+> 并确认 `SECRET_KEY` / `SQLALCHEMY_URI` 不是模板默认值。需要文件日志时再加
+> `-e LOG_FILE_PATH=/app/server.log`。
+
 镜像采用多阶段构建（builder 安装依赖 → 最终层仅运行时文件），体积更小。
-生产环境可改用 `CMD ["python", "wsgi.py"]`。
+镜像默认 `CMD ["python", "wsgi.py"]`（waitress）；WebSocket 场景改用 `server.py`，
+Linux 多进程用 `wsgi_gunicorn.py`。
 
 ## 健康检查与探针
 

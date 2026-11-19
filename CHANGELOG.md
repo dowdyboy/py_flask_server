@@ -7,6 +7,84 @@
 
 ### 修复
 
+- **生产环境日志黑洞**：`staging`/`production` 预设关闭控制台日志，而未设置
+  `LOG_FILE_PATH` 时也不写文件，`Logger.init()` 曾一个 handler 都不加（`propagate=False`），
+  INFO 全部被静默丢弃。现在文件与控制台都关闭时兜底启用控制台 handler 并打 WARNING；
+  prod compose 同时显式设置 `LOG_FILE_PATH=/app/server.log`（文档不再声称默认写 `server.log`）
+- **`wsgi.py` 崩溃伪装成优雅退出**：`server.run()` 异常曾被 `finally` 吞掉并 `os._exit(0)`，
+  表现为退出码 0、日志写「优雅关闭」且无 traceback；现区分正常退出与异常（异常记 ERROR +
+  traceback、退出码 1），systemd/K8s 才能按失败重启
+- **`verify_real_env.py` 误删迁移历史**：检测到已有 `migrations/` / `alembic.ini` 时默认拒绝
+  执行，需显式 `--force-migrations` 才覆盖；`finally` 只清理本次运行新建的产物
+- **`LocalFileStorage` 拒绝操作存储根**：`delete('.')` 曾会把 `storage/` 整个 `rmtree`，
+  现在变更类操作（save/copy/move/delete）对存储根自身一律抛 `ValueError`
+- **`head_tail` 定界不确定**：改为「首个帧头 + 其后首个帧尾」定界，负载内出现帧头字节时
+  不再按更靠后的帧头重同步；同一字节流无论 TCP 如何分包都切出同一帧。重同步只在累计
+  超限、帧必然损坏时作为最后手段
+- **Redis 任务队列状态迁移原子化**：`ack` / `retry` / `dead` 的 `XACK`+`XDEL`（以及
+  `ZADD`/`LPUSH`）改为同一 `MULTI/EXEC` pipeline 提交；中途失败时消息仍留在 pending，
+  不会出现「stream/delayed/dead 三处都没有」的永久丢失
+- **Redis 冷却期登出吊销失效**：`RedisCache.delete()` 不再受冷却期降级影响（登出/refresh
+  吊销必须送达）；`AuthService.logout` 吊销失败会告警但不阻塞响应，Redis 恢复后旧 token
+  不会重新生效
+- **配置校验补全**：`THREAD_NUM` / `ASYNC_TASK_QUEUE_MAX` / `MAX_CONTENT_LENGTH` /
+  `DB_POOL_SIZE` / `DB_POOL_TIMEOUT` 增加范围校验（非法值告警回退）；`AUTH_STORE` /
+  `RATE_LIMIT_STORE` / `SOCKETIO_ASYNC_MODE` / `LOG_FORMAT` 增加白名单（拼错告警回退，
+  不再静默退化）；`AUTH_PBKDF2_ITERATIONS` 增加 `PBKDF2_MAX_ITERATIONS=1_000_000` 上限
+  校验（与校验侧共用同一常量，超过上限的新哈希永远无法校验 → 全体登录 401）
+- **SQLite 内存库不再因连接池参数崩溃**：`sqlite:///:memory:` 使用 StaticPool，
+  传 `pool_size`/`pool_timeout` 会让 `create_engine` 抛 TypeError；现按后端只对
+  QueuePool 族传池参数
+- **`worker.age` 告警永不触发**：gunicorn 首个 worker 的 `age` 已是 1，`age == 0` 永不成立，
+  多 worker 跳过协议服务器的告警从未打印；改用闭包标志只告警一次
+- **`wsgi.py` 连接池从未释放**：`db.engine.dispose()` 在无 app context 下调用会抛
+  `RuntimeError` 并被吞掉；现在 `app.app_context()` 内执行，关闭时真正释放连接池
+- **内嵌任务 worker 不再拖垮启动**：Redis 暂不可达时 `TaskQueueUnavailable` 不再从入口
+  逃逸，内嵌 worker 降级为不启动并打 ERROR，HTTP 服务照常可用
+- **`/metrics` 降级与 Content-Type**：prometheus-client 缺失时仍注册 `/metrics` 并返回 503
+  （修复前路由不注册 → 404，`503` 分支是死代码）；内容类型改用 `content_type=`，
+  不再出现重复的 `charset=utf-8`
+- **`app_config` 合并时机**：`create_app(app_config=...)` 改为在任何装配之前合并，
+  `{'TESTING': True}` 等 Flask 级配置对 `Api`/DB/SocketIO/组件开关真正生效
+
+### 文档
+
+- **本轮文档与代码全量对齐**（2026-11-18 审计）：
+  - `docs/getting-started.md`：SQLite 教程改教 `SQLALCHEMY_URI=sqlite:///storage/app.db`
+    （`SQLITE_DB_PATH` 只服务轻量 sqlite 封装，按原教程 `db.Model` 必抛 AttributeError）；
+    PBKDF2 存储长度 168 → **104** 字符；补充 Flask-SQLAlchemy 3 相对路径落在 `instance/`
+  - `docs/api-conventions.md`：分页示例改用 flask-smorest 0.47 的 `@blp.paginate()` +
+    `@blp.response(200, Schema(many=True))`（`Page` 是分页器不是 Schema），说明元数据在
+    `X-Pagination` 响应头；错误码表补 `1001`→400/422、`4002`→401/503；统一 JSON 的表述
+    限定为业务接口（`/metrics`、`/docs`、静态文件例外）；补「携带 webargs messages 的 4xx
+    返回 1001」与 OpenAPI 错误响应未逐个声明的说明
+  - `docs/configuration.md`：UDP 超长数据报区分 Linux 截断 / Windows 丢弃；`LOG_FILE_PATH`
+    与 `LOG_TO_CONSOLE` 解耦并说明兜底控制台；`APP_ENV` 表删去不存在的「日志级别」列
+    （级别只由 `DEBUG` 派生）；`SERVER_HOST` 默认随预设；补 PBKDF2 上限与各项数值/枚举校验；
+    `WORKER_NUM` 说明单进程入口显式传 1；结尾把 `storage/` 改回「上传根目录」
+  - `docs/deployment.md`：日志段改写（未设 `LOG_FILE_PATH` 不写文件）；`docker run` 示例
+    改为显式 `-e APP_ENV=production -e SERVER_HOST=0.0.0.0 ...` 并解释 `.env` 的两个坑；
+    补 compose `init: true` 与 prod `stop_grace_period: 25s` > `GRACEFUL_TIMEOUT=15s`
+  - `docs/architecture.md`：`model/po/` 标注为需手动导出；SocketIO 仅 eventlet patch 是
+    导入期行为（可按 app 注入，未 patch 降级 threading）；删去不存在的 `LOG_LEVEL`，
+    改为 `DEBUG` / `LOG_FORMAT` / `LOG_FILE_PATH`；修正 app.py 延迟 import 范围与 controller
+    依赖（含 `app.json_response` / `config`）；补指标计时因 429/401 短路只计数不计时的说明
+  - `docs/development.md` / `README.md`：lint 命令纳入 `scripts/`、`_e2e/`；依赖区间改为
+    「上下界都有」；覆盖率 91.3% → **91.04%**（注明命令与 2026-11-18 快照）；README 的
+    CI 由「九流水线」改为「2 个 workflow / ci.yml 9 个 job」；TCP 自动回发限定 UDP；
+    项目树补 `webui/`、`storage/`、`deployments/`、`_e2e/`；文档表补审计报告
+  - `CHANGELOG.md`：修正任务队列与配置注入的测试计数（50→59、11→14）
+
+### 工程化
+
+- **scaffold 排除规则**：新增 `.venv_audit`、`E2E_TEST_REPORT.md`、`.coverage.*` 通配，
+  以及 `deployments/armv7/{runtime,wheels}` 等大体积二进制产物，避免生成的新项目夹带
+- **compose 健壮性**：app/worker 服务均启用 `init: true`（tini 回收僵尸进程）；prod app 的
+  `stop_grace_period` 提到 25s（大于 `wsgi.py` 的 15s `GRACEFUL_TIMEOUT`，避免 drain 前
+  SIGKILL），worker 为 60s；prod app 显式设置 `LOG_FILE_PATH=/app/server.log`
+
+### 修复（历史：2026-10-29 E2E 与任务队列自查）
+
 - **E2E 测试发现的问题修复**（2026-10-29，新增回归用例后 582 例通过 / 覆盖率 91.3%）：
   - `RedisTaskQueue.stats()` 兼容 redis-py 5.x 的 `XPENDING` 摘要 dict；修复前
     `pending` 恒为 0、`ready` 把 pending 也算进去（积压统计虚高）
@@ -66,7 +144,7 @@
   `TASK_STATUS_TTL` / `TASK_DEAD_LETTER_MAX` / `TASK_STATUS_MAX` / `TASK_RESERVE_TIMEOUT` /
   `TASK_WORKER_EMBEDDED`
 - **`docs/task-queue.md`**：三步接入、语义与保证、状态机、配置表、死信运维与重放、注意事项
-- `tests/test_task_queue.py` + `tests/test_task_queue_redis.py`（50 例）：注册表/内存后端/
+- `tests/test_task_queue.py` + `tests/test_task_queue_redis.py`（59 例）：注册表/内存后端/
   worker 端到端（成功·重试·死信·未注册·并发·停止·后端故障恢复）/CLI/内嵌 worker，
   以及 Redis 后端的命令级验证（假客户端模拟 Streams/ZSET/LIST 语义）
 
@@ -83,7 +161,7 @@
 - **`docs/architecture.md`**：架构总览——分层与依赖方向、目录职责、启动流程、
   create_app 装配顺序、请求生命周期（钩子顺序/异常映射/路由匹配）、配置解析链、
   进程模型与单例边界、扩展点、改动决策表、已知约束
-- `tests/test_config_injection.py`（11 例）：覆盖 Config 覆盖、创建期/请求期注入、
+- `tests/test_config_injection.py`（14 例）：覆盖 Config 覆盖、创建期/请求期注入、
   按 app 隔离的 AUTH_ENABLED、上下文外回退默认、代理写入语义
 
 ### 变更
@@ -244,7 +322,7 @@ fail-fast，仅报错信息变化。）
 ### 修复
 
 - **文档事实修正**：`/metrics` 不在 `/api/` 下、不受全局认证拦截（无需 X-AUTH-TOKEN），
-  修正部署指南中的错误说法；教程模型 passwd 列宽 128→256（PBKDF2 存储约 168 字符，
+  修正部署指南中的错误说法；教程模型 passwd 列宽 128→256（PBKDF2 存储实为 104 字符，
   128 列宽在 MySQL 严格模式下插入报 Data too long）
 - **examples 密码示例统一**：`user_crud_service.py` 的 create/update 改用
   `pbkdf2_hmac`（与 `user_service.py` 一致，修复前两处仍用 sha256，教学样例自相矛盾）

@@ -52,8 +52,11 @@
 - `util/` 只依赖标准库与 `config`，不 import 任何其它业务层
 - `module/` 可依赖 `util/`，不依赖 `component/`、`controller/`
 - `component/` 可依赖 `module/`、`util/`，不依赖 `controller/`
-- `controller/` 可依赖 `service/`、`model/`、`util/`、`schema/`
-- `app.py` 是最上层装配者，可 import 所有层（且只在函数内部 import，避免循环依赖）
+- `controller/` 可依赖 `service/`、`model/`、`util/`、`schema/`，以及 `app.json_response`
+  与 `config`（`hello_controller` 即 `from ..app import json_response`、`from ..config import config`）
+- `app.py` 是最上层装配者，可 import 所有层。其中 `config` / `flask` / `util` 是**模块级**导入；
+  只有 `module` / `component` / `controller` 在 `create_app()` 函数内部延迟 import
+  （避免循环依赖与导入期副作用）
 
 ---
 
@@ -67,7 +70,7 @@
 | `flask_server/handler/` | TCP/UDP 消息处理器 | ✅ 自动导入并注册装饰器 |
 | `flask_server/task/` | 后台任务（`@task` 声明） | ✅ worker 启动时自动导入（`auto_import_tasks`） |
 | `flask_server/service/` | 业务编排（可选层） | ❌ 需被 controller 调用 |
-| `flask_server/model/po/` | 声明式 ORM 模型 | ✅ 被 `model` 包导入后进入迁移检测 |
+| `flask_server/model/po/` | 声明式 ORM 模型 | ❌ 需在 `po/__init__.py` 手动 `from .xxx import XxxPO`（无目录扫描），否则不进入迁移检测 |
 | `flask_server/module/` | 基础设施单例（DB / 缓存 / 存储 / 协议服务器 / 任务队列） | 需在 `module/__init__.py` 导出 |
 | `flask_server/component/` | 横切组件（限流/认证/指标） | 需在 `init_components()` 里装配 |
 | `flask_server/util/` | 无状态工具 | 需在 `util/__init__.py` 导出 |
@@ -131,6 +134,11 @@ server.py（开发）        wsgi.py（waitress 生产）        wsgi_gunicorn.p
 | 5 | `rate_limit_check` | 限流（IP+路径 与 IP 总配额） |
 | 6 | `auth_interceptor` | **仅 `AUTH_ENABLED=true` 时存在**，校验 `X-AUTH-TOKEN` |
 | 7 | `metrics_start_timer` | 记录开始时间（`METRICS_ENABLED=false` 时零开销） |
+
+> `metrics_start_timer` 注册在最后。Flask 在任一 `before_request` 返回非 `None` 时短路后续钩子，
+> 因此被限流（429）或认证（401）拦下的请求**不会**执行它：它们进入 `http_requests_total` 计数，
+> 但不进入延迟直方图（`start is None`）。这是刻意取舍——拒绝类响应几乎没有业务耗时，
+> 混进延迟分位数会污染 P95/P99。
 
 ### after_request（注册顺序的反向执行）
 
@@ -275,9 +283,13 @@ def on_message(conn, data, addr):
 ## 10. 已知约束与取舍
 
 1. **同进程多实例共享** `db` / SocketIO / Prometheus 指标 / 日志 handler —— 见第 7 节
-2. **eventlet monkey patch 在导入期决定**：`SOCKETIO_ENABLED` / `SOCKETIO_ASYNC_MODE`
-   必须在 import 前由环境变量确定，无法按 app 注入
-3. **日志配置是进程级的**：`LOG_LEVEL` 等不随 app 变化
+2. **只有 eventlet monkey patch 是导入期行为**：`SOCKETIO_ASYNC_MODE=eventlet` 的 patch
+   必须在 import 前完成；`SOCKETIO_ENABLED` / `SOCKETIO_ASYNC_MODE` 本身可按 app 注入
+   （`create_app(framework_config=...)`）。若该 app 要求 eventlet 但导入期未打补丁，
+   会降级为 `threading` 并告警
+3. **日志配置在导入期确定（进程级）**：`DEBUG` / `LOG_FORMAT` / `LOG_FILE_PATH` 在
+   `flask_server.util.Logger` 导入时由 `Logger.init()` 读取一次，运行期改这些配置不会重建
+   handler，也不随 app 注入变化
 4. **DB 反射在首次绑定时执行**：大库建议 `DB_REFLECT_ON_START=false`
 5. **静态站点 catch-all 会拦截任意路径**：新增 `@app.route` 时不必担心顺序，
    Werkzeug 按规则权重匹配；但纯路径型规则（`/<x>`）与 catch-all 并存时要注意优先级

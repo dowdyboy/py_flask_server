@@ -2,7 +2,7 @@
 
 ## 统一响应格式
 
-所有接口返回统一 JSON：
+业务接口（`/api/` 下的 controller）返回统一 JSON：
 
 ```json
 {
@@ -12,6 +12,9 @@
 }
 ```
 
+> 例外：`/metrics` 返回 Prometheus 文本（未启用或依赖缺失时为 503），`/docs` 返回 Swagger UI 的 HTML，
+> `/<path:filename>`（webui catch-all）返回静态文件——它们不走统一 JSON 格式。
+
 ## 错误码表
 
 ### 框架内置
@@ -19,10 +22,10 @@
 | code | 含义 | HTTP 状态 |
 |---|---|---|
 | `0` | 成功 | 200 |
-| `1001` | 参数错误 | 400 |
+| `1001` | 参数错误 | 400 / 422 |
 | `-1` | 内部错误 | 500 |
 | `4001` | 认证错误（用户名已存在 / 用户名或密码错误） | 400 / 401 |
-| `4002` | 未登录 / Token / refresh_token 无效或已过期 | 401 |
+| `4002` | 未登录 / Token / refresh_token 无效或已过期；登录成功但会话不可读 | 401 / 503 |
 | `4003` | 登录失败次数过多，已临时锁定 | 429 |
 | `5030` | 依赖未就绪（DB/Redis 故障，就绪探针） | 503 |
 
@@ -34,8 +37,13 @@
 | 404 | 资源不存在 | 统一格式（code=-1） |
 | 429 | 触发限流或登录锁定 | 统一格式（限流 code=-1，锁定 code=4003） |
 | 401 | 未登录 / Token 无效或已过期 | 统一格式（code=4001/4002） |
+| 503 | 依赖未就绪（DB/Redis 故障）；登录成功但会话不可读 | 统一格式（code=5030 / 4002） |
 
 业务自定义错误码：`GraceResult.business_error(2001, '用户不存在')`。
+
+> 说明：controller 目前只用 `@blp.response(200, ...)` 声明成功响应（没有 `@blp.alt_response`），
+> `/openapi.json` 里通常只有 200、参数校验产生的 422（如有 `@blp.arguments`）和通用 default 错误；
+> 401/429/503 等实际会返回的错误**未逐个写入 OpenAPI**，调用方请以本页错误码表为准。
 
 ### 422 校验错误结构
 
@@ -48,6 +56,10 @@
   "data": {"json": {"message": ["Missing data for required field."]}}
 }
 ```
+
+**同类字段级错误**：任何携带 webargs `messages` 的 4xx（如 webargs 解析阶段抛出的
+`Invalid JSON body.`）也返回 `code=1001` + `data=messages`，与 422 一致；
+**不带** `messages` 的 4xx（如 Werkzeug 直接抛出的 400/404/405）仍是 `code=-1`。
 
 ## 请求参数解析
 
@@ -110,24 +122,35 @@ class ProfileView(MethodView):
 
 ## 分页与 ETag
 
-**分页**（flask-smorest `Page`）：
+**分页**（flask-smorest 0.47 的 `@blp.paginate()`；注意 `Page` 不是 Schema，而是分页器类）：
 
 ```python
-from flask_smorest import Page
-import marshmallow as ma
+from flask.views import MethodView
+from flask_smorest import Blueprint
 
-class UserPage(Page):
-    items = ma.fields.List(ma.fields.Raw())
+blp = Blueprint('user', 'user', url_prefix='/api/v1/users')
 
-@blp.route('/users/page')
+
+@blp.route('/page')
 class UserPageView(MethodView):
-    @blp.arguments(UserQuerySchema, location='query')
-    @blp.response(200, UserPage)
-    def get(self, query):
-        return UserService.list(page=query['page'], per_page=query['per_page'])
+    @blp.response(200, UserSchema(many=True))
+    @blp.paginate()          # 解析 page/page_size，并向视图注入 pagination_parameters
+    def get(self, pagination_parameters):
+        users, total = UserService.list(
+            page=pagination_parameters.page,
+            per_page=pagination_parameters.page_size,
+        )
+        pagination_parameters.item_count = total   # 不设置则不会返回 X-Pagination
+        return users
 ```
 
-返回结构：`{items: [...], page: n, per_page: n, total: n}`（对应 SQLAlchemy `paginate()`）。
+`@blp.paginate()` 从 query 解析 `page`（默认 1）/ `page_size`（默认 10，上限 100），
+`pagination_parameters` 是 `PaginationParameters`（`.page` / `.page_size` / `.item_count`）。
+**响应体只是数据列表**，分页元数据放在响应头 `X-Pagination`（JSON：`total` / `total_pages` /
+`first_page` / `last_page` / `page` / `previous_page` / `next_page`）。
+
+如果直接拿到的是 Flask-SQLAlchemy `paginate()` 对象，它提供 `.items` / `.page` / `.per_page` /
+`.total`：把 `.items` 作为视图返回值、用 `.total` 回填 `pagination_parameters.item_count` 即可。
 
 **ETag 缓存协商**：
 

@@ -38,12 +38,20 @@ python server.py        # http://127.0.0.1:5000/docs
 编辑 `.env`：
 
 ```bash
-# 使用 SQLite（最简单，无需额外安装）
-SQLITE_DB_PATH=storage/app.db
+# 使用 SQLite（最简单，无需额外安装；ORM + 迁移走 SQLALCHEMY_URI）
+SQLALCHEMY_URI=sqlite:///storage/app.db
 
 # 或使用 MySQL（建议显式指定 charset）
 # SQLALCHEMY_URI=mysql+pymysql://root:password@localhost:3306/mydb?charset=utf8mb4
 ```
+
+> `SQLITE_DB_PATH` **不是** ORM 配置：它只喂 `flask_server/module/sqlite.py` 的裸 sqlite3 封装，
+> 不会设置 `SQLALCHEMY_URI`。只配它时 `db` 保持 `None`、Flask-Migrate 不会初始化，
+> 下一步的 `db.Model` 会抛 `AttributeError`。
+>
+> 另外 Flask-SQLAlchemy 3 会把**相对** SQLite 路径解析到 app 的 `instance/` 目录：
+> `sqlite:///storage/app.db` 实际文件是 `instance/storage/app.db`。需要固定位置请用绝对路径
+> （如 `sqlite:////var/lib/app/app.db`）。
 
 ### 第 2 步：声明 Model
 
@@ -62,7 +70,8 @@ class UserPO(db.Model):
 
     uid = db.Column(db.String(64), primary_key=True)
     username = db.Column(db.String(128), unique=True, nullable=False)
-    # PBKDF2 存储格式 salt$iterations$hash（约 168 字符），列宽需 ≥ 256
+    # PBKDF2 存储格式 salt$iterations$hash（固定 104 字符：32 位十六进制盐 +
+    # $ + 迭代次数 + $ + 64 位十六进制哈希），列宽需 ≥ 256
     passwd = db.Column(db.String(256), nullable=False)
     create_time = db.Column(db.DateTime, default=datetime.now)
 ```

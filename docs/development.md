@@ -15,13 +15,15 @@ pytest tests/ --cov=flask_server --cov-report=term
 认证模块（Redis 存储降级与内存兜底、防爆破、refresh 轮换、登出吊销 refresh、入参限长）、
 Prometheus 指标、缓存降级恢复（含故障/脏数据自愈）、事务提交/回滚（CI 含真实 MySQL）、
 路径穿越防护、反射与声明式模型共存、雪花 ID 并发、SubprocessTask 哨兵停止等
-**582 个用例**（覆盖率 91.3%）。
+**628 个用例**。覆盖率快照（2026-11-18，`pytest tests/ --cov=flask_server --cov-report=term`）：
+**91.11%**，门槛 85%（快照仅供参考，随代码演进会变）。
 
 真实环境自检（云服务器 MySQL/Redis 全链路验证）：
 
 ```bash
 python scripts/verify_real_env.py        # 连接→建库→集成测试→迁移→HTTP 全流程→启动冒烟
 # 可选：--skip-pytest / --skip-migrate / --skip-reflect / --skip-boot / --keep-migrations
+# 已存在 migrations/ 或 alembic.ini 时默认拒绝覆盖，确需删除历史请显式 --force-migrations
 ```
 
 多进程冒烟（Linux/WSL，gunicorn 不支持 Windows）：
@@ -100,7 +102,8 @@ create_app(framework_config=Config({...}))   ← 该 app 的装配与请求期�
 
 ## 依赖锁定
 
-`requirements.txt` 只写版本区间（下界），CI 与生产每次装出的具体版本可能不同。
+`requirements.txt` 写的是上下界都有的版本区间（如 `Flask>=3.1.2,<4.0`），
+区间内的具体版本仍可能漂移；CI 与生产每次装出的具体版本可能不同。
 `constraints.txt` 记录当前验证过的完整版本组合，**只锁版本、不改依赖关系**：
 
 ```bash
@@ -117,7 +120,7 @@ pip install -r requirements.txt && python scripts/freeze_constraints.py
 
 ```bash
 pip install ruff
-ruff check flask_server/ tests/ examples/ server.py wsgi.py wsgi_gunicorn.py
+ruff check flask_server/ tests/ examples/ scripts/ _e2e/ server.py wsgi.py wsgi_gunicorn.py
 # 或 make lint
 ```
 
@@ -180,7 +183,8 @@ SERVER_PORT=5001 python server.py
 ### 数据库连不上
 
 1. 确认数据库服务已启动
-2. 确认 `.env` 中 `SQLALCHEMY_URI` 或 `SQLITE_DB_PATH` 配置正确
+2. 确认 `.env` 中 `SQLALCHEMY_URI` 配置正确（ORM/迁移走它）；只有使用轻量封装
+   `flask_server.module.sqlite` 时才检查 `SQLITE_DB_PATH`
 3. MySQL 确认用户名、密码、数据库名无误；SQLite 确认路径可写
 4. Docker 部署时确认 mysql 服务健康（`docker-compose ps`）
 

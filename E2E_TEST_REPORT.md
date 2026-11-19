@@ -1,5 +1,12 @@
 # 端到端测试报告
 
+> **补注（2026-11-18）**：本报告描述 2026-10-29 那次 E2E 运行的环境与结果，其中的数字
+> （582 用例、覆盖率 91.27%、CI 9 个 job）在当时成立。后续审计发现的残留问题已修复：
+> `docs/configuration.md` 的 UDP 截断说明、`scripts/scaffold.py` 对 `.coverage.*` 与
+> `E2E_TEST_REPORT.md` 的排除、prod compose 的日志挂载。最新结论请以
+> `docs/AUDIT_REPORT.md` 与当前代码为准；`_e2e/` 脚本仍未纳入 CI（仅手动运行，依赖真实
+> MySQL/Redis 与 PyYAML）。
+
 - 日期：2026-10-29
 - 项目：`py_flask_server`（v0.5.0 + 未发布的任务队列 / 配置注入）
 - 环境：Windows 11，Python 3.13.11（`D:\ProgramFiles\miniconda3\envs\t2xpu`），

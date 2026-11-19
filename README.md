@@ -6,14 +6,14 @@
 
 - 📐 **分层架构**：Controller-Service-Model-Module，目录即约定
 - ⚡ **零注册接口**：在 `controller/` 新建文件定义 `blp`，路由自动注册
-- 🔌 **TCP/UDP 协议服务器**：在 `handler/` 新建文件注册装饰器处理器即接收 TCP/UDP 消息（分隔符/固定长度/帧头帧尾/raw 四种定界、自动回发）
+- 🔌 **TCP/UDP 协议服务器**：在 `handler/` 新建文件注册装饰器处理器即接收 TCP/UDP 消息（分隔符/固定长度/帧头帧尾/raw 四种定界；**UDP** 返回 bytes 自动回发，**TCP** 需在处理器里自行 `conn.sendall`）
 - 🧵 **后台任务队列**：`task/` 建文件定义任务即自动发现；Redis Streams 持久化、重试退避、死信、状态查询
 - ✅ **参数校验 + Swagger**：flask-smorest 自动校验入参并生成 `/docs` 文档
 - 🔐 **认证骨架**：注册/登录/Token 开箱可用（默认关闭，一键开启）
 - 📊 **可观测性**：request_id 全链路、JSON 日志、Prometheus `/metrics`（支持多进程聚合）、healthz/readyz 探针
 - 🗄️ **数据库**：SQLAlchemy + Flask-Migrate（MySQL/SQLite）、缓存（内存/Redis 自动降级）
 - 🛡️ **安全基线**：路径穿越防护、URI 脱敏、限流、安全响应头（CSP/HSTS）、可信代理 XFF 最右解析
-- 🐳 **容器化**：多阶段 Dockerfile + dev/prod compose + CI 九流水线（含 Windows、多进程冒烟、依赖锁定）
+- 🐳 **容器化**：多阶段 Dockerfile + dev/prod compose + CI（`.github/workflows/` 2 个 workflow：`ci.yml` 的 9 个 job + `release.yml`；含 Windows、多进程冒烟、依赖锁定）
 
 ## 🚀 快速开始（5 分钟）
 
@@ -56,12 +56,18 @@ py_flask_server/
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 任务消费者 / 冒烟与压测脚本
-├── tests/                     # 582 个用例（覆盖率门槛 85%，实测 91.3%）
+├── tests/                     # 628 个用例（覆盖率门槛 85%；实测 91.11%）
+├── webui/                     # 静态前端（webui_controller 提供页面与静态资源）
+├── storage/                   # 上传文件根目录（运行期生成，勿提交）
+├── deployments/               # ARMv7 等离线部署资料
+├── _e2e/                      # 跨进程 / 真实依赖的 E2E 脚本
 ├── docs/                      # 详细文档
 ├── Makefile                   # 统一命令入口
 ├── Dockerfile / docker-compose*.yml
 └── server.py / wsgi.py / wsgi_gunicorn.py   # 三个启动入口
 ```
+
+> 覆盖率快照（2026-11-18）：`pytest tests/ --cov=flask_server --cov-report=term` 实测 **91.11%**（门槛 85%）。
 
 ## 🔧 常用命令
 
@@ -89,6 +95,7 @@ python scripts/scaffold.py my_project   # 生成新项目
 | [部署指南](docs/deployment.md) | Docker、生产入口选型、健康检查、安全建议 |
 | [API 约定](docs/api-conventions.md) | 统一响应、错误码表、分页/ETag、认证、限流 |
 | [开发与 FAQ](docs/development.md) | 测试、lint、常见问题 |
+| [代码/文档审计报告](docs/AUDIT_REPORT.md) | 2026-11-18 全量审计：发现的问题、判定依据与修复建议 |
 
 ## 📄 许可证
 

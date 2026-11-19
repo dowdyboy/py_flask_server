@@ -67,8 +67,11 @@ TASK_WORKER_EMBEDDED=true python server.py
 | 执行顺序 | 不保证（多个消费者并发取；同一任务的重试会延后） |
 | 重试 | 失败后按 `TASK_RETRY_BACKOFF * 2**(已失败次数)` 退避重投；超过 `TASK_MAX_RETRIES` 进死信 |
 | 崩溃恢复 | worker 崩溃后消息停留在 pending，超过 `TASK_VISIBILITY_TIMEOUT` 被其它 worker 接管 |
+| 流转原子性 | `ack/retry/dead` 用 Redis `MULTI/EXEC` 一次提交（全生效或全不生效）；EXEC 失败时消息留在 pending，可见性超时后重投，不会出现"已确认但目标结构没写进去"的丢失 |
 | 死信 | 超过重试上限或任务未注册 → 写入死信列表（`{stream}:dead`，上限 `TASK_DEAD_LETTER_MAX`） |
 | 状态查询 | `get_task_status(task_id)` → `queued/running/succeeded/retrying/dead` + `attempts` + `last_error` |
+| 统计 | `get_task_queue().stats()`：两种后端都返回 `ready/pending/delayed/dead`（内存后端另含 `tracked`） |
+| 死信读取 | `get_task_queue().dead_letters(limit=20)`：**最新在前**；脏数据条目保留 `raw` 原始 payload |
 | 入队失败 | **抛 `TaskQueueUnavailable`**，不静默丢弃（与缓存降级策略刻意不同） |
 
 ---
@@ -117,13 +120,23 @@ TASK_WORKER_EMBEDDED=true python server.py
 ## 5. 运维
 
 ```bash
-# 队列积压/死信数量（Redis 后端）
+# 队列积压/死信数量（Redis 后端，等价于 stats() 的 ready/pending/delayed/dead）
 redis-cli XLEN tasks:default
+redis-cli XPENDING tasks:default default
 redis-cli ZCARD tasks:default:delayed
 redis-cli LLEN tasks:default:dead
 
-# 死信列表（最近 20 条；也可在代码里 get_task_queue().dead_letters(limit=20)）
+# 死信列表（最近 20 条，最新在前；也可在代码里 get_task_queue().dead_letters(limit=20)）
 redis-cli LRANGE tasks:default:dead 0 19
+
+# 代码里查统计：两种后端返回同一组键，可直接接看板/告警
+python - <<'PY'
+from flask_server.module.task_queue import get_task_queue
+
+print(get_task_queue().stats())
+# {'ready': 3, 'pending': 1, 'delayed': 0, 'dead': 2}
+# 内存后端额外有 'tracked'（状态表条数），且 pending 恒为 0（没有可见性超时）
+PY
 
 # 重放一条死信：取出信封（含 args/kwargs）重新入队（示例）
 python - <<'PY'
@@ -131,7 +144,7 @@ import json
 from flask_server.module.task_queue import get_task_queue
 
 q = get_task_queue()
-letter = q.dead_letters(limit=1)[0]          # {'id','name','args','kwargs','status','last_error',...}
+letter = q.dead_letters(limit=1)[0]          # [0] 是最新一条；{'id','name','args','kwargs','status','last_error',...}
 if letter.get('id'):
     # 用同一 task_id + 原参数重新入队（相当于重跑；handler 需幂等）
     q.enqueue(
@@ -143,6 +156,9 @@ if letter.get('id'):
     )
 PY
 ```
+
+> 死信记录统一带 `id/name/args/kwargs`；无法反序列化的脏数据没有信封，字段为空但保留 `raw`
+> 原始 payload（Redis 后端），方便人工还原现场。
 
 **进程退出**：worker 收到 SIGTERM 后不再取新任务，等在途任务完成再退出；
 容器里请把 `stop_grace_period` 设得比最长任务长一点。
