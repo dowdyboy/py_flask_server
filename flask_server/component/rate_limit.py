@@ -1,4 +1,4 @@
-from flask import request, abort
+from flask import request, abort, g
 from ..config import config
 from ..module import memory_cache, redis_cache
 from ..util import Logger, CommonUtil
@@ -86,11 +86,13 @@ def rate_limit_check():
     path_count = _incr(cache, f'rate:{ip}:{_path_key(request.path)}')
     if _over_limit(path_count):
         Logger.warn(f'rate limit exceeded (path): rate:{ip}:{request.path}')
+        g.retry_after = RATE_LIMIT_WINDOW   # 供 set_retry_after_header 写 Retry-After
         abort(429)
     # IP 级总配额（兜底，防路径随机化绕过）
     ip_count = _incr(cache, f'rate:{ip}')
     if _over_limit(ip_count):
         Logger.warn(f'rate limit exceeded (ip): rate:{ip}')
+        g.retry_after = RATE_LIMIT_WINDOW
         abort(429)
     return None
 

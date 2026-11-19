@@ -125,6 +125,8 @@ def _live_redis_check():
 @blp.route('/readyz')
 class ReadyzView(MethodView):
     @blp.response(200, GraceResultSchema)
+    @blp.alt_response(503, schema=GraceResultSchema,
+                      description='依赖未就绪（DB/Redis 故障，data 中给出各依赖状态）')
     def get(self):
         """就绪探针（readiness）：依赖故障时返回 503（供容器/编排系统判定就绪）"""
         status = {'status': 'ready'}
@@ -147,6 +149,10 @@ class ReadyzView(MethodView):
 class EchoView(MethodView):
     @blp.arguments(EchoSchema)
     @blp.response(200, GraceResultSchema)
+    @blp.alt_response(400, schema=GraceResultSchema,
+                      description='请求体不是合法 JSON（data 中给出字段级 messages）')
+    @blp.alt_response(422, schema=GraceResultSchema,
+                      description='参数校验失败（data 中给出字段级 messages）')
     def post(self, data):
         """回显消息（演示参数校验）"""
         return GraceResult.ok({'echo': data['message']})

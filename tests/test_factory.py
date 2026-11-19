@@ -71,7 +71,10 @@ def test_create_app_registers_hooks_in_order():
     ]
     after_names = [f.__name__ for f in app.after_request_funcs.get(None, [])]
     framework_hooks = [n for n in after_names if n != 'cors_after_request']
-    assert framework_hooks == ['set_request_id_header', 'set_security_headers', 'metrics_record']
+    # 注册顺序 → 实际执行顺序反向：metrics_record → set_security_headers →
+    # set_retry_after_header（429 补 Retry-After）→ set_request_id_header
+    assert framework_hooks == ['set_request_id_header', 'set_retry_after_header',
+                              'set_security_headers', 'metrics_record']
 
 
 def test_create_app_registers_error_handlers():

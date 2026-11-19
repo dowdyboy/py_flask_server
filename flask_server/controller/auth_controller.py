@@ -1,5 +1,5 @@
 from flask.views import MethodView
-from flask import request
+from flask import request, g
 from flask_smorest import Blueprint
 from ..config import config
 from ..util import GraceResult, CommonUtil, Logger
@@ -20,6 +20,8 @@ blp = Blueprint('auth', 'auth', url_prefix='/api/v1/auth', description='认证�
 class RegisterView(MethodView):
     @blp.arguments(AuthRegisterSchema)
     @blp.response(200, GraceResultSchema)
+    @blp.alt_response(400, schema=GraceResultSchema, description='用户名已存在（code 4001）')
+    @blp.alt_response(422, schema=GraceResultSchema, description='参数校验失败')
     def post(self, data):
         """注册用户"""
         try:
@@ -33,6 +35,12 @@ class RegisterView(MethodView):
 class LoginView(MethodView):
     @blp.arguments(AuthLoginSchema)
     @blp.response(200, GraceResultSchema)
+    @blp.alt_response(401, schema=GraceResultSchema, description='用户名或密码错误（code 4001）')
+    @blp.alt_response(429, schema=GraceResultSchema,
+                      description='失败次数过多已临时锁定（code 4003，响应头含 Retry-After）')
+    @blp.alt_response(503, schema=GraceResultSchema,
+                      description='登录成功但会话存储不可读（code 4002，缓存降级场景）')
+    @blp.alt_response(422, schema=GraceResultSchema, description='参数校验失败')
     def post(self, data):
         """登录，返回 access token + refresh token"""
         # 传入真实来源 IP：防爆破锁定按 (用户名, IP) 隔离，避免他人故意打错密码
@@ -42,6 +50,8 @@ class LoginView(MethodView):
             client_ip=CommonUtil.get_real_ip(request, config.trusted_proxies),
         )
         if err == 'locked':
+            # 锁定期间重试没有意义：告诉客户端多久后再试（set_retry_after_header 会写头）
+            g.retry_after = config.auth_login_lock_seconds
             return GraceResult.business_error(4003, '失败次数过多，请稍后再试'), 429
         if tokens is None:
             return GraceResult.business_error(4001, '用户名或密码错误'), 401
@@ -63,6 +73,9 @@ class LoginView(MethodView):
 class RefreshView(MethodView):
     @blp.arguments(AuthRefreshSchema)
     @blp.response(200, GraceResultSchema)
+    @blp.alt_response(401, schema=GraceResultSchema,
+                      description='refresh_token 无效/已使用/已过期（code 4002）')
+    @blp.alt_response(422, schema=GraceResultSchema, description='参数校验失败')
     def post(self, data):
         """用 refresh_token 换取新令牌（旧 refresh 作废，单次使用）"""
         tokens = AuthService.refresh_access_token(data['refresh_token'])
@@ -97,6 +110,8 @@ class LogoutView(MethodView):
 @blp.route('/me')
 class MeView(MethodView):
     @blp.response(200, GraceResultSchema)
+    @blp.alt_response(401, schema=GraceResultSchema,
+                      description='未登录或 Token 已过期（code 4002）')
     @login_required
     def get(self):
         """当前登录用户信息（需要登录）"""

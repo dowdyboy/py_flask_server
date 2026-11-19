@@ -230,6 +230,8 @@ def test_login_locks_after_max_fails(client, fresh_store, monkeypatch):
     r = client.post('/api/v1/auth/login', json={'username': 'hank', 'password': 'secret123'})
     assert r.status_code == 429
     assert r.get_json()['code'] == 4003
+    # 锁定响应必须告诉客户端多久后再试（RFC 6585 的 Retry-After）
+    assert r.headers.get('Retry-After') == '60'
 
 
 def test_login_lock_expires(client, fresh_store, monkeypatch):

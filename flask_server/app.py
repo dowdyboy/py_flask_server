@@ -116,13 +116,17 @@ def parse_request_param():
 
 def parse_request_json():
     if request.method in _BODY_METHODS and request.is_json:
-        data = request.get_json()
+        # silent=True：非法 JSON 不在这里抛裸 400。Werkzeug 的 BadRequest 只带一句英文
+        # description，客户端拿不到字段级信息；静默失败后把 payload 留空，交给视图层的
+        # flask-smorest/webargs 统一产出 400 + messages（→ code=1001 参数错误）。
+        # 没有 @blp.arguments 的视图读到 {} 时也会走 KeyError → 400 参数错误。
+        data = request.get_json(silent=True)
         # 顶层 JSON 必须为对象：数组/字符串等非 dict 会被视图按字段访问
         # （payload['x']）抛 TypeError → 500，归一为 {} 后走 KeyError → 400 参数错误
         if data is not None and not isinstance(data, dict):
             Logger.warn(f'non-dict JSON payload ignored: {type(data).__name__}')
             data = {}
-        request.payload = data
+        request.payload = data if isinstance(data, dict) else {}
 
 
 def parse_request_form_data():
@@ -139,6 +143,18 @@ def set_request_id_header(resp):
     rid = getattr(g, 'request_id', None)
     if rid:
         resp.headers['X-Request-Id'] = rid
+    return resp
+
+
+def set_retry_after_header(resp):
+    """429 响应补 Retry-After（RFC 6585 建议）。
+
+    限流与登录锁定都会返回 429，客户端据此退避比盲目重试更友好。具体秒数由产生 429
+    的一方写入 `g.retry_after`（限流=窗口长度，锁定=锁定剩余秒数）；未设置时用默认窗口。
+    """
+    if resp.status_code == 429 and 'Retry-After' not in resp.headers:
+        seconds = getattr(g, 'retry_after', None) or 60
+        resp.headers['Retry-After'] = str(int(seconds))
     return resp
 
 
@@ -267,6 +283,7 @@ def register_request_hooks(app):
     app.before_request(parse_request_json)
     app.before_request(parse_request_form_data)
     app.after_request(set_request_id_header)
+    app.after_request(set_retry_after_header)
     app.after_request(set_security_headers)
     app.teardown_request(clear_request_id)
 

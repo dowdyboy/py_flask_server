@@ -198,3 +198,31 @@ def test_rate_limit_long_path_key_truncated(client, monkeypatch):
         for k in list(memory_cache.cache.keys()):
             if k.startswith('rate:'):
                 memory_cache.delete(k)
+
+
+def test_rate_limit_429_carries_retry_after(client, monkeypatch):
+    """429 必须带 Retry-After（RFC 6585），客户端据此退避而不是盲目重试。
+
+    秒数取限流窗口长度（RATE_LIMIT_WINDOW）；由 app.set_retry_after_header 统一写入，
+    限流与登录锁定两条 429 路径共用。
+    """
+    from flask_server.component import rate_limit as rl
+    monkeypatch.setattr(config, 'rate_limit_enabled', True)
+    monkeypatch.setattr(config, 'rate_limit_per_minute', 1)
+    monkeypatch.setattr(rl, 'redis_cache', None)
+    try:
+        assert client.get('/hello').status_code == 200
+        resp = client.get('/hello')
+        assert resp.status_code == 429
+        assert resp.headers.get('Retry-After') == str(rl.RATE_LIMIT_WINDOW)
+        assert resp.headers['Retry-After'].isdigit()
+    finally:
+        for k in list(memory_cache.cache.keys()):
+            if k.startswith('rate:'):
+                memory_cache.delete(k)
+
+
+def test_non_429_has_no_retry_after(client):
+    """非 429 响应不应带 Retry-After（避免误导客户端退避正常请求）"""
+    assert client.get('/hello').headers.get('Retry-After') is None
+    assert client.get('/api/v1/healthz').headers.get('Retry-After') is None

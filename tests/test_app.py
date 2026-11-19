@@ -104,6 +104,51 @@ def test_openapi_json(client):
     assert resp.get_json()['openapi'] == '3.0.3'
 
 
+def test_openapi_documents_error_responses(client):
+    """OpenAPI 必须声明真实会返回的错误码（此前只有 200/422/default）。
+
+    用这份 schema 生成的 SDK 若只看到 200，会把 401/429/503 当成未知响应。
+    """
+    spec = client.get('/openapi.json').get_json()
+    expect = {
+        ('/api/v1/auth/login', 'post'): {'200', '401', '422', '429', '503'},
+        ('/api/v1/auth/me', 'get'): {'200', '401'},
+        ('/api/v1/auth/refresh', 'post'): {'200', '401', '422'},
+        ('/api/v1/auth/register', 'post'): {'200', '400', '422'},
+        ('/api/v1/readyz', 'get'): {'200', '503'},
+        ('/api/v1/echo', 'post'): {'200', '400', '422'},
+    }
+    for (path, method), codes in expect.items():
+        op = spec['paths'][path][method]
+        assert codes <= set(op['responses']), f'{path} {method} 缺少 {codes - set(op["responses"])}'
+        # 每个错误码都要带 GraceResult schema（否则客户端拿到的是无类型对象）
+        for code in codes - {'200'}:
+            schema = op['responses'][code].get('content', {}) \
+                .get('application/json', {}).get('schema', {})
+            assert schema.get('$ref', '').endswith('/GraceResult'), \
+                f'{path} {method} {code} 未引用 GraceResult schema: {schema}'
+
+
+def test_malformed_json_returns_param_error(client):
+    """非法 JSON 归一为参数错误（code=1001 + 字段级 messages），而不是裸 400。
+
+    修复前 before_request 里的 request.get_json() 先抛 Werkzeug BadRequest，
+    客户端只看到一句英文 description、code=-1，与 422 的 1001 不一致。
+    """
+    resp = client.post('/api/v1/echo', data='{bad json', content_type='application/json')
+    assert resp.status_code == 400
+    body = resp.get_json()
+    assert body['code'] == 1001
+    assert body['data'] and 'json' in body['data'], body
+
+
+def test_malformed_json_tolerated_by_body_optional_view(client):
+    """body 可选的视图（logout）遇到非法 JSON 不应 400：payload 归一为 {} 后继续。"""
+    resp = client.post('/api/v1/auth/logout', data='{bad json',
+                       content_type='application/json')
+    assert resp.status_code == 200, resp.get_json()
+
+
 def test_security_headers(client):
     """安全响应头应默认启用"""
     resp = client.get('/hello')

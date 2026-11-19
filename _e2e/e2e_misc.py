@@ -187,11 +187,11 @@ def test_docs_config_consistency():
         R.check(f'task-queue.md 配置表包含 {key}', key in task_docs)
 
     readme = (ROOT / 'README.md').read_text(encoding='utf-8')
-    R.contains('README 标注用例数', readme, '628')
+    R.contains('README 标注用例数', readme, '633')
     # README 用 "2 个 workflow：ci.yml 的 9 个 job + release.yml" 描述 CI
     R.contains('README 标注 workflow 数量', readme, '2 个 workflow')
     R.contains('README 标注 job 数量', readme, '9 个 job')
-    R.check('README 覆盖率数字与实际接近', '91.1' in readme)
+    R.check('README 覆盖率数字与实际接近', '91.2' in readme)
 
     # 任务队列死信重放示例：死信记录现在保留 args/kwargs，示例应按原参数重放。
     R.contains('task-queue.md 死信重放示例', task_docs, "letter['name']")
