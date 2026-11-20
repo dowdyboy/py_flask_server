@@ -24,11 +24,17 @@ from .util import Logger, GraceResult, CommonUtil
 # 为什么要有 create_app()：
 #   历史上所有注册（CORS / 拦截器 / 指标 / 路由 / 蓝图）都写在模块导入副作用里，
 #   于是"import flask_server"就等于"建好唯一的那个 app"。这让测试无法替换配置、
-#   无法同进程跑两个实例，也让 `from flask_server.util import Logger` 这种导入
-#   顺带把整个应用初始化一遍。
+#   也无法同进程跑两个实例。
 #
 #   现在：`create_app()` 显式创建并装配一个 app；模块底部的 `app = create_app()`
 #   保留原有用法（`from flask_server import app` / `flask_server.app:app`）不变。
+#
+# ⚠️ 遗留限制（别被"工厂化"误导）：`flask_server/__init__.py` 仍然 `from .app import ...`，
+#   而本模块底部会执行 `app = create_app()`。因此**任何** `import flask_server.xxx` 都会
+#   触发一次完整装配（含按配置连接 MySQL / Redis、初始化日志 handler）。
+#   也就是说 `from flask_server.util import Logger` 依然会把应用初始化一遍——工厂化解决的是
+#   "无法替换配置 / 无法多实例"，不是"导入零副作用"。要彻底消除，需要把模块级 app 从包的
+#   导入链里摘出（会破坏 `from flask_server import app` 兼容用法），暂不做。
 #
 # 仍然是**进程级单例**的部分（有意为之，见 create_app 的文档字符串）：
 #   SQLAlchemy 的 db / Flask-Migrate、SocketIO、Prometheus 指标对象。
@@ -346,10 +352,13 @@ def create_app(app_config=None, framework_config=None):
         Flask: 已注册安全钩子、异常处理、限流/认证/指标与全部路由的应用实例。
 
     ⚠️ 进程级单例（同进程内多实例会共享，属已知设计约束）：
-        - SQLAlchemy 的 `db` 与 Flask-Migrate（`init_SQLAlchemy` 只在首次绑定；
-          不同 URI 需要多进程部署）
+        - SQLAlchemy 的 `db` 与 Flask-Migrate（`init_SQLAlchemy` 只在首次绑定）。
+          第二次 `create_app` 传入**不同** `SQLALCHEMY_URI` 会抛 `RuntimeError`
+          （而不是静默复用第一个库——那会让"以为在写测试库、实际写生产库"成为可能）；
+          需要多个数据库请用多进程/多容器部署。
         - SocketIO（eventlet 模式下必须全局唯一；eventlet monkey patch 是导入期决定的）
         - Prometheus 指标对象与默认 registry、日志 handler
+        - 内存缓存（有条目上限，超出淘汰最久未写入的键）
         - 内存缓存 / 限流计数 / 认证 token 存储
     """
     from .config import CONFIG_EXT_KEY, default_config

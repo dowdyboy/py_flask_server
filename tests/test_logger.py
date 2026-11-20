@@ -1,11 +1,12 @@
-"""日志工具测试：JSON 格式（request_id 字段）、text 格式、handler 配置"""
+"""日志工具测试：JSON 格式（request_id 字段）、text 格式、handler 配置
+
+handler 的恢复由 tests/conftest.py 的 autouse fixture 统一负责：这里不再手工
+remove/close 全部 handler（旧写法会让后续用例面对零 handler 的 logger）。
+"""
 
 import json
 import logging
 import sys
-import time
-import tempfile
-import os
 
 from flask_server.util.logger import Logger, JsonFormatter
 
@@ -70,49 +71,36 @@ def test_text_formatter_default():
     assert 'hello' in out
 
 
-def test_logger_init_creates_rotating_handler():
+def test_logger_init_creates_rotating_handler(tmp_path):
     """Logger.init 应配置 RotatingFileHandler（轮转参数正确）"""
     from logging.handlers import RotatingFileHandler
-    log_file = os.path.join(tempfile.gettempdir(), f'logger_test_{time.time()}.log')
-    Logger.init(filename=log_file, level=logging.INFO, max_bytes=1024, backup_count=2)
-    try:
-        logger = logging.getLogger('flask_server')
-        handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
-        assert len(handlers) == 1
-        assert handlers[0].maxBytes == 1024
-        assert handlers[0].backupCount == 2
-        Logger.info('test log line')
-        # 保证落盘后再读
-        handlers[0].flush()
-        with open(log_file, 'r', encoding='utf-8') as f:
-            assert 'test log line' in f.read()
-    finally:
-        logger = logging.getLogger('flask_server')
-        for h in list(logger.handlers):
-            logger.removeHandler(h)
-            h.close()   # 关闭文件句柄（Windows 下不关闭无法删除文件）
-        if os.path.exists(log_file):
-            os.remove(log_file)
+
+    log_file = tmp_path / 'logger_test.log'
+    Logger.init(filename=str(log_file), level=logging.INFO, max_bytes=1024, backup_count=2)
+    logger = logging.getLogger('flask_server')
+    handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+    assert len(handlers) == 1
+    assert handlers[0].maxBytes == 1024
+    assert handlers[0].backupCount == 2
+    Logger.info('test log line')
+    handlers[0].flush()          # 保证落盘后再读
+    assert 'test log line' in log_file.read_text(encoding='utf-8')
 
 
 def test_logger_init_creates_missing_directory(tmp_path):
     """LOG_FILE_PATH 指向不存在的目录时自动创建（修复前 import 即崩溃）"""
     from logging.handlers import RotatingFileHandler
+
     log_dir = tmp_path / 'nested' / 'logs'
     log_file = log_dir / 'app.log'
     Logger.init(filename=str(log_file), level=logging.INFO, to_console=False)
     logger = logging.getLogger('flask_server')
-    try:
-        assert log_dir.is_dir()
-        handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
-        assert len(handlers) == 1
-        Logger.info('dir auto-created')
-        handlers[0].flush()
-        assert 'dir auto-created' in log_file.read_text(encoding='utf-8')
-    finally:
-        for h in list(logger.handlers):
-            logger.removeHandler(h)
-            h.close()
+    assert log_dir.is_dir()
+    handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+    assert len(handlers) == 1
+    Logger.info('dir auto-created')
+    handlers[0].flush()
+    assert 'dir auto-created' in log_file.read_text(encoding='utf-8')
 
 
 def test_logger_init_falls_back_to_console_on_oserror(tmp_path):
@@ -123,16 +111,11 @@ def test_logger_init_falls_back_to_console_on_oserror(tmp_path):
     # 不应抛异常；文件 handler 缺失，控制台 handler 兜底
     Logger.init(filename=str(bad_log_file), level=logging.INFO, to_console=False)
     logger = logging.getLogger('flask_server')
-    try:
-        from logging import StreamHandler
-        from logging.handlers import RotatingFileHandler
-        handlers = logger.handlers
-        assert not [h for h in handlers if isinstance(h, RotatingFileHandler)]
-        assert [h for h in handlers if isinstance(h, StreamHandler)]
-    finally:
-        for h in list(logger.handlers):
-            logger.removeHandler(h)
-            h.close()
+    from logging import StreamHandler
+    from logging.handlers import RotatingFileHandler
+    handlers = logger.handlers
+    assert not [h for h in handlers if isinstance(h, RotatingFileHandler)]
+    assert [h for h in handlers if isinstance(h, StreamHandler)]
 
 
 def test_logger_init_falls_back_to_console_when_no_sink():
@@ -145,18 +128,9 @@ def test_logger_init_falls_back_to_console_when_no_sink():
     from logging import StreamHandler
 
     logger = logging.getLogger('flask_server')
-    saved = list(logger.handlers)
-    try:
-        Logger.init(filename=None, level=logging.INFO, to_console=False, to_file=False)
-        streams = [h for h in logger.handlers if isinstance(h, StreamHandler)]
-        assert streams, '无 sink 时必须有兜底控制台 handler'
-    finally:
-        for h in list(logger.handlers):
-            logger.removeHandler(h)
-            if h not in saved:
-                h.close()
-        for h in saved:      # 还原，避免污染其它用例
-            logger.addHandler(h)
+    Logger.init(filename=None, level=logging.INFO, to_console=False, to_file=False)
+    assert [h for h in logger.handlers if isinstance(h, StreamHandler)], \
+        '无 sink 时必须有兜底控制台 handler'
 
 
 def test_format_msg_escapes_newlines():
@@ -177,8 +151,8 @@ def test_logger_info_single_line_with_injected_newline(tmp_path):
     log_file = tmp_path / 'inject.log'
     Logger.init(filename=str(log_file), level=logging.INFO, to_console=False)
     logger = logging.getLogger('flask_server')
+    Logger.set_request_id('rid-1')
     try:
-        Logger.set_request_id('rid-1')
         Logger.warn('rate limit exceeded (path): /api/x\n2026-01-01 [ERROR] fake injected record')
         for h in logger.handlers:
             if isinstance(h, RotatingFileHandler):
@@ -190,6 +164,3 @@ def test_logger_info_single_line_with_injected_newline(tmp_path):
         assert '[rid:rid-1]' in lines[0]
     finally:
         Logger.clear_request_id()
-        for h in list(logger.handlers):
-            logger.removeHandler(h)
-            h.close()

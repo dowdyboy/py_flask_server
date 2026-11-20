@@ -73,6 +73,10 @@ def test_task_decorator_max_retries_override():
 
 def test_registry_overwrite_warns(monkeypatch):
     """同名重复注册：后者生效并告警（便于发现复制粘贴改名忘改）"""
+    warnings = []
+    monkeypatch.setattr(tq.Logger, 'warn',
+                        lambda msg, exc_info=False: warnings.append(msg))
+
     @task('dup')
     def first():
         pass
@@ -82,6 +86,8 @@ def test_registry_overwrite_warns(monkeypatch):
         pass
 
     assert registry.get('dup').func is second
+    assert any('already registered' in msg and 'dup' in msg for msg in warnings), \
+        f'重复注册未告警: {warnings}'
 
 
 def test_registry_clear_and_unknown():
@@ -297,7 +303,7 @@ def test_worker_reclaims_stale_while_busy(fast_config):
             self.acks = 0
 
         def reserve(self, timeout=0.01):
-            time.sleep(0.02)
+            # 恒有任务可取：reclaim 必须在"reserve 有返回"的循环里也会执行
             return ReservedTask(token='t', envelope=TaskEnvelope(id='t', name='busy.noop'))
 
         def ack(self, reserved):
@@ -452,10 +458,20 @@ def test_worker_concurrency_processes_many(fast_config):
 
     lock = threading.Lock()
     processed = []
+    first_batch = []
+    first_batch_lock = threading.Lock()
+    # 前 4 个任务必须在屏障处会合 → 证明 concurrency=4 是并行执行而非串行；
+    # 若实现退化成单线程，屏障超时抛 BrokenBarrierError，任务无法完成，用例变红。
+    barrier = threading.Barrier(4, timeout=5)
 
     @task('bulk.task')
     def bulk(i):
-        time.sleep(0.01)
+        with first_batch_lock:
+            wait_at_barrier = len(first_batch) < 4
+            if wait_at_barrier:
+                first_batch.append(i)
+        if wait_at_barrier:
+            barrier.wait()
         with lock:
             processed.append(i)
 

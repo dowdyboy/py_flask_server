@@ -11,6 +11,8 @@
 #
 # 接入工程：将下方 handler 合并到 flask_server/app.py（socketio 初始化之后）。
 
+from flask import request
+
 from flask_server import socketio
 from flask_server.util import Logger
 
@@ -23,8 +25,12 @@ else:
 
     @socketio.on('connect')
     def handle_connect():
-        """客户端连接时触发"""
-        print(f'[socketio] client connected: {socketio.get_environ().get("REMOTE_ADDR")}')
+        """客户端连接时触发
+
+        取客户端信息用 flask.request（Flask-SocketIO 在事件处理期间会推入请求上下文）；
+        SocketIO 对象本身没有 get_environ() 这个公开方法，用它会在运行时 AttributeError。
+        """
+        print(f'[socketio] client connected: {request.remote_addr}, sid={request.sid}')
 
     @socketio.on('disconnect')
     def handle_disconnect():

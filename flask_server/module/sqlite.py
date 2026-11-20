@@ -3,6 +3,8 @@ import threading
 import os
 import re
 import time
+from typing import Optional
+
 from ..config import config
 from ..util import Logger
 
@@ -31,6 +33,9 @@ class SQLite:
     _CONNECT_TIMEOUT = 30
 
     # 判断是否使用sqlite3数据库，如果使用，则初始化连接，否则为None
+    # 显式注解：下面两个分支分别赋 sqlite3.Connection / None，不注解会让类型检查推断成
+    # 非 Optional 而在 else 分支报错（同时明确"未配置时为 None"这一契约）。
+    conn: Optional[sqlite3.Connection] = None
     if config.db_file_path is not None:
         Logger.info(f"Initializing SQLite : {config.db_file_path}")
         # 自动创建数据库文件所在目录，避免目录不存在时 import 即崩溃
@@ -45,8 +50,6 @@ class SQLite:
             conn.execute('PRAGMA busy_timeout=30000')
         except sqlite3.Error as e:
             Logger.warn(f'SQLite PRAGMA failed: {e}')
-    else:
-        conn = None
 
     @classmethod
     def _get_conn(cls):
@@ -123,16 +126,26 @@ class SQLite:
                     row_id = None
                 conn.commit()
                 return row_id
-            except sqlite3.OperationalError as e:
-                if 'locked' not in str(e).lower() or attempt >= SQLite._LOCKED_RETRIES:
-                    raise
-                # 回滚未提交事务再重试，避免 commit 锁冲突后重试造成重复写入
+            except sqlite3.Error as e:
+                # 任何失败都必须回滚，不只是 "database is locked"。
+                # sqlite3 在 DML 执行**之前**就已隐式 BEGIN，语句失败后事务仍处于打开状态
+                # 并持有 RESERVED 写锁；此前只对 locked 回滚，于是"唯一约束冲突"这类可预期
+                # 的业务错误会把本连接（进而整个库）的其它写入阻塞到 busy_timeout 超时。
+                locked = 'locked' in str(e).lower()
+                if locked and attempt < SQLite._LOCKED_RETRIES:
+                    # 回滚未提交事务再重试，避免 commit 锁冲突后重试造成重复写入
+                    try:
+                        conn.rollback()
+                    except sqlite3.Error:
+                        pass
+                    last_error = e
+                    time.sleep(SQLite._LOCKED_RETRY_INTERVAL * (attempt + 1))
+                    continue
                 try:
                     conn.rollback()
                 except sqlite3.Error:
                     pass
-                last_error = e
-                time.sleep(SQLite._LOCKED_RETRY_INTERVAL * (attempt + 1))
+                raise
         # 不可达：每次迭代要么 return 要么 raise。保留显式抛出仅用于表达"不会正常跑完"，
         # 修复前这里是 `raise last_error`（last_error 在成功路径上恒为 None，是死变量）
         raise RuntimeError(   # pragma: no cover - 防御性，正常不可达
@@ -154,10 +167,22 @@ class SQLite:
                 cur = conn.cursor()
                 cur.execute(sql, params or [])
                 return cur.fetchall()
-            except sqlite3.OperationalError as e:
-                if 'locked' not in str(e).lower() or attempt >= SQLite._LOCKED_RETRIES:
-                    raise
-                time.sleep(SQLite._LOCKED_RETRY_INTERVAL * (attempt + 1))
+            except sqlite3.Error as e:
+                # 与 execute 一致：失败即回滚（读语句也可能因隐式事务留下未提交状态），
+                # 仅对 locked 做退避重试
+                locked = 'locked' in str(e).lower()
+                if locked and attempt < SQLite._LOCKED_RETRIES:
+                    try:
+                        conn.rollback()
+                    except sqlite3.Error:
+                        pass
+                    time.sleep(SQLite._LOCKED_RETRY_INTERVAL * (attempt + 1))
+                    continue
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
         raise RuntimeError('SQLite.fetch retry loop exhausted')   # pragma: no cover - 正常不可达
 
     # 插入数据，用法示例：

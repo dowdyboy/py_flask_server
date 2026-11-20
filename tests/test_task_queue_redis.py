@@ -138,6 +138,28 @@ class FakeRedis:
         self._maybe_fail()
         return len(self.zsets.get(key, {}))
 
+    # ---- Lua 脚本（只模拟延迟回迁脚本的语义）----
+    def register_script(self, script):
+        """返回可调用的脚本对象（对应 redis-py 的 Script：调用时才真正执行）"""
+        self._maybe_fail()
+        return _FakeScript(self, script)
+
+    def eval(self, script, numkeys, *args):
+        """EVAL 的最小实现（生产代码走 register_script；这里保留同一调用语义）"""
+        self._maybe_fail()
+        return self._run_script(list(args[:numkeys]), list(args[numkeys:]))
+
+    def _run_script(self, keys, argv):
+        """伪 Lua：`ZREM` 返回 1 的调用者才 `XADD`（与 _PROMOTE_DELAYED_SCRIPT 一致）
+
+        假客户端是单线程的，一次调用内不存在交错，因此"先 zrem 再 xadd"就等价于
+        生产脚本的原子语义——同一 member 第二次调用必然拿到 ZREM=0，不重复投递。
+        """
+        if self.zrem(keys[0], argv[0]) == 1:
+            self.xadd(keys[1], {'data': argv[0]})
+            return 1
+        return 0
+
     # ---- list ----
     def lpush(self, key, value):
         self._maybe_fail()
@@ -216,6 +238,18 @@ class _FakePipeline:
         except Exception:
             self._client._restore(snapshot)
             raise
+
+
+class _FakeScript:
+    """register_script 返回的脚本对象：调用时执行（等价于 redis-py 的 Script.__call__）"""
+
+    def __init__(self, client, script):
+        self._client = client
+        self.script = script
+
+    def __call__(self, keys=None, args=None):
+        self._client._maybe_fail()
+        return self._client._run_script(list(keys or []), list(args or []))
 
 
 @pytest.fixture
@@ -434,6 +468,105 @@ def test_promote_delayed_scan_error_surfaces_as_unavailable(queue, fake):
     with pytest.raises(TaskQueueUnavailable):
         queue.reserve(timeout=0.01)
     assert queue._last_promote == 0
+
+
+# ------------------------- P1: 延迟回迁原子性（Lua 脚本） -------------------------
+
+
+def test_promote_script_is_single_winner(queue, fake):
+    """P1 回归：同一 member 的脚本只允许成功一次（第二次返回 0，不重复投递）
+
+    修复前是 ZREM 后另起一次 XADD：期间进程崩溃则任务从延迟集合消失且未入流（静默丢失）。
+    现在摘除与投递在脚本内原子完成，并发调用者中只有 ZREM 成功的那个能投递。
+    """
+    member = TaskEnvelope(id='t-once', name='job').to_json()
+    fake.zadd(queue.delayed_key, {member: time.time() - 1})
+
+    first = queue._promote_script(keys=[queue.delayed_key, queue.stream], args=[member])
+    second = queue._promote_script(keys=[queue.delayed_key, queue.stream], args=[member])
+
+    assert first == 1
+    assert second == 0
+    assert fake.xlen(queue.stream) == 1          # 只投递一次
+    assert fake.zsets[queue.delayed_key] == {}   # 延迟集合已摘除
+
+
+def test_promote_delayed_concurrent_callers_deliver_once(queue, fake):
+    """P1 回归：两个 worker 共享同一 Redis 时，并发回迁同一到期任务只产生一条消息"""
+    member = TaskEnvelope(id='t-concurrent', name='job').to_json()
+    fake.zadd(queue.delayed_key, {member: time.time() - 1})
+    other = RedisTaskQueue('redis://fake:6379/0', client=fake)
+
+    queue._last_promote = 0
+    queue._promote_delayed()
+    other._last_promote = 0
+    other._promote_delayed()                     # 第二个 worker 这一轮无货可搬
+
+    assert fake.xlen(queue.stream) == 1
+    assert fake.zsets[queue.delayed_key] == {}
+
+
+def test_promote_delayed_script_error_surfaces_as_unavailable(queue, fake, monkeypatch):
+    """P1 回归：脚本执行失败必须统一成 TaskQueueUnavailable（不得裸 ConnectionError）"""
+    member = TaskEnvelope(id='t-fail', name='job').to_json()
+    fake.zadd(queue.delayed_key, {member: time.time() - 1})
+    queue._last_promote = 0
+
+    def broken_script(keys=None, args=None):
+        raise ConnectionError('script execution failed')
+
+    monkeypatch.setattr(queue, '_promote_script', broken_script)
+    with pytest.raises(TaskQueueUnavailable):
+        queue.reserve(timeout=0.01)
+
+    assert queue._last_promote == 0                       # 失败不推进节流
+    assert member in fake.zsets[queue.delayed_key]         # 任务仍在延迟集合，没有丢
+    assert fake.xlen(queue.stream) == 0
+
+
+def test_promote_delayed_retries_after_script_failure(queue, fake, monkeypatch):
+    """P1 回归：脚本失败后下一轮（节流未推进）立即重试，任务最终被投递且不丢"""
+    member = TaskEnvelope(id='t-retry', name='job').to_json()
+    fake.zadd(queue.delayed_key, {member: time.time() - 1})
+    queue._last_promote = 0
+    calls = []
+    real_script = queue._promote_script
+
+    def flaky_script(keys=None, args=None):
+        calls.append(list(args or []))
+        if len(calls) == 1:
+            raise ConnectionError('transient script failure')
+        return real_script(keys=keys, args=args)
+
+    monkeypatch.setattr(queue, '_promote_script', flaky_script)
+    with pytest.raises(TaskQueueUnavailable):
+        queue._promote_delayed()
+    assert queue._last_promote == 0
+
+    queue._promote_delayed()                     # 下一轮：失败未推进节流 → 立即重试
+    assert len(calls) == 2
+    assert fake.zsets[queue.delayed_key] == {}
+    assert fake.xlen(queue.stream) == 1
+
+    reserved = queue.reserve(timeout=0.01)
+    assert reserved is not None and reserved.envelope.id == 't-retry'
+
+
+def test_promote_script_falls_back_to_eval(fake):
+    """没有 register_script 的极简客户端退回 EVAL，回迁语义完全一致"""
+    class _EvalOnlyRedis(FakeRedis):
+        register_script = None      # getattr(...) 为 None → 走 EVAL 分支
+
+    client = _EvalOnlyRedis()
+    queue = RedisTaskQueue('redis://fake:6379/0', client=client)
+    member = TaskEnvelope(id='t-eval', name='job').to_json()
+    client.zadd(queue.delayed_key, {member: time.time() - 1})
+
+    queue._last_promote = 0
+    queue._promote_delayed()
+
+    assert client.zsets[queue.delayed_key] == {}
+    assert client.xlen(queue.stream) == 1
 
 
 # ------------------------- 健壮性 -------------------------

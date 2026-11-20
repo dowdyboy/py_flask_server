@@ -92,8 +92,15 @@ class LocalFileStorage:
         dst_path = self._gen_mutation_path(dst_path)
         if not os.path.exists(src_path):
             raise FileNotFoundError(f"{src_path} not exist")
+        # 与 shutil.copy 的文件语义对齐：目标是**已存在的目录**时，把源拷进该目录，
+        # 而不是抛 FileExistsError（修复前目录走 copytree、文件走 copy，同一 API 两种语义）
+        if os.path.isdir(dst_path):
+            dst_path = os.path.join(dst_path, os.path.basename(src_path.rstrip(os.sep)))
         if os.path.isdir(src_path):
-            shutil.copytree(str(src_path), str(dst_path))
+            # symlinks=True：树内的符号链接按链接本身复制，不解引用。
+            # 解引用会把"指向存储根之外"的目标内容复制进 storage，绕过本方法开头的
+            # 根边界校验（_gen_mutation_path 只看顶层路径，不看目录树内部）。
+            shutil.copytree(str(src_path), str(dst_path), symlinks=True)
         else:
             shutil.copy(str(src_path), str(dst_path))
 

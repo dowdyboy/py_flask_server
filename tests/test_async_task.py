@@ -10,7 +10,9 @@ from flask_server.util.async_task_util import (
 
 def test_submit_rejects_when_queue_full():
     """队列满时 submit 返回 None（拒绝），不阻塞调用方"""
-    slow = lambda: time.sleep(0.3)   # noqa: E731
+    release = threading.Event()
+    slow = lambda: release.wait(5)   # noqa: E731  占住 worker/排队位，直到用例放行
+
     ex = BoundedExecutor(max_workers=1, max_pending=2)
     try:
         # 占满 1 个 worker + 2 个排队位
@@ -19,6 +21,7 @@ def test_submit_rejects_when_queue_full():
         # 队列已满 → 拒绝
         assert ex.submit(slow) is None
     finally:
+        release.set()
         ex.shutdown(wait=True)
 
 
@@ -37,8 +40,9 @@ def test_submit_rejects_when_executor_rejected():
         with pytest.raises(RuntimeError):
             f.result()
         # 信号量已释放：可再次提交新任务（容量 1 worker + 1 pending）
-        slow = lambda: time.sleep(0.05)   # noqa: E731
-        assert ex.submit(slow) is not None
+        again = ex.submit(lambda: 'ok')
+        assert again is not None
+        assert again.result(timeout=5) == 'ok'
     finally:
         ex.shutdown(wait=True)
 
@@ -115,7 +119,7 @@ def test_cmd_task_error_callback():
     assert code == 3
 
 
-def test_cmd_task_timeout_kills_process():
+def test_cmd_task_timeout_kills_process(monkeypatch):
     """命令超时（timeout 参数）应终止子进程并触发 on_error 回调"""
     import asyncio
     import sys
@@ -123,6 +127,16 @@ def test_cmd_task_timeout_kills_process():
     from flask_server.util.async_task_util import async_run_command
 
     q = queue.Queue()
+    spawned = {}
+
+    real_exec = asyncio.create_subprocess_exec
+
+    async def recording_exec(*args, **kwargs):
+        proc = await real_exec(*args, **kwargs)
+        spawned['proc'] = proc
+        return proc
+
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', recording_exec)
 
     def on_error(param, result):
         q.put(('err', param, result[0], result[1]))
@@ -136,6 +150,10 @@ def test_cmd_task_timeout_kills_process():
     assert param == 'p'
     assert reason == 'timeout'
     assert 'timed out after' in detail
+
+    # 必须真的 kill 并回收子进程，而不是只回调 on_error 后让它继续跑
+    proc = spawned['proc']
+    assert proc.returncode is not None, '超时后子进程未被 kill/回收（仍在后台运行）'
 
 
 def test_safe_thread_on_crash():
@@ -159,13 +177,15 @@ def test_safe_thread_on_crash():
 def test_safe_thread_clean():
     """SafeThread：正常线程不触发 on_crash"""
     fired = []
+    ran = threading.Event()
 
     def ok():
-        time.sleep(0.01)
+        ran.set()
 
     t = SafeThread(target=ok, on_crash=lambda st, e: fired.append(e))
     t.start()
     t.join(timeout=5)
+    assert ran.is_set(), '线程目标函数未执行'
     assert fired == []
     assert t.exception is None
 
@@ -176,8 +196,10 @@ class _BlockingWorker(SubprocessTaskInterface):
     def __init__(self):
         super().__init__()
         self.received = []
+        self.thread_entered = threading.Event()   # 线程已进入 thread_func（开始阻塞 get）
 
     def thread_func(self, in_queue, out_queue):
+        self.thread_entered.set()
         while True:
             data = in_queue.get()
             self.received.append(data)
@@ -221,7 +243,7 @@ def test_subprocess_task_stop_not_hang(monkeypatch):
     worker = _BlockingWorker()
     task = SubprocessTask(worker)
     task.start()
-    time.sleep(0.1)   # 等待 thread 进入阻塞 get
+    assert worker.thread_entered.wait(5), '消费线程未进入阻塞 get'
 
     start = time.time()
     task.stop()
@@ -239,23 +261,19 @@ def test_subprocess_task_sentinel_to_subprocess_queue(monkeypatch):
     worker = _BlockingWorker()
     task = SubprocessTask(worker)
     task.start()
-    time.sleep(0.1)
+    assert worker.thread_entered.wait(5), '消费线程未进入阻塞 get'
     task.stop()
-    # multiprocessing.Queue 的 put 由后台 feeder 线程异步刷新到管道，
-    # 立即 get_nowait() 可能因尚未落盘而 Empty（竞态）。带超时轮询等待哨兵可见。
-    sentinel = None
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        try:
-            sentinel = task.subprocess_queue.get_nowait()
-            break
-        except Exception:
-            time.sleep(0.05)
+    # multiprocessing.Queue 的 put 由后台 feeder 线程异步刷新到管道：
+    # 用带超时的阻塞 get 等待哨兵，而不是固定 sleep 轮询
+    sentinel = task.subprocess_queue.get(timeout=5)
     assert sentinel is None
 
 
 def test_watch_process_none_no_crash():
-    """watch_process(None) 应直接返回不抛异常"""
+    """watch_process(None) 应直接返回、不抛异常、不触发回调"""
     worker = _BlockingWorker()
     task = SubprocessTask(worker)
-    task.watch_process(None, lambda *a: None)   # 不抛即为通过
+    callbacks = []
+
+    assert task.watch_process(None, lambda *args: callbacks.append(args)) is None
+    assert callbacks == []

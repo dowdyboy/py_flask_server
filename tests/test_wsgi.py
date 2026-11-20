@@ -47,13 +47,35 @@ def wsgi_mod(monkeypatch):
     return mod
 
 
-def test_cleanup_resources_is_idempotent(wsgi_mod):
+@pytest.fixture
+def fake_executor(monkeypatch):
+    """替换全局 AsyncTaskUtil.executor，避免真实 _cleanup_resources() 关闭生产线程池。
+
+    真实线程池一旦 shutdown 就永久不可用，后续异步任务用例会全部失败。
+    """
+    from flask_server.util.async_task_util import AsyncTaskUtil
+
+    class _FakeExecutor:
+        def __init__(self):
+            self.shutdown_calls = []
+
+        def shutdown(self, wait=True):
+            self.shutdown_calls.append(wait)
+
+    fake = _FakeExecutor()
+    monkeypatch.setattr(AsyncTaskUtil, 'executor', fake)
+    return fake
+
+
+def test_cleanup_resources_is_idempotent(wsgi_mod, fake_executor):
     """清理逻辑可重复调用且不抛异常（信号路径与正常退出路径都会调用）"""
     wsgi_mod._cleanup_resources()
     wsgi_mod._cleanup_resources()
+    # 两次清理都应尝试释放线程池（wait=False：不阻塞关闭流程）
+    assert fake_executor.shutdown_calls == [False, False]
 
 
-def test_cleanup_stops_embedded_task_worker(wsgi_mod):
+def test_cleanup_stops_embedded_task_worker(wsgi_mod, fake_executor):
     """内嵌任务 worker 必须在释放 DB 之前停掉（否则在途任务会遇到已 dispose 的引擎）"""
     stopped = []
 
@@ -70,7 +92,7 @@ def test_cleanup_stops_embedded_task_worker(wsgi_mod):
     assert stopped == [1]
 
 
-def test_cleanup_survives_embedded_worker_stop_error(wsgi_mod):
+def test_cleanup_survives_embedded_worker_stop_error(wsgi_mod, fake_executor):
     """内嵌 worker 停止失败不应中断后续清理（DB/Redis 仍要释放）"""
     class _BrokenWorker:
         def stop(self, timeout=15):

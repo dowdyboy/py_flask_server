@@ -48,7 +48,10 @@ class DataEncryptUtil:
 
         Args:
             text (str): 原始密码/文本
-            salt (str, optional): 盐值。为None时自动生成16字节随机盐
+            salt (str, optional): 盐值，**必须是 16 字节的 32 位十六进制串**
+                （如物化视图/预置种子场景需要可复现的盐）。为 None 时自动生成
+                16 字节随机盐。传普通字符串（如 'mysalt'）会抛 ValueError——
+                底层是 bytes.fromhex，不接受任意文本。
             iterations (int, optional): 迭代次数。为 None 时取配置
                 AUTH_PBKDF2_ITERATIONS（默认 600000，对齐 OWASP 2023 建议；
                 原默认 100000 偏低）。迭代次数会写入哈希串，历史哈希不受默认值变更影响。
@@ -57,12 +60,25 @@ class DataEncryptUtil:
             str: "salt$iterations$hash" 格式的字符串；salt 为 16 字节随机数的 **32 位十六进制**，
                  hash 为 SHA-256 的 **64 位十六进制**（合计约 104 个字符，
                  不是"64 字节"——64 个 hex 字符 = 32 字节）
+
+        Raises:
+            ValueError: salt 不是 32 位十六进制串（提前给出可读错误，避免在注册流程里
+                变成难以定位的 500）
         """
         if iterations is None:
             from ..config import config
             iterations = config.auth_pbkdf2_iterations
         if salt is None:
             salt = os.urandom(16).hex()
+        else:
+            if not isinstance(salt, str) or len(salt) != 32:
+                raise ValueError(
+                    f'salt must be 32 hex chars (16 bytes), got {salt!r}')
+            try:
+                bytes.fromhex(salt)
+            except ValueError as e:
+                raise ValueError(
+                    f'salt must be 32 hex chars (16 bytes), got {salt!r}: {e}') from e
         derived = hashlib.pbkdf2_hmac(
             'sha256', text.encode('utf-8'), bytes.fromhex(salt), iterations
         )

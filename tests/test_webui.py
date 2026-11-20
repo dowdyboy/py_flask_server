@@ -3,6 +3,9 @@
 import os
 from collections import OrderedDict
 
+import pytest
+from werkzeug.exceptions import NotFound
+
 from flask_server import config
 import flask_server.controller.webui_controller as wc
 
@@ -97,12 +100,43 @@ def test_api_case_variants_not_swallowed(client):
         assert resp.status_code == 404, f'{path} -> {resp.status_code}'
 
 
-def test_path_traversal_returns_404(client):
-    """路径穿越请求被拦截返回 404（_is_path_safe 分支）"""
-    resp = client.get('/../etc/passwd')
-    assert resp.status_code == 404
-    resp = client.get('/..%2f..%2fetc%2fpasswd')
-    assert resp.status_code == 404
+def test_path_traversal_returns_404(client, monkeypatch, tmp_path):
+    """路径穿越请求被拦截返回 404（HTTP 层）"""
+    webui_dir = tmp_path / 'webui'
+    webui_dir.mkdir()
+    (webui_dir / 'index.html').write_text('<html>idx</html>', encoding='utf-8')
+    monkeypatch.setattr(config, 'webui_dir', str(webui_dir))
+
+    # Flask 测试客户端/路由可能先归一化路径；无论归一化与否都不能读到 webui 之外
+    for path in ('/../etc/passwd', '/..%2f..%2fetc%2fpasswd'):
+        resp = client.get(path)
+        assert resp.status_code == 404, f'{path} -> {resp.status_code}'
+
+
+def test_is_path_safe_rejects_traversal_directly(monkeypatch, tmp_path):
+    """直接测安全边界：Werkzeug 归一化 URL 后再进 handler 也不能逃出 webui_dir"""
+    webui_dir = tmp_path / 'webui'
+    webui_dir.mkdir()
+    monkeypatch.setattr(config, 'webui_dir', str(webui_dir))
+
+    assert wc._is_path_safe('index.html') is True
+    assert wc._is_path_safe('nested/app.js') is True
+    for bad in ('../etc/passwd', '..\\..\\etc\\passwd', '/etc/passwd',
+                'sub/../../etc/passwd', '..'):
+        assert wc._is_path_safe(bad) is False, f'路径穿越未被判定为不安全: {bad!r}'
+
+
+def test_webui_view_rejects_traversal_directly(client, monkeypatch, tmp_path):
+    """直接调用视图函数（绕过 URL 归一化）验证 abort(404) 分支"""
+    webui_dir = tmp_path / 'webui'
+    webui_dir.mkdir()
+    (webui_dir / 'index.html').write_text('<html>idx</html>', encoding='utf-8')
+    monkeypatch.setattr(config, 'webui_dir', str(webui_dir))
+
+    with client.application.test_request_context('/evil'):
+        for bad in ('../etc/passwd', '/etc/passwd', 'sub/../../etc/passwd'):
+            with pytest.raises(NotFound):
+                wc.webui(bad)
 
 
 def test_cache_hit_false_falls_back_to_index(client, monkeypatch, tmp_path):

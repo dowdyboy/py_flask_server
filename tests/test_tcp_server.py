@@ -18,13 +18,14 @@ class _CaptureHandler(logging.Handler):
         self.records.append(record)
 
 
-def _wait_until(cond, timeout=3):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+def _wait_until(cond, timeout=3.0, message='condition not met'):
+    """轮询等待条件成立；超时抛出带说明的 AssertionError（避免裸 assert 无上下文）"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if cond():
             return True
-        time.sleep(0.02)
-    return False
+        time.sleep(0.01)
+    raise AssertionError(f'{message} (timeout after {timeout}s)')
 
 
 def _start_echo_server(**kwargs):
@@ -86,10 +87,12 @@ def test_split_packet_merged():
     """拆包：一条消息分多次发送仍按一帧处理"""
     server, port, records = _start_echo_server()
     try:
+        # 直接以两块数据喂解析器：确定性覆盖"同一帧跨两次 recv"，不靠 sleep 制造分包
+        frame = server._read_line_frame(_FakeConn([b'he', b'llo\n']), bytearray())
+        assert frame == b'hello'
         sock = _connect(port)
         try:
             sock.sendall(b'he')
-            time.sleep(0.05)
             sock.sendall(b'llo\n')
             assert _recv_exact(sock, len(b'echo: hello')) == b'echo: hello'
         finally:
@@ -204,7 +207,9 @@ def test_handler_error_keeps_connection():
         sock = _connect(port)
         try:
             sock.sendall(b'boom\n')
-            time.sleep(0.1)
+            # 等 on_error 钩子真正触发后再发下一条：不 sleep 猜服务器线程进度
+            _wait_until(lambda: len(records['errors']) == 1,
+                        message='处理器异常未触发 on_error 钩子')
             sock.sendall(b'ok\n')
             assert _recv_exact(sock, len(b'echo: ok')) == b'echo: ok'
         finally:
@@ -264,10 +269,11 @@ def test_fixed_split_packet():
     """fixed 模式：一帧分多次发送（拆包）"""
     server, port, records = _start_echo_server(framing='fixed', frame_length=4)
     try:
+        # 两块分别 recv 仍拼成同一帧（确定性，无需 sleep 制造分包）
+        assert server._read_fixed_frame(_FakeConn([b'ab', b'cd']), bytearray()) == b'abcd'
         sock = _connect(port)
         try:
             sock.sendall(b'ab')
-            time.sleep(0.05)
             sock.sendall(b'cd')
             assert _recv_exact(sock, len(b'echo: abcd')) == b'echo: abcd'
         finally:
@@ -384,9 +390,10 @@ def test_head_tail_same_stream_different_packets_on_socket():
         try:
             sock = _connect(port)
             try:
+                # 不 sleep：OS 可能合并包，但解析器对分包边界无关（上方纯解析器用例
+                # 已确定性地覆盖 1/2/3 包边界）；这里只验证真实 socket 端到端不再丢帧
                 for chunk in chunks:
                     sock.sendall(chunk)
-                    time.sleep(0.05)      # 让每块落在不同的 recv（复现旧 bug 的分包）
                 assert _recv_exact(sock, len(b'echo: ' + expected)) == b'echo: ' + expected
             finally:
                 sock.close()
@@ -522,12 +529,15 @@ def test_head_tail_split_markers():
     """head_tail 模式：帧头/帧尾跨包到达（拆包）"""
     server, port, records = _start_head_tail_server()
     try:
+        # 直接喂三块：帧头跨块、帧尾跨块 —— 确定性覆盖，不靠 sleep 分割 recv
+        assert server._read_head_tail_frame(
+            _FakeConn([b'\xaa', b'\x55hi\x0d', b'\x0a']),
+            bytearray(), {'resyncs': 0},
+        ) == b'hi'
         sock = _connect(port)
         try:
             sock.sendall(b'\xaa')
-            time.sleep(0.05)
             sock.sendall(b'\x55hi\x0d')
-            time.sleep(0.05)
             sock.sendall(b'\x0a')
             assert _recv_exact(sock, len(b'echo: hi')) == b'echo: hi'
         finally:
@@ -546,12 +556,15 @@ def test_head_tail_inner_head_stays_in_payload():
     server, port, records = _start_echo_server(
         framing='head_tail', frame_head=b'\xaa', frame_tail=b'\xbb')
     try:
+        # 直接按三块喂解析器：负载内帧头、帧尾跨块同时覆盖，不 sleep
+        assert server._read_head_tail_frame(
+            _FakeConn([b'\xaaabc', b'\xaay', b'\xbb']),
+            bytearray(), {'resyncs': 0},
+        ) == b'abc\xaay'
         sock = _connect(port)
         try:
             sock.sendall(b'\xaaabc')          # 帧头 + 负载开头
-            time.sleep(0.1)
             sock.sendall(b'\xaay')            # 负载内的帧头字节（旧实现会在此重同步）
-            time.sleep(0.1)
             sock.sendall(b'\xbb')             # 帧尾到达
             expected = b'echo: abc\xaay'
             assert _recv_exact(sock, len(expected)) == expected
@@ -803,8 +816,8 @@ def test_head_tail_corrupt_stream_disconnects_on_socket():
                     break   # 服务端已断开
                 if records['disconnect']:
                     break
-                time.sleep(0.001)
-            assert _wait_until(lambda: len(records['disconnect']) == 1), '损坏流未断开连接'
+            assert _wait_until(lambda: len(records['disconnect']) == 1,
+                               message='损坏流未断开连接')
             sock.settimeout(5)
             try:
                 data = sock.recv(1024)
@@ -859,7 +872,8 @@ def test_idle_timeout_disabled_keeps_connection_open():
     try:
         sock = _connect(port)
         try:
-            time.sleep(0.5)
+            # 真实时间断言：空闲超过一个"若启用就会断开"的时长后连接仍可用
+            time.sleep(0.3)
             sock.sendall(b'still-here\n')
             assert _recv_exact(sock, len(b'echo: still-here')) == b'echo: still-here'
         finally:

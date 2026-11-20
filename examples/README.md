@@ -41,8 +41,12 @@ examples/
 
 这些样例直接复制回 `flask_server/` 并不能立即运行，需自行适配：
 
-1. **配置数据库**：在 `.env` 中设置 `SQLALCHEMY_URI` 或 `SQLITE_DB_PATH`（模型样例在 import 时即反射表结构，未配数据库会启动报错）。
-2. **补全缺失模型**：`article_service.py` 引用了 `BuyRecordPO`，原样例未提供其模型定义，需自行创建。
+1. **配置数据库**：在 `.env` 中设置 `SQLALCHEMY_URI`（ORM / 迁移的唯一入口；`SQLITE_DB_PATH` 只服务
+   `flask_server.module.sqlite` 的轻量封装，不会初始化 SQLAlchemy）。模型样例在 import 时即反射表结构，
+   未配数据库会启动报错。
+2. **模型定义齐全**：`BuyRecordPO` 已在 `examples/model/article_declared.py` 中定义（声明式推荐写法），
+   `article_service.py` 从那里延迟导入；接入工程时把 `ArticlePO` / `BuyRecordPO` 放进
+   `flask_server/model/po/` 并在其 `__init__.py` 中导出。
 3. **导出注册**：把样例放回 `flask_server/` 对应目录后，需在各自的 `__init__.py` 中添加导入，才会被加载。
 4. **未完成代码**：`article_service.py` 的 `increase_access_count` 为空实现，需按需补全。
 5. **反射式 PO 的 import 时 DB IO**：`user.py`/`article.py` 在类定义体内执行 `db.Table(..., autoload_with=db.engine)`，import 即连库反射表结构。未配数据库或表不存在会启动报错；推荐使用声明式 `user_declared.py`。
@@ -50,6 +54,14 @@ examples/
    接口（get/list）读 `request.info['user_key']`——这些值由 `component/interceptor_example.py`
    写入（并配置 `need_auth_path_list` / `need_user_key_path_list`）。未合并拦截器时这些
    接口会因 KeyError 返回 400。
+7. **`@app.route` 与 create_app 注入**：`examples/controller/` 下的样例用
+   `from flask_server.app import app` 把路由挂到**模块级单例**上，仅适用于默认单 app。
+   若要用 `create_app(framework_config=...)` 隔离配置，请改成模块级 `def register(app)` 钩子
+   （见 `flask_server/controller/hello_controller.py`）或 flask-smorest 的 `Blueprint`。
+8. **协议示例的运行方式**：`examples/protocol/tcp_echo_handler.py` 等文件应放在
+   `flask_server/handler/` 下由框架自动导入；**直接** `python examples/protocol/tcp_echo_handler.py`
+   会因 `sys.path[0]` 是 `examples/protocol` 而 `import flask_server` 失败，请改用
+   `python -m examples.protocol.tcp_echo_handler` 或在文件顶部自行插入项目根路径。
 
 ## 用法
 

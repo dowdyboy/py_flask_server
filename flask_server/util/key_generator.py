@@ -19,9 +19,17 @@ from .logger import Logger
 #   原实现用 `os.getpid() % 32` 派生 —— 容器/ K8s 里主进程 PID 恒为 1，
 #   于是**所有副本的 worker_id 都是 1**，同毫秒发号即冲突。现改为
 #   `(crc32(hostname) + pid) % 32`：容器 hostname 默认是唯一容器 ID（K8s 为 Pod 名），
-#   多副本可区分；单机多进程再叠加 PID。仍非严格保证，**生产务必显式配置
-#   SNOWFLAKE_WORKER_ID（0-31）与 SNOWFLAKE_DATACENTER_ID（0-31）**，
-#   对冲突零容忍的场景请直接用 generate_uuid7()。
+#   多副本可区分；单机多进程再叠加 PID。
+#
+#   ⚠️ 但这只把取值空间压缩到了 **32 个槽**，撞号概率按生日问题快速上升：
+#       2 副本 ≈ 3%，4 副本 ≈ 18%，8 副本 ≈ 61%。
+#     撞号的两个进程若在同一毫秒发号（sequence 都从 0 起步），会生成**完全相同**的 64 位 ID
+#     → 主键冲突/覆盖。因此：
+#       - 副本数 ≥ 2 就建议显式配置 SNOWFLAKE_WORKER_ID（0-31），并保证各副本不同；
+#       - 副本数 ≥ 4 时**必须**显式配置，否则撞号是大概率事件；
+#       - 对冲突零容忍（或懒得管机器号）的场景，直接用 generate_uuid7() —— 时间有序、
+#         无需分配 worker_id、128 位随机后缀。
+#   启动自检（banner）在多 worker 部署下会提醒这一点。
 
 
 class SnowflakeIdWorker:

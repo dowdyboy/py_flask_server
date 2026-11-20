@@ -5,8 +5,9 @@ import sys
 #
 # 与 wsgi.py（waitress）的对比：
 #   - waitress：零额外依赖、单进程多线程，够用且稳定
-#   - gunicorn：多 worker 高并发；SOCKETIO_ENABLED=true 时自动使用 eventlet worker
-#              （waitress 不支持 WebSocket）
+#   - gunicorn：多 worker 高并发。只有同时满足 "SOCKETIO_ENABLED=true" +
+#              "SOCKETIO_ASYNC_MODE=eventlet" + 已安装 eventlet 时才使用 eventlet worker；
+#              默认的 threading 模式用 sync worker（waitress 与 sync worker 都不支持 WebSocket）
 #
 # 用法：
 #   python wsgi_gunicorn.py                     # 使用环境变量配置
@@ -52,8 +53,35 @@ def _worker_class():
     return 'eventlet'
 
 
+def _dispose_inherited_engine(app):
+    """丢弃 master 进程在 fork 之前建立的 DB 连接。
+
+    本模块在 import 期就执行 `create_app()`，而 `DB_REFLECT_ON_START` 默认为 true，
+    反射会真实连库并把连接放回 QueuePool。随后 gunicorn fork 出 N 个 worker，
+    **每个 worker 都继承了同一个连接池对象与同一条已建立的 socket**。多个 worker
+    并发 check-out 到同一条连接后同时读写同一 socket，MySQL 侧会出现
+    "Commands out of sync"、报文错位、随机 500；pool_pre_ping 也无法识别（它只是在这条
+    坏连接上再发一次 SELECT 1）。
+
+    正确做法（SQLAlchemy 官方对 fork 的建议）：子进程里 `engine.dispose(close=False)`,
+    丢弃继承来的连接但保留连接池，worker 后续会各自建立新连接。
+    """
+    try:
+        from flask_server.module import sqlalchemy
+        from flask_server.util import Logger
+        db = sqlalchemy()
+        if db is None or app is None:
+            return
+        with app.app_context():
+            db.engine.dispose(close=False)
+        Logger.info('gunicorn worker: inherited SQLAlchemy connections disposed (fork-safe)')
+    except Exception as e:      # 清理失败不应让 worker 起不来
+        from flask_server.util import Logger
+        Logger.warn(f'gunicorn worker: dispose inherited engine failed: {e}')
+
+
 def _make_post_worker_init(worker_num):
-    """构造 gunicorn 的 post_worker_init 钩子（协议服务器启动策略）。
+    """构造 gunicorn 的 post_worker_init 钩子（fork 后清理 + 协议服务器启动策略）。
 
     ⚠️ 关键：post_worker_init 在**每个 worker 子进程**里都会执行一次。
     若每个 worker 都调用 start_protocol_servers()，worker 2..N 会因端口已被
@@ -61,8 +89,11 @@ def _make_post_worker_init(worker_num):
     异常穿出钩子 → gunicorn 记 "Exception in worker process" → 子进程退出 →
     master 重新拉起 → **无限重启循环**，HTTP 只剩 1 个 worker 可用。
 
-    因此多 worker 时直接跳过（只打一条告警），
+    因此多 worker 时直接跳过协议服务器（只打一条告警），
     需要 TCP/UDP 时请 WORKER_NUM=1 或将协议服务器独立进程部署。
+
+    注意：DB 连接池的清理对所有 worker 数都要做（包括单 worker），它是 fork 安全问题，
+    与协议服务器无关。
     """
     # "只打一次告警"用闭包标志而不是 worker.age：gunicorn 的 age 是递增的派生计数
     # （首个 worker 已经是 1），用 `age == 0` 判断永不成立，告警永远不会打印。
@@ -71,6 +102,15 @@ def _make_post_worker_init(worker_num):
     def _post_worker_init(worker):
         from flask_server.module import start_protocol_servers
         from flask_server.util import Logger
+
+        # 先做 fork 安全清理（每个 worker 各一次，与 worker 数无关）。
+        # 直接用模块级 app：它就是本入口 import 期创建、被 fork 继承的那个 Flask 实例，
+        # `init_SQLAlchemy` 绑定的也是它。注意 gunicorn 的 worker.app 是它自己的
+        # ArbiterApp 包装对象（不是 Flask app），worker.wsgi 才是 WSGI 可调用对象，
+        # 两者都容易踩坑，这里不依赖 gunicorn 内部结构。
+        from flask_server import app as flask_app
+        _dispose_inherited_engine(flask_app)
+
         if worker_num > 1:
             if not warned['multi_worker_skip']:
                 warned['multi_worker_skip'] = True

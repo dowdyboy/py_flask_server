@@ -7,6 +7,7 @@ from flask import request, jsonify
 from ..config import config, CONFIG_EXT_KEY
 from ..module import memory_cache, redis_cache
 from ..util import DataEncryptUtil, RandomGenerator, CommonUtil, Logger, GraceResult
+from . import metrics
 
 # 认证模块骨架
 #
@@ -399,6 +400,8 @@ class AuthService:
         client_ip = client_ip or _client_ip()
         if cls._is_login_locked(username, client_ip):
             Logger.warn(f'AuthService login blocked (locked): {username} ip={client_ip}')
+            # 只计数不按用户名/IP 打标签：账号信息不适合进指标，且会造成高基数
+            metrics._inc(metrics._AUTH_LOGIN_LOCKED)
             return None, 'locked'
         store = cls._get_store()
         user = store.get_by_username(username)

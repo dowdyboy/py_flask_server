@@ -117,28 +117,46 @@ def test_worker_id_config_takes_priority(monkeypatch):
     assert KeyGenerator._resolve_worker_id() == 7
 
 
-def test_worker_id_range():
+def test_worker_id_range(monkeypatch):
     """PID 派生结果必须在 0-31 范围内（雪花 worker_id 位宽）"""
     from flask_server import config
     from flask_server.util.key_generator import _derive_worker_id
 
-    config.snowflake_worker_id = None
+    # 用 monkeypatch 而不是直接赋值：monkeypatch 的 finalizer 与 conftest 的快照
+    # 双层保证该全局配置不会泄漏到后续用例
+    monkeypatch.setattr(config, 'snowflake_worker_id', None)
     for pid in range(0, 10000, 17):
         assert 0 <= _derive_worker_id(pid) <= 31
 
 
-def test_generate_uuid7_layout_and_ordering():
-    """UUIDv7：版本号 7、RFC4122 变体、毫秒级时间有序"""
-    import time
+def test_generate_uuid7_layout_and_ordering(monkeypatch):
+    """UUIDv7：版本号 7、RFC4122 变体、毫秒时间有序
+
+    不依赖真实等待：把 key_generator 模块的 time 换成每次前进 2ms 的假时钟，
+    同一用例即可确定性地覆盖"时间戳递增 → 字符串排序与生成顺序一致"。
+    """
     import uuid
 
-    first = KeyGenerator.generate_uuid7()
-    parsed = uuid.UUID(first)
-    assert parsed.version == 7
-    assert parsed.variant == uuid.RFC_4122
-    time.sleep(0.003)
-    second = KeyGenerator.generate_uuid7()
-    assert first < second, 'UUIDv7 应按毫秒时间有序（字符串可直接排序）'
+    from flask_server.util import key_generator as key_generator_module
+
+    class _StepClock:
+        """每次取时间前进 2ms（保证每个 UUID 的时间戳严格递增）"""
+
+        def __init__(self):
+            self.now = 1_700_000_000.0
+
+        def time(self):
+            self.now += 0.002
+            return self.now
+
+    monkeypatch.setattr(key_generator_module, 'time', _StepClock())
+
+    ids = [KeyGenerator.generate_uuid7() for _ in range(10)]
+    parsed = [uuid.UUID(value) for value in ids]
+    assert all(item.version == 7 for item in parsed)
+    assert all(item.variant == uuid.RFC_4122 for item in parsed)
+    assert len(set(ids)) == len(ids)
+    assert ids == sorted(ids), 'UUIDv7 应按毫秒时间有序（字符串可直接排序）'
 
 
 def test_generate_uuid7_unique_multi_thread():

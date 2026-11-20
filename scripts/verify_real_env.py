@@ -171,11 +171,10 @@ def step_migrate(args):
             'migrations/ 或 alembic.ini 已存在，拒绝覆盖（本步骤会 init/migrate/upgrade 并清理现场，'
             '可能删除已有迁移历史）。确认可以删除请加 --force-migrations；'
             '若只是验证建表，可等 user 表存在后本步骤会自动跳过。')
-    # 只清理"本次运行新生成"的产物，不碰用户已有文件
-    created_migrations = not os.path.exists(migrations_dir)
-    created_alembic = not os.path.exists(alembic_ini)
+    # 走到这里说明要么本来没有 migrations/，要么用户用 --force-migrations 显式授权覆盖。
+    # 两种情况都先清空，再由下面的 init 重新生成。
     if os.path.exists(migrations_dir):
-        shutil.rmtree(migrations_dir)   # 仅在 --force-migrations 下可达
+        shutil.rmtree(migrations_dir)
     try:
         for cmd, label in (
             (['init'], 'flask db init'),
@@ -194,20 +193,21 @@ def step_migrate(args):
         step_ok(f'migrations: `user` table created on real MySQL ({url.database})')
     finally:
         if not args.keep_migrations:
-            # 只删本次运行新建的文件（created_* 为 False 时说明是 --force-migrations 覆盖的
-            # 用户产物，清理前已由其显式授权，这里仍按原行为清理，但需分别判断）
-            for p, created in (
-                ('migrations', created_migrations),
-                ('alembic.ini', created_alembic),
-            ):
-                if not created:
-                    continue
+            # 清理本次运行生成/覆盖的产物（--force-migrations 时用户已显式授权删除）。
+            # 日志只在**真的删了东西**时输出，避免"假日志"误导排查。
+            removed = []
+            for p in ('migrations', 'alembic.ini'):
                 full = os.path.join(PROJECT_ROOT, p)
                 if os.path.isdir(full):
                     shutil.rmtree(full)
+                    removed.append(f'{p}/')
                 elif os.path.isfile(full):
                     os.remove(full)
-            log('migrations/ + alembic.ini removed (use --keep-migrations to keep)')
+                    removed.append(p)
+            if removed:
+                log(f'removed {", ".join(removed)} (use --keep-migrations to keep)')
+            else:
+                log('nothing to clean up: migrations/ 与 alembic.ini 均不存在')
 
 
 def step_http_flow(args, redis_client, mysql_url):
@@ -468,6 +468,25 @@ def main():
     app_db = make_url(args.mysql_uri).database
     args.test_db = args.test_db or f'{app_db}_test'
     args.reflect_db = args.reflect_db or f'{app_db}_reflect'
+
+    # 安全护栏：这两个库都会被脚本"创建 → 使用 → DROP"。
+    # 若名字被误传成应用库本身，--reflect-db 会在 finally 里 DROP DATABASE 把真实数据删掉，
+    # 而结尾还会打印"未改动其它库"。这里直接拒绝，宁可不跑。
+    if args.test_db == app_db:
+        print(f'[ERROR] --test-db 不能等于应用库 {app_db!r}（集成测试会在该库建表）')
+        sys.exit(1)
+    if args.reflect_db == app_db:
+        print(f'[ERROR] --reflect-db 不能等于应用库 {app_db!r}（脚本会 DROP DATABASE）')
+        sys.exit(1)
+    if args.test_db == args.reflect_db:
+        print('[ERROR] --test-db 与 --reflect-db 不能相同（两者生命周期不同）')
+        sys.exit(1)
+    # 命名不符合约定时给出提示（不阻断，便于使用既有库名）
+    for _flag, _dbname, _suffix in (('--test-db', args.test_db, '_test'),
+                                    ('--reflect-db', args.reflect_db, '_reflect')):
+        if not _dbname.endswith(_suffix):
+            print(f'[WARN] {_flag}={_dbname!r} 不以 {_suffix!r} 结尾；该库会被脚本创建并在结束时 DROP，'
+                  '请确认它不是任何真实业务库')
 
     log(f'MySQL:  {mask_uri(args.mysql_uri)}')
     log(f'Redis:  {mask_uri(args.redis_url)}')

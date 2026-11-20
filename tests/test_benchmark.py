@@ -1,5 +1,6 @@
 """benchmark 脚本测试：参数解析与统计纯函数"""
 
+import math
 import os
 import sys
 
@@ -46,9 +47,28 @@ def test_summarize_computes_percentiles():
     assert r['qps'] == 10.0
 
 
+def _nearest_rank(values, p):
+    """nearest-rank 百分位定义：ceil(n*p)-1，越界钳制到最后一个样本"""
+    ordered = sorted(values)
+    index = min(math.ceil(len(ordered) * p) - 1, len(ordered) - 1)
+    return float(ordered[max(index, 0)])
+
+
 def test_summarize_small_sample_no_index_error():
-    """R5 回归：小样本（1-10 个）时 p95/p99 索引不越界"""
+    """R5 回归：小样本（1-10 个）时 p95/p99 按 nearest-rank 取值且不越界
+
+    旧实现用 int(n*p)-1：n=2 时 p95 退化为最小值、n=10 时取第 9 个，
+    系统性低估尾部延迟。这里按 nearest-rank 语义断言精确值。
+    """
     for n in (1, 2, 5, 10):
-        r = summarize(list(range(n)), 0, 1.0)
-        assert r['p95_ms'] >= 0
-        assert r['p99_ms'] >= 0
+        samples = list(range(n))
+        r = summarize(samples, 0, 1.0)
+        assert r['p95_ms'] == _nearest_rank(samples, 0.95), n
+        assert r['p99_ms'] == _nearest_rank(samples, 0.99), n
+
+    # 固定值钉住 nearest-rank（旧公式 n=2 得 0、n=10 得 8，均为错误值）
+    assert summarize([0, 1], 0, 1.0)['p95_ms'] == 1.0
+    assert summarize([0, 1], 0, 1.0)['p99_ms'] == 1.0
+    small = summarize(list(range(10)), 0, 1.0)
+    assert small['p95_ms'] == 9.0
+    assert small['p99_ms'] == 9.0

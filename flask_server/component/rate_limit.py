@@ -2,6 +2,7 @@ from flask import request, abort, g
 from ..config import config
 from ..module import memory_cache, redis_cache
 from ..util import Logger, CommonUtil
+from . import metrics
 
 # 简单限流组件：按 (客户端IP, 请求路径) 做顺延窗口计数（每次请求刷新窗口 TTL）
 # 存储：RATE_LIMIT_STORE=memory（默认，进程内）/ redis（多实例准确，需配置 REDIS_URL）
@@ -86,12 +87,14 @@ def rate_limit_check():
     path_count = _incr(cache, f'rate:{ip}:{_path_key(request.path)}')
     if _over_limit(path_count):
         Logger.warn(f'rate limit exceeded (path): rate:{ip}:{request.path}')
+        metrics._inc(metrics._RATE_LIMITED, scope='path')
         g.retry_after = RATE_LIMIT_WINDOW   # 供 set_retry_after_header 写 Retry-After
         abort(429)
     # IP 级总配额（兜底，防路径随机化绕过）
     ip_count = _incr(cache, f'rate:{ip}')
     if _over_limit(ip_count):
         Logger.warn(f'rate limit exceeded (ip): rate:{ip}')
+        metrics._inc(metrics._RATE_LIMITED, scope='ip')
         g.retry_after = RATE_LIMIT_WINDOW
         abort(429)
     return None

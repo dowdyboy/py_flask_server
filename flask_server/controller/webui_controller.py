@@ -1,6 +1,8 @@
 import os
 import threading
 from collections import OrderedDict
+from typing import Optional
+
 from flask import send_from_directory, abort, redirect, request, current_app
 from ..config import config
 from ..util import Logger
@@ -10,9 +12,10 @@ from ..util import Logger
 
 Logger.info("webui_controller.py loaded")
 
-# 静态文件存在性缓存：debug 模式下禁用，避免开发期缓存陈旧；生产模式启用以减少磁盘 IO。
+# 静态文件存在性缓存：debug 模式下禁用（None），避免开发期缓存陈旧；生产模式启用以减少磁盘 IO。
 # OrderedDict + 上限 + 锁：避免无界增长导致内存泄漏，多线程安全
-path_exist_cache = OrderedDict() if not config.debug else None
+# 显式注解：两个分支分别是 OrderedDict / None，不注解类型检查无法推断
+path_exist_cache: Optional[OrderedDict] = OrderedDict() if not config.debug else None
 _PATH_CACHE_MAX = 2048
 _path_cache_lock = threading.Lock()
 

@@ -166,15 +166,26 @@ def test_rate_limit_exempts_trailing_slash(client, monkeypatch):
     monkeypatch.setattr(config, 'rate_limit_enabled', True)
     monkeypatch.setattr(config, 'rate_limit_per_minute', 2)
     monkeypatch.setattr(rl, 'redis_cache', None)
+    for k in list(memory_cache.cache.keys()):
+        if k.startswith('rate:'):
+            memory_cache.delete(k)
     try:
-        for _ in range(5):
-            assert client.get('/metrics/').status_code in (200, 308)
-        for _ in range(5):
-            assert client.get('/api/v1/healthz/').status_code in (200, 308)
-        # 非豁免端点仍被限流
+        for path in ('/metrics/', '/api/v1/healthz/'):
+            for _ in range(5):
+                resp = client.get(path)
+                # 尾斜杠命中已注册路由 → 308 重定向；无论是否被跟随后处理，都不能计入限流
+                assert resp.status_code == 308, f'{path} -> {resp.status_code}'
+
+        # 豁免路径完全不产生限流计数键（这是"未计数"的直接证据）
+        assert not [k for k in memory_cache.cache.keys() if k.startswith('rate:')], \
+            '豁免路径不应写入限流计数'
+
+        # 非豁免路径：2 次用满 IP 配额后，换一个从未访问过的路径仍应 429
         for _ in range(2):
             assert client.get('/hello').status_code == 200
-        assert client.get('/hello').status_code == 429
+        assert [k for k in memory_cache.cache.keys() if k.startswith('rate:')]
+        resp = client.get('/different-path-not-yet-counted')
+        assert resp.status_code == 429, 'IP 级总配额未生效：随机路径可绕过限流'
     finally:
         for k in list(memory_cache.cache.keys()):
             if k.startswith('rate:'):

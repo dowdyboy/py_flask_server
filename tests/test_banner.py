@@ -97,13 +97,14 @@ def test_check_production_config_warns_multi_worker_without_redis(monkeypatch):
 
 
 def test_check_production_config_multi_worker_with_redis_ok(monkeypatch):
-    """多 worker 已配 Redis 时不告警"""
+    """多 worker 已配 Redis 时不告警（显式雪花 worker_id：本用例只关心 Redis 一项）"""
     monkeypatch.setattr(config, 'app_env', 'production')
     monkeypatch.setattr(config, 'secret_key_is_default', False)
     monkeypatch.setattr(config, 'cors_origins', ['https://app.example.com'])
     monkeypatch.setattr(config, 'debug', False)
     monkeypatch.setattr(config, 'host', '0.0.0.0')
     monkeypatch.setattr(config, 'redis_url', 'redis://localhost:6379/0')
+    monkeypatch.setattr(config, 'snowflake_worker_id', 1)
     monkeypatch.setenv('WORKER_NUM', '4')
     assert check_production_config() == []
 
@@ -131,6 +132,7 @@ def test_check_production_config_no_log_warning_when_file_log_disabled(monkeypat
     monkeypatch.setattr(config, 'host', '0.0.0.0')
     monkeypatch.setattr(config, 'redis_url', 'redis://localhost:6379/0')
     monkeypatch.setattr(config, 'log_to_file', False)
+    monkeypatch.setattr(config, 'snowflake_worker_id', 1)
     monkeypatch.setenv('WORKER_NUM', '4')
     assert check_production_config() == []
 
@@ -162,6 +164,7 @@ def test_check_production_config_no_memory_auth_warning_when_disabled(monkeypatc
     monkeypatch.setattr(config, 'log_to_file', False)
     monkeypatch.setattr(config, 'auth_enabled', False)
     monkeypatch.setattr(config, 'auth_store', 'memory')
+    monkeypatch.setattr(config, 'snowflake_worker_id', 1)
     monkeypatch.setenv('WORKER_NUM', '4')
     assert check_production_config() == []
 
@@ -197,6 +200,30 @@ def test_check_production_config_no_rate_limit_warning_when_auth_disabled(monkey
     monkeypatch.setattr(config, 'log_to_file', False)
     monkeypatch.setattr(config, 'auth_enabled', False)
     monkeypatch.setattr(config, 'rate_limit_enabled', False)
+    monkeypatch.setattr(config, 'snowflake_worker_id', 1)
+    monkeypatch.setenv('WORKER_NUM', '4')
+    assert check_production_config() == []
+
+
+def test_check_production_config_warns_multi_worker_without_snowflake_id(monkeypatch):
+    """多 worker 未显式配置 SNOWFLAKE_WORKER_ID：32 槽派生存在撞号风险，必须告警"""
+    monkeypatch.setattr(config, 'app_env', 'production')
+    monkeypatch.setattr(config, 'secret_key_is_default', False)
+    monkeypatch.setattr(config, 'cors_origins', ['https://app.example.com'])
+    monkeypatch.setattr(config, 'debug', False)
+    monkeypatch.setattr(config, 'host', '0.0.0.0')
+    monkeypatch.setattr(config, 'redis_url', 'redis://localhost:6379/0')
+    monkeypatch.setattr(config, 'log_to_file', False)
+    monkeypatch.setattr(config, 'auth_enabled', False)
+    monkeypatch.setattr(config, 'snowflake_worker_id', None)
+    monkeypatch.setenv('WORKER_NUM', '4')
+
+    warnings = check_production_config()
+    assert any('SNOWFLAKE_WORKER_ID' in w for w in warnings), warnings
+
+    # 显式配置后该告警消失（其它配置保持干净，整体无告警）
+    monkeypatch.setattr(config, 'snowflake_worker_id', 1)
+    assert not any('SNOWFLAKE_WORKER_ID' in w for w in check_production_config())
     assert check_production_config() == []
 
 

@@ -1,3 +1,25 @@
+"""日志工具（请求 ID 链路追踪 + 防日志伪造 + 多级别 API）
+
+对外统一使用 `Logger` 静态方法，内部走命名 logger `flask_server`
+（避免捕获 SQLAlchemy/redis/urllib3 等第三方库的日志）：
+
+    - `Logger.debug(txt, exc_info=False)`：调试日志（仅当 logger 级别 ≤ DEBUG 时输出；
+      级别由 `LOG_LEVEL` / `DEBUG` 派生，见 config）
+    - `Logger.info(txt)`：普通运行信息
+    - `Logger.warn(txt, exc_info=False)` / `Logger.warning(...)`：告警（两种拼写等价；
+      `warn` 为历史写法，保留以兼容既有调用点）
+    - `Logger.error(txt, exc_info=False)`：错误
+    - `Logger.exception(txt)`：**只能在 `except` 块内调用**——以 ERROR 级别记录并强制
+      附带当前异常堆栈（等价于 `Logger.error(txt, exc_info=True)`）。在 except 之外调用
+      只会打印 `NoneType: None`，起不到排查作用。
+
+所有方法都经过 `_format_msg`：统一加 `[rid:xxx]` 请求前缀、转义 CR/LF（防攻击者用
+换行伪造日志行）。新增级别时也必须走这条路径，不要直接调用 logging。
+
+日志初始化（`Logger.init`）由模块底部按进程配置执行一次；支持 text/JSON 格式、
+文件轮转、控制台兜底。
+"""
+
 import logging
 import json
 import os
@@ -136,6 +158,11 @@ class Logger:
             )
 
     @staticmethod
+    def debug(txt, exc_info=False):
+        """调试日志（经 _format_msg：request_id 前缀 + CR/LF 转义）"""
+        logging.getLogger('flask_server').debug(Logger._format_msg(txt), exc_info=exc_info)
+
+    @staticmethod
     def info(txt):
         logging.getLogger('flask_server').info(Logger._format_msg(txt))
 
@@ -144,8 +171,25 @@ class Logger:
         logging.getLogger('flask_server').warning(Logger._format_msg(txt), exc_info=exc_info)
 
     @staticmethod
+    def warning(txt, exc_info=False):
+        """`warn` 的显式别名（两种拼写等价）；新代码建议用 warning
+
+        保留 warn 是因为既有调用点很多，且 logging 模块自身也兼容两种拼写。
+        """
+        Logger.warn(txt, exc_info=exc_info)
+
+    @staticmethod
     def error(txt, exc_info=False):
         logging.getLogger('flask_server').error(Logger._format_msg(txt), exc_info=exc_info)
+
+    @staticmethod
+    def exception(txt):
+        """ERROR 级别 + 强制附带异常堆栈；**只能在 `except` 块内调用**
+
+        在 except 块之外调用时 sys.exc_info() 为空，只会得到 `NoneType: None`，
+        无法定位问题——那种场景请改用 `Logger.error(txt)`。
+        """
+        logging.getLogger('flask_server').error(Logger._format_msg(txt), exc_info=True)
 
 
 Logger.init(filename=config.log_filename,

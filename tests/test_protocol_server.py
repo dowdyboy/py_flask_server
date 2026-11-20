@@ -45,8 +45,13 @@ def test_config_defaults_disabled():
     assert config.tcp_frame_tail == b''
 
 
-def test_register_and_overwrite_warns():
+def test_register_and_overwrite_warns(monkeypatch):
     """装饰器注册处理器；重复注册告警并覆盖"""
+    from flask_server.module import protocol_server as protocol_server_module
+
+    warnings = []
+    monkeypatch.setattr(protocol_server_module.Logger, 'warn',
+                        lambda msg, **kwargs: warnings.append(msg))
     server = _new_tcp_server()
 
     @server.on_message
@@ -59,6 +64,8 @@ def test_register_and_overwrite_warns():
 
     assert server._handlers['on_message'] is second
     assert server._dispatch('on_message', (None, b'x', ('h', 1))) == 'second'
+    assert any('already registered' in msg and 'on_message' in msg for msg in warnings), \
+        f'重复注册未告警: {warnings}'
 
 
 def test_dispatch_no_handler_returns_none():

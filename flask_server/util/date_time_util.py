@@ -73,6 +73,14 @@ class DateTimeUtil:
     def add_time_delta(timestamp, days=0, seconds=0, microseconds=0, milliseconds=0, minutes=0, hours=0, weeks=0):
         """
         在给定的时间戳上添加一个时间增量
+
+        纯整数毫秒运算，不经过 datetime/float 往返：
+        修复前实现是 `int((datetime.fromtimestamp(ts/1000) + delta).timestamp()) * 1000`，
+        先截断到**整秒**再乘 1000，导致：
+          - 任何 add_time_delta(ts) 都会把结果向前回退最多 999ms；
+          - milliseconds 参数在 ±1000ms 内完全无效（被整秒截断吞掉）。
+        对"缓存过期 / 重试延迟 / 令牌过期"这类用途，这个偏差会静默累积。
+
         :param timestamp: 基础时间戳（毫秒）
         :param days: 天数
         :param seconds: 秒数
@@ -81,11 +89,13 @@ class DateTimeUtil:
         :param minutes: 分钟数
         :param hours: 小时数
         :param weeks: 周数
-        :return: 新的时间戳（毫秒）
+        :return: 新的时间戳（毫秒，保留原有精度）
         """
         delta = datetime.timedelta(days=days, seconds=seconds, microseconds=microseconds, milliseconds=milliseconds,
                                    minutes=minutes, hours=hours, weeks=weeks)
-        return int((datetime.datetime.fromtimestamp(timestamp / 1000) + delta).timestamp()) * 1000
+        # 用 total_seconds() 的有理数运算再转整数毫秒，避免 float 累积误差
+        delta_ms = round(delta.total_seconds() * 1000)
+        return int(timestamp) + delta_ms
 
 # # 使用示例
 # if __name__ == "__main__":

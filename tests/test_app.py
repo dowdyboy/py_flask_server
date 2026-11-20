@@ -96,6 +96,12 @@ def test_request_id_response_header_auto_generated(client):
 def test_docs_page(client):
     resp = client.get('/docs')
     assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    # 页面必须真正引用 Swagger UI 资源与 OpenAPI spec，而不是一个空壳 HTML
+    assert 'swagger-ui-bundle.js' in html
+    assert 'swagger-ui.css' in html
+    assert '/openapi.json' in html
+    assert 'SwaggerUIBundle' in html
 
 
 def test_openapi_json(client):

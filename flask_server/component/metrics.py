@@ -1,5 +1,6 @@
 import os
 import time
+from typing import Any, Optional
 
 from flask import request, Response
 
@@ -9,6 +10,11 @@ from ..config import config
 # 暴露 /metrics（Prometheus 文本格式），指标：
 #   - http_requests_total{method,status,route}     请求总数（按路由聚合，防高基数）
 #   - http_request_duration_seconds_bucket/...      请求延迟直方图
+#   - http_rate_limited_total{scope}               限流拒绝数（scope=path/ip）
+#   - auth_login_locked_total                      登录因锁定被拒数
+#   - task_rejected_total{reason}                  任务未执行即被拒绝/死信数
+# 标签值全部来自固定集合（不取用户输入），保证低基数；业务代码统一用 `_inc`
+# 自增（指标未启用/依赖缺失时自动跳过，绝不影响主流程）。
 # 未安装 prometheus-client 时优雅降级（/metrics 返回 503 并告警一次）
 #
 # 多进程（gunicorn 多 worker）：
@@ -22,6 +28,15 @@ _MULTIPROCESS_DIR = config.metrics_multiprocess_dir
 if _MULTIPROCESS_DIR:
     os.makedirs(_MULTIPROCESS_DIR, exist_ok=True)
 
+# 指标对象：prometheus-client 是可选依赖，未安装时全部为 None。
+# 显式声明成 Optional 是为了让类型检查接受"先赋值 None、成功时再赋值 Counter"的分支，
+# 同时把"调用点必须容忍 None"（见 _inc）写进类型里。
+_REQUESTS: Optional[Any] = None
+_DURATION: Optional[Any] = None
+_RATE_LIMITED: Optional[Any] = None
+_AUTH_LOGIN_LOCKED: Optional[Any] = None
+_TASK_REJECTED: Optional[Any] = None
+
 try:
     from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
@@ -34,16 +49,51 @@ try:
         ['method', 'route'],
         buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
     )
+    # 限流拒绝：scope 只有 path / ip 两个固定值
+    _RATE_LIMITED = Counter(
+        'http_rate_limited_total', 'HTTP requests rejected by rate limiting',
+        ['scope'],
+    )
+    # 登录锁定拒绝（不按用户名/IP 打标签：高基数，且可能泄漏账号信息）
+    _AUTH_LOGIN_LOCKED = Counter(
+        'auth_login_locked_total', 'Login attempts refused because of account/IP lockout',
+    )
+    # 任务未执行即被拒绝/死信：reason 只有固定几个值（见 docs/api-conventions.md）
+    _TASK_REJECTED = Counter(
+        'task_rejected_total', 'Tasks rejected or dead-lettered before execution',
+        ['reason'],
+    )
     _METRICS_AVAILABLE = True
 except ImportError:
     from flask_server.util import Logger
     Logger.warn('prometheus-client not installed, /metrics disabled (pip install prometheus-client)')
     _METRICS_AVAILABLE = False
-    _REQUESTS = None
-    _DURATION = None
 
 
 _UNMATCHED_ROUTE = '__unmatched__'   # 未匹配任何路由（404 等）时使用固定标签，防高基数
+
+
+def _inc(counter, **labels):
+    """安全自增计数器：指标未启用/依赖缺失/标签非法时静默跳过，绝不让埋点抛错。
+
+    调用点保持干净（无需任何 try/except）；标签必须来自固定集合（如 scope=path/ip、
+    reason=unavailable），禁止传入请求路径、用户名等高基数值。
+
+    Args:
+        counter: prometheus_client.Counter 实例（依赖缺失时为 None）
+        **labels: 该计数器声明的标签（无标签计数器可不传）
+    """
+    if counter is None or not _METRICS_AVAILABLE or not config.metrics_enabled:
+        return
+    try:
+        # 无标签计数器不能调 labels()（prometheus_client 会抛 ValueError），直接 inc
+        if labels:
+            counter.labels(**labels).inc()
+        else:
+            counter.inc()
+    except Exception:
+        # 埋点失败只影响观测，不能影响业务返回
+        pass
 
 
 def _route_label():

@@ -16,6 +16,24 @@ Logger.info(f'SQLALCHEMY_DATABASE_URI : {_mask_uri(config.sqlalchemy_uri)}')
 db = None         # SQLAlchemy 实例（进程级单例；首次 init_SQLAlchemy 时创建）
 migrate = None    # Migrate 实例
 _app = None       # 初始化时绑定的 Flask app（单应用场景）
+# 首次绑定的数据库 URI：进程级单例的"所有权"记录，用于拒绝同进程切换到另一个库
+_bound_uri = None
+# 同时冗余记在 db 实例上：测试替换/恢复 db 对象后仍能识别该实例实际绑定的库
+_BOUND_URI_ATTR = '_flask_server_bound_uri'
+
+
+def _bound_database_uri():
+    """当前 db 实例绑定的数据库 URI（未绑定或无法判断时返回 None）"""
+    if db is None:
+        return None
+    uri = getattr(db, _BOUND_URI_ATTR, None)
+    if isinstance(uri, str):
+        return uri
+    if _app is not None:
+        uri = _app.config.get('SQLALCHEMY_DATABASE_URI')
+        if isinstance(uri, str):
+            return uri
+    return _bound_uri
 
 
 # 初始化SQLAlchemy对象，并根据配置决定是否反射数据库表结构
@@ -25,16 +43,29 @@ def init_SQLAlchemy(app, cfg=None):
     已知约束（刻意，不是 bug）：Flask-SQLAlchemy 的扩展对象只能 `init_app` 一次绑定，
     因此同一进程内 create_app() 多次调用时：
       - 第一次带 SQLALCHEMY_URI 的调用完成绑定，`_app` 固定为它；
-      - 后续 app 即使注入了不同的 URI/池参数也会被忽略，且**不会被注册**，
-        其请求内访问 db.engine 会抛 RuntimeError（health 探针会显示 db=error）。
-    需要同时跑多个不同数据库的应用实例，请用多进程部署。
+      - 后续调用未指定 URI（`sqlalchemy_uri is None`）或 URI 与已绑定的完全相同 →
+        直接复用当前 db，不重复初始化，也不打日志；
+      - 后续调用指定了**不同的 URI** → 抛 RuntimeError。静默沿用第一个数据库会让
+        调用方误以为在写另一个（例如临时/测试）库，实际却写进了生产库——这是数据完整性
+        事故，必须显式失败（错误信息里只出现脱敏后的 URI）。
+      - 需要同时跑多个不同数据库的应用实例，请用多进程部署。
     """
-    global db, _app
+    global db, _app, _bound_uri
     cfg = cfg if cfg is not None else config
     # 已初始化：进程级单例直接复用（create_app() 二次调用时不得把它重置为 None，
     # 否则第二次创建的应用会丢掉 db，且 model 模块的 UserPO 绑定失效）
     if db is not None:
-        return
+        current_uri = _bound_database_uri()
+        requested_uri = cfg.sqlalchemy_uri
+        # 同库复用（或调用方未指定 URI）保持历史行为；换库必须失败而不是静默忽略。
+        if requested_uri is None or current_uri is None or requested_uri == current_uri:
+            return
+        raise RuntimeError(
+            'SQLAlchemy 是进程级单例（Flask-SQLAlchemy 的 db 只能 init_app 一次），'
+            f'当前已绑定 {_mask_uri(current_uri)}，不能在同一进程切换到另一个数据库 '
+            f'{_mask_uri(requested_uri)}。多个数据库请使用多进程部署：'
+            '每个进程只配置一个 SQLALCHEMY_URI（见 create_app 的“进程级单例”说明）。'
+        )
     if cfg.sqlalchemy_uri is None:
         return
     _app = app
@@ -59,6 +90,8 @@ def init_SQLAlchemy(app, cfg=None):
         }
     # 必须在上面所有 app.config 赋值之后创建扩展：SQLAlchemy(app) 会立即读这些配置建 engine
     db = SQLAlchemy(app)
+    _bound_uri = cfg.sqlalchemy_uri
+    setattr(db, _BOUND_URI_ATTR, _bound_uri)
     if cfg.db_reflect_on_start:
         # 容错：反射失败（如 DB 短暂不可达）不应导致应用启动崩溃，
         # engine 本身为惰性连接，首个查询时才真正连库
@@ -107,12 +140,14 @@ def sqlalchemy_trans(func):
     def wrapper(*args, **kwargs):
         if db is None:
             raise RuntimeError('SQLAlchemy 未初始化，请配置 SQLALCHEMY_URI')
-        if _app is None:
-            raise RuntimeError('SQLAlchemy 未绑定 Flask app（init_SQLAlchemy 未执行）')
         from flask import has_app_context
-        # 自动管理 app context：业务函数内无需再手动 with app.app_context()
+        # 自动管理 app context：业务函数内无需再手动 with app.app_context()。
+        # 已经有 app context 时不需要 _app（它只是"无 context 时用来创建 context"的回退），
+        # 因此先判断 context 再检查 _app——否则在请求上下文内也会被"未绑定 app"拦住。
         if has_app_context():
             return _run_trans(func, *args, **kwargs)
+        if _app is None:
+            raise RuntimeError('SQLAlchemy 未绑定 Flask app（init_SQLAlchemy 未执行）')
         with _app.app_context():
             return _run_trans(func, *args, **kwargs)
     return wrapper

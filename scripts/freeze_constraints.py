@@ -102,17 +102,33 @@ def main():
     names = _runtime_closure(direct)
 
     lines = []
+    missing = []
     for key in sorted(names, key=str.lower):
         display = names[key]
         try:
             lines.append(f'{display}=={version(display)}')
         except PackageNotFoundError:
+            missing.append(display)
             print(f'[WARN] 未安装，未锁定：{display}', file=sys.stderr)
 
-    with open(args.output, 'w', encoding='utf-8', newline='\n') as f:
+    # 一个包都没解析到 => 当前环境显然没装运行时依赖。此时**绝不能**覆盖已有锁文件：
+    # 修复前无条件 open(..., 'w') 会把 constraints.txt 清成只剩 header 且退出码为 0，
+    # 之后 `pip install -c constraints.txt` 就变成"无约束安装"，锁文件静默失效。
+    if not lines:
+        print('[ERROR] 未解析到任何依赖（当前环境可能未安装运行时依赖），'
+              f'拒绝覆盖 {args.output}', file=sys.stderr)
+        sys.exit(1)
+    if missing:
+        print(f'[WARN] 共 {len(missing)} 个包未安装，写入的锁文件不完整：'
+              f'{", ".join(missing[:5])}{"…" if len(missing) > 5 else ""}', file=sys.stderr)
+
+    # 原子替换：先写临时文件再 os.replace，避免中途失败把已有锁文件截断
+    tmp_path = f'{args.output}.tmp'
+    with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
         f.write(HEADER)
         f.write('\n'.join(lines))
         f.write('\n')
+    os.replace(tmp_path, args.output)
 
     print(f'[OK] 已写入 {args.output}（{len(lines)} 个包）')
 

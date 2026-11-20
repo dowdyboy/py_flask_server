@@ -11,6 +11,19 @@ from ..util import Logger, CommonUtil
 # 冷却结束后首次操作前 ping 探测恢复，成功即恢复可用
 
 
+def _as_json_text(value):
+    """把 redis 返回值收窄成 json.loads 可接受的类型。
+
+    `decode_responses=True` 时正常返回 str；但 redis-py 的类型标注是
+    `Awaitable[Any] | Any`（同一套 API 兼容 asyncio 客户端），静态检查无法收窄。
+    这里做一次显式转换：非 str/bytes/bytearray 一律转字符串——既满足类型检查，
+    也让"假客户端返回意外类型"时走 json.loads 的异常分支（按脏数据处理），而不是抛 TypeError。
+    """
+    if isinstance(value, (str, bytes, bytearray)):
+        return value
+    return str(value)
+
+
 class RedisCache:
 
     def __init__(self, url: str) -> None:
@@ -63,11 +76,22 @@ class RedisCache:
             return False
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
-        """设置键值对，value 会被 JSON 序列化"""
+        """设置键值对，value 会被 JSON 序列化。
+
+        返回 True 表示写入成功；False 表示失败（Redis 不可用，或 value 不可 JSON 序列化）。
+        **不可序列化的 value 不算 Redis 故障**，不会触发冷却降级——修复前 json.dumps
+        放在同一个 try 里，传一个 datetime/set/ORM 对象就会让整个缓存降级 30s，
+        期间登录态、限流计数、防爆破计数全部失效，看起来却像"Redis 挂了"。
+        """
         if not self._check():
             return False
         try:
             data = json.dumps(value)
+        except (TypeError, ValueError) as e:
+            # 参数错误（调用方传了不可序列化的值）：只告警，不标记不可用
+            Logger.warn(f'RedisCache set skipped (value not JSON serializable) key={key}: {e}')
+            return False
+        try:
             if ttl:
                 self.client.setex(key, ttl, data)
             else:
@@ -91,7 +115,7 @@ class RedisCache:
         if data is None:
             return None
         try:
-            return json.loads(data)
+            return json.loads(_as_json_text(data))
         except Exception as e:
             Logger.warn(f'RedisCache get parse failed key={key}: {e}')
             try:
@@ -133,7 +157,7 @@ class RedisCache:
         if data is None:
             return None
         try:
-            return json.loads(data)
+            return json.loads(_as_json_text(data))
         except Exception as e:
             Logger.warn(f'RedisCache getdel parse failed key={key}: {e}')
             # 与 get 一致：损坏值视为脏数据，清除后由调用方按 miss 处理
@@ -175,7 +199,9 @@ class RedisCache:
         if not self._check():
             return False
         try:
-            return self.client.exists(key) > 0
+            # 同 _as_json_text：redis-py 的返回类型是 `Awaitable[Any] | Any`，需要显式收窄
+            found: Any = self.client.exists(key)
+            return int(found) > 0
         except Exception as e:
             Logger.warn(f'RedisCache exists failed key={key}: {e}')
             self._mark_unavailable()

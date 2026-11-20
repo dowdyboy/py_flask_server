@@ -95,6 +95,13 @@ def check_production_config(worker_num=None):
         warnings.append('TASK_WORKER_EMBEDDED=true 且未配置 REDIS_URL：进程内内存队列只在'
                         '"入队的那个进程"可见，多 worker 下任务不会被消费；'
                         '请配置 REDIS_URL 并独立运行 scripts/worker.py')
+    if _multi_worker(worker_num) and config.snowflake_worker_id is None:
+        # worker_id 派生只有 32 个槽，撞号概率按生日问题上升：2 副本≈3%、4 副本≈18%、
+        # 8 副本≈61%。撞号且同毫秒发号 → 完全相同的 ID → 主键冲突/覆盖。
+        warnings.append('多 worker/多副本部署未显式配置 SNOWFLAKE_WORKER_ID：默认按 '
+                        '(crc32(hostname)+pid) % 32 派生，只有 32 个槽位（4 副本撞号概率≈18%，'
+                        '8 副本≈61%），同毫秒发号可能生成重复 ID。请为每个副本配置不同的 '
+                        'SNOWFLAKE_WORKER_ID（0-31），或改用 KeyGenerator.generate_uuid7()')
     return warnings
 
 

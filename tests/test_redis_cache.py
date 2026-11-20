@@ -1,8 +1,12 @@
 """RedisCache 单元测试：使用假客户端验证降级与冷却式自动恢复"""
 
 import time
+from importlib import import_module
 
 from flask_server.module.redis_cache import RedisCache
+
+# 模块级 `time` 被替换为假时钟后，RedisCache 的冷却期判断完全可控
+redis_cache_module = import_module('flask_server.module.redis_cache')
 
 
 class _FakeClient:
@@ -124,8 +128,9 @@ def test_exists_delete():
     assert not c.exists('k')
 
 
-def test_degrade_then_recover():
+def test_degrade_then_recover(fake_clock, monkeypatch):
     """操作失败触发降级（进入冷却期），冷却结束自动恢复（不再永久不可用）"""
+    monkeypatch.setattr(redis_cache_module, 'time', fake_clock)
     client = _FakeClient()
     c = _make_cache(client, cooldown=0.05)
 
@@ -135,7 +140,7 @@ def test_degrade_then_recover():
     assert c.get('k') is None
 
     client.fail = False
-    time.sleep(0.06)                   # 等待冷却结束
+    fake_clock.advance(0.1)            # 冷却期结束（注入时钟，不真实 sleep）
     assert c.set('k3', 1) is True      # 冷却后首次操作先 ping 探测，成功即恢复
     assert c.get('k3') == 1
 
@@ -286,13 +291,14 @@ def test_ping_failure_enters_cooldown():
     assert c._unavailable_until > 0
 
 
-def test_ping_recovers_after_cooldown():
+def test_ping_recovers_after_cooldown(fake_clock, monkeypatch):
     """冷却结束后 ping 触发恢复探测：成功即返回 True 并解除降级"""
+    monkeypatch.setattr(redis_cache_module, 'time', fake_clock)
     client = _FakeClient(fail=True)
     c = _make_cache(client, cooldown=0.05)
     assert c.ping() is False
     client.fail = False
-    time.sleep(0.06)
+    fake_clock.advance(0.1)           # 冷却期结束（注入时钟，不真实 sleep）
     assert c.ping() is True
     assert c._need_recovery is False
 

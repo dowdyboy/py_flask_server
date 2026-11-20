@@ -6,6 +6,8 @@
   - at-least-once：handler 必须幂等；确认失败或 worker 崩溃都会导致重投
   - 重试采用指数退避：TASK_RETRY_BACKOFF * 2 ** 已失败次数
   - 收到停止信号后不再取新任务，等在途任务执行完再退出
+  - 可观测性：未执行即被拒绝/死信的任务计入 Prometheus `task_rejected_total{reason}`
+    （reason 见 TASK_REJECTED_REASONS，固定低基数，详见 docs/api-conventions.md）
 
 单独进程运行（推荐）：
 
@@ -23,6 +25,22 @@ from .task_queue import TaskQueueUnavailable, get_task_queue, registry
 RECLAIM_INTERVAL = 30
 # 后端不可用时的退避上限（秒）
 UNAVAILABLE_BACKOFF_MAX = 30
+
+# task_rejected_total{reason} 的固定标签值（只增不改，保持指标低基数）：
+#   - unavailable  ：队列后端不可用，本轮 reserve 失败（任务未取到，退避后重试）
+#   - unregistered ：任务名未注册，无法执行 → 死信
+#   - max_retries  ：handler 重试次数耗尽 → 死信
+TASK_REJECTED_REASONS = ('unavailable', 'unregistered', 'max_retries')
+
+
+def _count_rejected(reason):
+    """任务被拒绝/未执行即进入死信时计数（metrics 依赖缺失时自动跳过）
+
+    延迟导入：module 与 component 在导入期互相引用（component.auth → module），
+    放到调用时再取可避免循环导入，也让测试对 metrics 模块的 monkeypatch 立即生效。
+    """
+    from ..component.metrics import _TASK_REJECTED, _inc
+    _inc(_TASK_REJECTED, reason=reason)
 
 
 class TaskWorker:
@@ -112,6 +130,7 @@ class TaskWorker:
             except TaskQueueUnavailable as e:
                 # 后端不可用：退避重试，不要空转刷日志
                 Logger.warn(f'TaskWorker reserve failed, retry in {backoff:.0f}s: {e}')
+                _count_rejected('unavailable')
                 self._stop.wait(backoff)
                 backoff = min(UNAVAILABLE_BACKOFF_MAX, backoff * 2)
                 continue
@@ -153,6 +172,7 @@ class TaskWorker:
         if spec is None:
             msg = f'task not registered: {env.name}'
             Logger.error(f'TaskWorker {msg} (id={env.id})')
+            _count_rejected('unregistered')
             self.queue.dead(reserved, msg)
             self._count(failed=True)
             return
@@ -174,6 +194,7 @@ class TaskWorker:
                             f'(attempt {attempt_no}/{max_retries + 1}) id={env.id} name={env.name}: {error}')
             else:
                 self.queue.dead(reserved, error)
+                _count_rejected('max_retries')
                 Logger.error(f'TaskWorker task dead after {attempt_no} attempt(s) '
                              f'id={env.id} name={env.name}: {error}', exc_info=True)
                 self._count(failed=True)

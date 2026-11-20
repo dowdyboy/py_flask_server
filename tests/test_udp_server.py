@@ -18,13 +18,14 @@ class _CaptureHandler(logging.Handler):
         self.records.append(record)
 
 
-def _wait_until(cond, timeout=3):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+def _wait_until(cond, timeout=3.0, message='condition not met'):
+    """轮询等待条件成立；超时抛出带说明的 AssertionError（避免裸 assert 无上下文）"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if cond():
             return True
-        time.sleep(0.02)
-    return False
+        time.sleep(0.01)
+    raise AssertionError(f'{message} (timeout after {timeout}s)')
 
 
 def _start_echo_server(reply=True):
@@ -68,7 +69,7 @@ def test_no_reply_when_return_none():
     """处理器返回 None → 不回发"""
     server, port, records = _start_echo_server(reply=False)
     try:
-        sock = _udp_client(port)
+        sock = _udp_client(port, timeout=0.3)
         try:
             sock.sendto(b'hello', ('127.0.0.1', port))
             with pytest.raises(socket.timeout):
@@ -198,7 +199,7 @@ def test_non_bytes_return_warns():
         assert server.start() is True
         port = server.bound_address[1]
         try:
-            sock = _udp_client(port)
+            sock = _udp_client(port, timeout=0.3)
             try:
                 sock.sendto(b'hello', ('127.0.0.1', port))
                 with pytest.raises(socket.timeout):
@@ -207,8 +208,11 @@ def test_non_bytes_return_warns():
                 sock.close()
         finally:
             server.stop()
-        # 告警在处理器线程中写入；3s recvfrom 超时已远晚于处理完成，直接断言
-        assert any('returned str' in r.getMessage() for r in handler.records)
+        # 告警在处理器线程中写入：轮询日志捕获，不依赖固定的 socket 等待时长
+        _wait_until(
+            lambda: any('returned str' in r.getMessage() for r in handler.records),
+            message='非 bytes 返回值未告警',
+        )
     finally:
         logging.getLogger('flask_server').removeHandler(handler)
 
@@ -217,15 +221,29 @@ def test_concurrency_limit_drops_datagrams():
     """UDP 并发上限：槽位被占用时到达的数据报被丢弃（不回调）"""
     import threading
     server = UdpServer(host='127.0.0.1', port=0, max_concurrency=1)
-    gate = threading.Event()
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    slow_finished = threading.Event()
     records = []
 
     @server.on_message
     def on_message(data, addr):
         records.append(data)
         if data == b'slow':
-            gate.wait(3)   # 占用并发槽位
+            slow_started.set()
+            release_slow.wait(3)   # 占用并发槽位，直到测试显式放行
+            slow_finished.set()
         return None
+
+    def _slot_free():
+        """槽位是否已释放（直接探测信号量，避免 sleep 猜时序）"""
+        semaphore = server._semaphore
+        if semaphore is None:
+            return True
+        if semaphore.acquire(blocking=False):
+            semaphore.release()
+            return True
+        return False
 
     assert server.start() is True
     port = server.bound_address[1]
@@ -233,17 +251,25 @@ def test_concurrency_limit_drops_datagrams():
         sock = _udp_client(port)
         try:
             sock.sendto(b'slow', ('127.0.0.1', port))
-            time.sleep(0.1)                 # 等 handler 占用槽位
+            assert slow_started.wait(3), '慢处理器未启动，无法制造并发占满场景'
+
+            # 槽位被 slow 占满时 fast 到达：服务器必须在读取该数据报时拒绝它。
+            # 拒绝会触发一次告警（新 server 的冷却时间戳从 0 变为当前时间），
+            # 以此作为"fast 已被服务器处理并丢弃"的确定性信号；不 sleep 猜时序。
             sock.sendto(b'fast', ('127.0.0.1', port))
-            time.sleep(0.2)                 # 等被丢弃（不回调）
-            assert records == [b'slow']
-            gate.set()                      # 释放槽位
-            time.sleep(0.1)
+            _wait_until(lambda: server._last_reject_warn_ts > 0,
+                        message='fast 数据报未被并发上限拒绝')
+            assert records == [b'slow'], f'被拒绝的数据报不应回调处理器: {records}'
+
+            release_slow.set()
+            assert slow_finished.wait(3), '慢处理器未结束'
+            _wait_until(_slot_free, message='并发槽位未释放')
             sock.sendto(b'after', ('127.0.0.1', port))
-            assert _wait_until(lambda: records == [b'slow', b'after'])
+            _wait_until(lambda: records == [b'slow', b'after'],
+                        message=f'释放槽位后数据报未被处理: {records}')
         finally:
             sock.close()
     finally:
-        gate.set()
+        release_slow.set()
         server.stop()
     assert records == [b'slow', b'after']

@@ -95,20 +95,17 @@ def test_parse_int_missing(monkeypatch):
 
 
 def test_boolean_true_variants(monkeypatch):
-    for v in ('1', 'true', 'TRUE', 'yes'):
-        monkeypatch.setenv('T_BOOL', v)
-        assert os_env_bool('T_BOOL', False) is True
+    """真实 Config() 的布尔解析：1/true/TRUE/yes 均开启（不是测试内复刻的逻辑）"""
+    for value in ('1', 'true', 'TRUE', 'yes'):
+        monkeypatch.setenv('SOCKETIO_ENABLED', value)
+        assert config_module.Config().socketio_enabled is True, value
 
 
 def test_boolean_false_variants(monkeypatch):
-    for v in ('0', 'false', 'no', ''):
-        monkeypatch.setenv('T_BOOL', v)
-        assert os_env_bool('T_BOOL', False) is False
-
-
-def os_env_bool(name, default):
-    """复刻 config.py 的布尔解析逻辑（避免重复实现漂移）"""
-    return config_module.os.environ.get(name, str(default)).lower() in ('1', 'true', 'yes')
+    """真实 Config() 的布尔解析：0/false/no/空串均关闭"""
+    for value in ('0', 'false', 'no', ''):
+        monkeypatch.setenv('SOCKETIO_ENABLED', value)
+        assert config_module.Config().socketio_enabled is False, value
 
 
 def test_env_presets_defined():

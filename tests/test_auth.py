@@ -234,19 +234,26 @@ def test_login_locks_after_max_fails(client, fresh_store, monkeypatch):
     assert r.headers.get('Retry-After') == '60'
 
 
-def test_login_lock_expires(client, fresh_store, monkeypatch):
-    """锁定过期后恢复登录"""
+def test_login_lock_expires(client, fresh_store, monkeypatch, fake_clock):
+    """锁定过期后恢复登录（注入假时钟，不真实等待锁定秒数）"""
     from flask_server import config
-    import time
+    from flask_server.component import auth as auth_module
+
     monkeypatch.setattr(config, 'auth_login_max_fails', 2)
-    monkeypatch.setattr(config, 'auth_login_lock_seconds', 1)
+    monkeypatch.setattr(config, 'auth_login_lock_seconds', 60)
+    # 锁定时间与比较都在 auth 模块内通过 time.time() 完成，替换模块级 time 即可
+    # 确定性推进时钟；内存缓存的真实 TTL（60s）远长于用例耗时，不会被自然过期干扰
+    monkeypatch.setattr(auth_module, 'time', fake_clock)
     client.post('/api/v1/auth/register', json={'username': 'iris', 'password': 'secret123'})
 
     for _ in range(2):
         client.post('/api/v1/auth/login', json={'username': 'iris', 'password': 'wrong-pass'})
-    assert client.post('/api/v1/auth/login', json={'username': 'iris', 'password': 'secret123'}).status_code == 429
+    assert client.post('/api/v1/auth/login',
+                       json={'username': 'iris', 'password': 'secret123'}).status_code == 429
+    assert AuthService._is_login_locked('iris', '127.0.0.1') is True
 
-    time.sleep(1.2)   # 等待锁定过期
+    fake_clock.advance(config.auth_login_lock_seconds + 1)   # 锁定到期
+    assert AuthService._is_login_locked('iris', '127.0.0.1') is False
     r = client.post('/api/v1/auth/login', json={'username': 'iris', 'password': 'secret123'})
     assert r.status_code == 200
 
@@ -874,7 +881,8 @@ def test_sqlalchemy_po_rebinds_after_db_initialized(monkeypatch, tmp_path, fresh
             db.engine.dispose()
         AuthService._store = None
         monkeypatch.setattr(sa_module, 'db', None)
-        reload(user_module)                   # 恢复占位态，避免污染后续用例
+        # UserPO 的占位态由 tests/conftest.py 的 autouse fixture 恢复，
+        # 这里不再手动 reload（避免每个用例重复执行模块代码）
 
 
 def test_sqlalchemy_po_placeholder_without_db_raises_clear_error(monkeypatch):

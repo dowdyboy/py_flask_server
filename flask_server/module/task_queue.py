@@ -41,6 +41,8 @@
     - 状态流转（ack/retry/dead）用 MULTI/EXEC 管道一次提交：要么全部生效，要么全部不生效。
       EXEC 失败时消息仍留在 pending，可见性超时后重新投递——这正是 at-least-once 的兜底，
       而不是"已 ACK 但目标结构没写进去"的永久丢失。
+    - 延迟任务回迁用 Lua 脚本原子完成（ZREM 成功者才 XADD）：并发 worker 中只有抢到的那一个
+      投递（不重复），进程在回迁途中崩溃也不会出现"延迟集合与 stream 两边都没有"的静默丢失。
     - 入队失败（Redis 不可用）**抛异常而不是静默丢弃**——任务丢失比接口报错更难发现。
 """
 
@@ -368,6 +370,20 @@ class MemoryTaskQueue(BaseTaskQueue):
 # Redis 后端（Streams + consumer group：多 worker 正确、消息持久化）
 # --------------------------------------------------------------------------
 
+# 延迟任务原子回迁脚本（由 register_script 缓存为 EVALSHA 执行）：
+#   KEYS[1] = 延迟 ZSET，KEYS[2] = 任务 stream，ARGV[1] = 任务信封 JSON
+# ZREM 返回 1（本进程抢到这条）才执行 XADD：摘除与投递在同一次脚本执行内完成，
+# 并发 worker 中只有抢到的那一个投递（不会重复），进程在两者之间崩溃也不会丢任务
+# （要么仍在 ZSET，要么已在 stream，不存在"两边都没有"的中间态）。
+_PROMOTE_DELAYED_SCRIPT = """
+if redis.call('ZREM', KEYS[1], ARGV[1]) == 1 then
+    redis.call('XADD', KEYS[2], '*', 'data', ARGV[1])
+    return 1
+end
+return 0
+"""
+
+
 class RedisTaskQueue(BaseTaskQueue):
     """基于 Redis Streams 的任务队列。
 
@@ -377,6 +393,10 @@ class RedisTaskQueue(BaseTaskQueue):
         {stream}:delayed   ← ZSET，延迟/重试任务的到期时间
         {stream}:dead      ← LIST，死信（超过重试上限，供人工排查/重放）
         {stream}:task:{id} ← STRING(JSON)，任务状态（带 TTL）
+
+    延迟回迁原子性：到期任务从 `{stream}:delayed` 搬回 stream 由 Lua 脚本一次完成
+    （ZREM 成功者才 XADD）。因此多 worker 并发回迁不会重复投递，进程中途崩溃也不会
+    把任务丢在"已摘除但未入流"的间隙里。
     """
 
     def __init__(self, url, stream=None, group=None, client=None):
@@ -393,11 +413,25 @@ class RedisTaskQueue(BaseTaskQueue):
             url, decode_responses=True, socket_connect_timeout=3, socket_timeout=5,
         )
         try:
+            self._promote_script = self._load_promote_script()
             self._ensure_group()
         except Exception as e:
             # 暴露成统一异常：调用方（如 enqueue_task 的控制器）可以据此返回 503，
             # 而不是把 ConnectionError 直接漏成 500
             raise TaskQueueUnavailable(f'任务队列初始化失败（Redis 不可用？）: {e}') from e
+
+    def _load_promote_script(self):
+        """加载延迟回迁脚本；优先 register_script（EVALSHA 缓存，避免每次传脚本体）。
+
+        极简客户端（测试替身）没有 register_script 时退回 EVAL，语义完全相同：
+        两条路径都只执行上面那段 Lua。
+        """
+        register = getattr(self.client, 'register_script', None)
+        if register is not None:
+            return register(_PROMOTE_DELAYED_SCRIPT)
+        return lambda keys=None, args=None: self.client.eval(
+            _PROMOTE_DELAYED_SCRIPT, len(keys or []), *(keys or []), *(args or []),
+        )
 
     # -- 初始化 --
     def _ensure_group(self):
@@ -441,24 +475,24 @@ class RedisTaskQueue(BaseTaskQueue):
     def _promote_delayed(self):
         """把到期的延迟任务搬回 stream（每 ~1s 做一次，避免每次 reserve 都扫 ZSET）
 
+        摘除与入流由 Lua 脚本原子完成（ZREM 成功者才 XADD）：多 worker 并发回迁时
+        只有抢到的那一个投递，进程在回迁途中断掉也不会丢任务。
+
         Raises:
             TaskQueueUnavailable: Redis 不可用（与 reserve 的其它失败语义一致）
         """
         now = time.time()
         if now - self._last_promote < 1.0:
             return
-        # 整个回迁过程（ZRANGEBYSCORE/ZREM/XADD）都必须在 try 内：修复前 ZREM 在 try 外，
+        # 整个回迁过程（ZRANGEBYSCORE + 脚本）都必须在 try 内：修复前 ZREM 在 try 外，
         # 连接抖动会以裸 ConnectionError 逃出 reserve()，让只捕获 TaskQueueUnavailable 的
         # 调用方（如 scripts/worker.py --once）直接崩出 traceback。
         try:
             due = self.client.zrangebyscore(self.delayed_key, '-inf', now, start=0, num=100)
             for raw in due:
-                # ZREM 返回 1 代表本进程抢到这条，避免多 worker 重复投递
-                if self.client.zrem(self.delayed_key, raw) == 1:
-                    try:
-                        self.client.xadd(self.stream, {'data': raw})
-                    except Exception:
-                        self.client.zadd(self.delayed_key, {raw: now + 5})   # 失败退回，稍后再试
+                # 脚本内 ZREM+XADD 是一次原子执行：返回 1 表示本进程抢到并已投递，
+                # 返回 0 表示别的 worker 已经抢走（本进程不得重复入队）。
+                self._promote_script(keys=[self.delayed_key, self.stream], args=[raw])
         except Exception as e:
             raise TaskQueueUnavailable(f'延迟任务回迁失败（Redis 不可用？）: {e}') from e
         # 只有整轮成功才推进节流时间戳：失败后保留旧值，下一次 reserve 立即重试

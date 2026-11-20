@@ -144,6 +144,40 @@ def _child_env(http_port, tcp_port, workers, tcp_enabled):
     return env
 
 
+def _terminate_process_group(proc, timeout=10):
+    """终止 gunicorn master **及其全部 worker**。
+
+    子进程以 `start_new_session=True` 启动，因此拥有独立进程组；对 pgid 发信号可以
+    一次覆盖 master + workers。修复前只对 master 发 SIGKILL：gunicorn master 被强杀时
+    不会回收 worker，worker 会变成孤儿继续监听端口、继续执行临时 handler（而 finally
+    随后就删掉了 handler 文件），下一个用例可能撞端口或被残留进程干扰。
+    先 SIGTERM 让 master 优雅回收 worker，超时再 SIGKILL。
+    """
+    def _signal_group(sig):
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+            return True
+        except (ProcessLookupError, PermissionError, OSError):
+            # 进程组已不存在（或权限不足）：退回单进程信号，至少别让 master 活着
+            try:
+                proc.send_signal(sig)
+                return True
+            except (ProcessLookupError, OSError):
+                return False
+
+    _signal_group(signal.SIGTERM)
+    try:
+        proc.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    _signal_group(signal.SIGKILL)
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()   # 最后兜底：至少回收 master 本身
+
+
 def _run_phase(name, workers, expect_tcp_open):
     """启动一次 gunicorn，校验 worker 存活/协议端口状态，SIGTERM 后校验退出码"""
     http_port = _free_port()
@@ -212,8 +246,11 @@ def _run_phase(name, workers, expect_tcp_open):
         return f'[{name}] OK（workers={workers}, 协议端口{"已" if expect_tcp_open else "未"}监听）'
     finally:
         if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=10)
+            # 用进程组清理，而不是只 kill() master：
+            # 修复前只对 master 发 SIGKILL，gunicorn master 被强杀时不会回收 worker，
+            # worker 会变成孤儿继续监听端口、继续执行临时 handler（而本 finally 随后就删除
+            # 了 handler 文件），下一个用例可能撞端口或被残留进程干扰。
+            _terminate_process_group(proc)
         out_file.close()
         try:
             os.unlink(out_path)

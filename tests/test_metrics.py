@@ -20,6 +20,12 @@ def test_metrics_route_label_not_raw_path(client):
     client.get('/some/spa/route')
     body = client.get('/metrics').get_data(as_text=True)
     assert 'http_requests_total' in body
+    # 匹配到的路由规则出现在 route 标签
+    assert 'route="/api/v1/healthz"' in body
+    assert 'route="/<path:filename>"' in body
+    # 原始请求路径绝不能作为标签值
+    assert 'route="/some/spa/route"' not in body
+    assert '"/some/spa/route"' not in body
 
 
 def test_metrics_unmatched_route_fixed_label(client, monkeypatch):
@@ -90,13 +96,29 @@ def test_metrics_record_without_timer(client):
 
 def test_multiprocess_registry_collects_without_error(tmp_path, monkeypatch):
     """多进程 Registry：空目录下构造 collector 不应抛异常（gunicorn 首次启动场景）"""
+    try:
+        # prometheus-client 0.26 中 collect() yield 的是 Metric（不是 MetricFamily）
+        from prometheus_client.metrics_core import Metric
+    except ImportError:      # 兼容旧版本布局
+        try:
+            from prometheus_client.core import Metric
+        except ImportError:
+            Metric = None
+
     from flask_server import config
     from flask_server.component.metrics import _multiprocess_registry
 
     monkeypatch.setattr(config, 'metrics_multiprocess_dir', str(tmp_path))
     registry = _multiprocess_registry()
-    # 空目录 → 无样本，但结构合法、可迭代
-    assert list(registry.collect()) is not None
+    # 空目录 → 无样本，但 collect() 必须返回合法的 metric 序列（可能为空）
+    families = list(registry.collect())
+    assert isinstance(families, list)
+    for family in families:
+        if Metric is not None:
+            assert isinstance(family, Metric), f'非法的 metric 对象: {family!r}'
+        else:   # 未知版本：至少校验结构
+            assert hasattr(family, 'name') and hasattr(family, 'samples')
+        assert isinstance(family.samples, list)
 
 
 def test_metrics_uses_multiprocess_registry_when_configured(client, monkeypatch):

@@ -1,6 +1,8 @@
 """SQLite 模块单元测试：limit=0 语义、NULL 值处理、真实连接 CRUD"""
 
+import logging
 import sqlite3
+import sys
 
 import pytest
 
@@ -111,14 +113,45 @@ def test_real_select_limit(real_conn):
     assert len(rows0) == 0
 
 
-def test_debug_sql_printing_path(monkeypatch):
-    """DEBUG_SQL 开启时执行路径不抛异常（打印分支覆盖）"""
+def test_debug_sql_printing_path(monkeypatch, capsys):
+    """DEBUG_SQL 开启时真实执行路径应把 SQL 打印到日志输出（不是绕开 fetch 的空覆盖）"""
     from flask_server import config
+
     monkeypatch.setattr(config, 'debug', True)
     monkeypatch.setattr(config, 'debug_sql', True)
-    captured = _capture(monkeypatch)
-    SQLite.select('tbl', limit=10)
-    assert 'LIMIT 10' in captured['sql']
+
+    executed = []
+
+    class _FakeCur:
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+
+        def fetchall(self):
+            return []
+
+    class _FakeConn:
+        def cursor(self):
+            return _FakeCur()
+
+    monkeypatch.setattr(SQLite, 'conn', _FakeConn())
+
+    # 临时把日志复制一份到 capsys 能捕获的 stdout（flask_server logger 不向 root 传播）
+    logger = logging.getLogger('flask_server')
+    monkeypatch.setattr(logger, 'level', logging.INFO)
+    stream = logging.StreamHandler(sys.stdout)
+    logger.addHandler(stream)
+    try:
+        rows = SQLite.select('tbl', limit=10)
+    finally:
+        logger.removeHandler(stream)
+
+    captured = capsys.readouterr().out
+    assert rows == []
+    executed_sql = executed[0][0]
+    assert 'SELECT * FROM `tbl`' in executed_sql
+    assert 'LIMIT 10' in executed_sql
+    assert 'SELECT * FROM `tbl`' in captured, f'SQL 未打印: {captured!r}'
+    assert 'LIMIT 10' in captured
 
 
 def test_init_sqlite_db_executes_init_sql(monkeypatch):
