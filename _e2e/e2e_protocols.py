@@ -4,7 +4,7 @@ import os
 import socket
 import time
 
-from common import Results, dump_exception
+from common import Results, dump_exception, require_env
 
 os.environ.update(__import__('common').base_env())
 
@@ -373,6 +373,7 @@ def test_udp():
 
 
 def main():
+    require_env('e2e_protocols', note='纯 loopback 用例，不需要 MySQL/Redis/Docker')
     try:
         test_line_framing()
         test_line_oversized()

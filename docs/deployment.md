@@ -5,14 +5,18 @@
 | 入口 | 特点 | 适用 |
 |---|---|---|
 | `python wsgi.py` | waitress，零额外依赖、单进程多线程 | 默认推荐，中小流量 |
-| `python wsgi_gunicorn.py` | gunicorn 多 worker 高并发；`SOCKETIO_ENABLED=true` 时自动用 eventlet worker（支持 WebSocket） | 高并发 / 需要 WebSocket 的 Linux 生产 |
+| `python wsgi_gunicorn.py` | gunicorn 多 worker 高并发；**仅当 `SOCKETIO_ENABLED=true` 且 `SOCKETIO_ASYNC_MODE=eventlet` 且已安装 eventlet** 三者为真时才用 eventlet worker（支持 WebSocket）；默认 `threading` 模式使用 `sync` worker | 高并发 / 需要 WebSocket 的 Linux 生产 |
 
 ```bash
 # waitress（默认，零依赖）
 python wsgi.py
 
-# gunicorn（Linux 专用，需 pip install gunicorn；WebSocket 场景另需 eventlet）
+# gunicorn（Linux 专用，需 pip install gunicorn）
 WORKER_NUM=4 python wsgi_gunicorn.py
+
+# WebSocket：必须显式指定 eventlet 模式并安装 eventlet，
+# 否则（默认 threading 模式）gunicorn 用 sync worker，WebSocket 不可用
+SOCKETIO_ENABLED=true SOCKETIO_ASYNC_MODE=eventlet WORKER_NUM=4 python wsgi_gunicorn.py
 ```
 
 > ⚠️ gunicorn 不支持 Windows，Windows 生产请使用 wsgi.py（waitress）。
@@ -20,9 +24,13 @@ WORKER_NUM=4 python wsgi_gunicorn.py
 
 ### 多进程部署注意事项（gunicorn）
 
-1. **雪花 ID**：worker_id 默认按 `(crc32(hostname) + pid) % 32` 派生（容器 hostname 可区分副本，
-   但仍非严格保证）。多副本部署请**显式配置** `SNOWFLAKE_WORKER_ID` / `SNOWFLAKE_DATACENTER_ID`；
-   对唯一性零容忍的场景直接用 `KeyGenerator.generate_uuid7()`（时间有序 UUID，无需分配机器号）
+1. **雪花 ID**：worker_id 只有 **32** 个槽位，默认按 `(crc32(hostname) + pid) % 32` 派生（容器
+   hostname 可区分副本，但**只是尽力分散，不是唯一性保证**）。按生日问题估算，至少两个副本
+   撞到同一槽位的概率：2 副本 **≈3%**、4 副本 **≈18%**、8 副本 **≈61%**；撞号后两个副本在同一
+   毫秒生成的 64 位 ID 会完全相同。因此**≥2 副本应显式配置** `SNOWFLAKE_WORKER_ID`
+   （每个副本不同值，如 K8s StatefulSet 按序号注入），**≥4 副本实际上必须配置**；
+   `SNOWFLAKE_DATACENTER_ID` 按机房/集群区分。对唯一性零容忍或不想管理机器号的场景，
+   直接用 `KeyGenerator.generate_uuid7()`（时间有序 UUID，零配置、无需分配机器号）
 2. **缓存/限流**：memory_cache 与限流计数为进程内，多 worker 下互相独立——
    必须配置 `REDIS_URL` 保持一致（启动 banner 会告警）
 3. **认证**：access/refresh token 与登录防爆破计数默认存进程内缓存；配置 `REDIS_URL`
@@ -151,9 +159,13 @@ Linux 多进程用 `wsgi_gunicorn.py`。
 5. **限流**：`RATE_LIMIT_ENABLED=true` 按 IP+路径 顺延窗口限流（另有 IP 级总配额兜底，
    防随机路径绕过），超限返回 429；`/metrics` 与健康探针端点豁免限流。
 6. **可信代理**：`TRUSTED_PROXIES` 内的来源会被信任其 `X-Forwarded-For` 头，解析规则是从右
-   向左取第一个非可信 IP。⚠️ 使用 CIDR（如 Docker 的 `172.16.0.0/12`）时，该网段内**任何**
-   主机（含同网络下其他容器）都能伪造 `X-Forwarded-For`（绕过限流、污染日志 IP）。请确保
-   网段内仅含可信服务；如需严格隔离，应改为信任具体网关 IP。
+   向左取第一个非可信 IP。`docker-compose.prod.yml` 的默认值是 `${TRUSTED_PROXIES:-127.0.0.1,::1}`
+   —— **只信任回环，不信任整个私网段**，可通过环境变量覆盖。部署时应把它设为**反向代理的
+   实际地址/CIDR**；若请求经 Docker 网关进入，用 `docker network inspect <网络名>` 查到该网络
+   的具体网关 IP 再填写，而不是把整个 `172.16.0.0/12` 纳入信任。
+   ⚠️ 使用 CIDR（如 `172.16.0.0/12`）时，该网段内**任何**主机（含同网络下其他容器）都能伪造
+   `X-Forwarded-For`（绕过 IP 限流、污染日志 IP）。请确保网段内仅含可信服务；如需严格隔离，
+   应改为信任具体代理/网关 IP（见 [configuration.md](configuration.md) 的 `TRUSTED_PROXIES`）。
    > **waitress 特有坑（框架已处理）**：waitress 3 的 `clear_untrusted_proxy_headers`
    > 默认为 True，未配置 `trusted_proxy` 时会**直接删除** `X-Forwarded-*`。若被删除，
    > 代理后所有请求的 `remote_addr` 都是代理 IP——限流会退化成一个全站共享的桶、

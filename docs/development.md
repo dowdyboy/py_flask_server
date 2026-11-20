@@ -6,7 +6,7 @@
 # 安装开发依赖
 pip install -r requirements-dev.txt
 
-# 运行测试（含覆盖率检查，覆盖率门槛 85%）
+# 运行测试并输出覆盖率（85% 门槛由 CI `test` job 的 --cov-fail-under=85 强制）
 pytest tests/ --cov=flask_server --cov-report=term
 # 或 make test
 ```
@@ -15,8 +15,8 @@ pytest tests/ --cov=flask_server --cov-report=term
 认证模块（Redis 存储降级与内存兜底、防爆破、refresh 轮换、登出吊销 refresh、入参限长）、
 Prometheus 指标、缓存降级恢复（含故障/脏数据自愈）、事务提交/回滚（CI 含真实 MySQL）、
 路径穿越防护、反射与声明式模型共存、雪花 ID 并发、SubprocessTask 哨兵停止等
-**633 个用例**。覆盖率快照（2026-11-19，`pytest tests/ --cov=flask_server --cov-report=term`）：
-**91.22%**，门槛 85%（快照仅供参考，随代码演进会变）。
+**663 个用例**。覆盖率快照（2026-11-20，`pytest tests/ --cov=flask_server --cov-report=term`）：
+**90.85%**，门槛 85%（快照仅供参考，随代码演进会变）。
 
 真实环境自检（云服务器 MySQL/Redis 全链路验证）：
 
@@ -44,16 +44,56 @@ python scripts/worker.py --once             # 处理完当前任务即退出（�
 （修复前会端口冲突 → worker 崩溃 → master 重拉的死循环）；`WORKER_NUM=1` 时协议服务器
 正常监听、HTTP 可用、SIGTERM 后退出码为 0。
 
-CI 流水线（`.github/workflows/ci.yml`）：
-1. **test** — Python 3.10/3.12 矩阵 + 覆盖率门槛 85%
+CI 流水线（`.github/workflows/ci.yml`，共 11 个 job）：
+1. **test** — Python 3.10/3.12/3.13 矩阵 + 覆盖率门槛 85%
 2. **test-mysql** — 真实 MySQL 8.0 集成测试（`TEST_DB_URI` 环境变量）
-3. **test-windows** — Windows + Python 3.12 全量测试（覆盖 Windows 专属路径）
-4. **test-locked-deps** — 用 `constraints.txt` 锁定版本再跑一遍（与镜像内版本一致）
-5. **test-gunicorn-multiprocess** — gunicorn 多 worker 真实冒烟（协议服务器不被重复绑定）
-6. **lint** — ruff 代码风格检查
-7. **security** — pip-audit 依赖漏洞审计
-8. **docker-build** — 多阶段镜像构建 + 容器启动冒烟
+3. **test-redis** — 真实 Redis 7（`redis:7-alpine` service + healthcheck）+ 只跑标了
+   `redis_live` 的用例（`tests/test_redis_live.py`）；Streams / `GETDEL` / `XAUTOCLAIM` /
+   `XPENDING` 这些语义只有连真 Redis 才验得到（其余用例走 `FakeRedis` 替身），
+   同时用 `RATE_LIMIT_STORE=redis` 让至少一条用例走真实 Redis 限流存储
+4. **test-windows** — Windows + Python 3.12 全量测试（覆盖 Windows 专属路径）
+5. **test-locked-deps** — 用 `constraints.txt` 锁定版本再跑一遍（与镜像内版本一致）
+6. **test-gunicorn-multiprocess** — gunicorn 多 worker 真实冒烟（协议服务器不被重复绑定）
+7. **lint** — ruff 代码风格检查（命令与根目录 `make lint` 完全一致）
+8. **typecheck** — mypy 静态类型检查（配置在 `pyproject.toml` 的 `[tool.mypy]`，
+   只覆盖 `flask_server/`，等价于本地 `make typecheck`）
 9. **deps-sync** — pyproject.toml 与 requirements.txt 依赖清单一致性检查
+10. **security** — pip-audit 依赖漏洞审计
+11. **docker-build** — 多阶段镜像构建 + 容器启动冒烟
+
+每个 job 都设了 `timeout-minutes`（10–20，gunicorn/Windows/镜像构建 20），
+避免挂起的 job 长时间占着 runner；pytest 侧另有 `--timeout=120`（`pytest-timeout`），
+单个用例死锁会立刻判失败而不是拖到 CI 上限。
+
+## 真实环境端到端（`_e2e`，仅手动运行）
+
+`_e2e/` 下是 5 个可执行脚本 + 1 个公共库，用**真实进程 + 真实中间件**验证替身覆盖不到的行为
+（Redis Streams 的 `XAUTOCLAIM`、多进程 token 共享、TCP/UDP 真实分帧、docker compose 编排等）。
+
+> **仅手动运行，未纳入 CI（需要真实 MySQL/Redis 与 Docker）**。CI 里最接近的是
+> `test-mysql` 与 `test-redis` 两个 job。
+
+| 脚本 | 覆盖内容 | 需要 |
+|---|---|---|
+| `e2e_http.py` | HTTP / 认证 / 限流 / 数据库（含 Redis 限流与 SQLite 持久化） | MySQL + Redis |
+| `e2e_tasks.py` | 任务队列双后端、worker 生命周期、Redis Streams、worker CLI | Redis |
+| `e2e_protocols.py` | TCP 四种定界、UDP、并发上限与空闲超时 | 无（纯 loopback） |
+| `e2e_misc.py` | 脚手架生成、compose 编排、CI 与文档一致性 | Docker + PyYAML |
+| `probe_logging.py` | 日志 JSON / 文件 handler / `request_id` 探针 | 无 |
+| `common.py` | 公共库（不单独运行） | — |
+
+```bash
+# 依赖：运行时 + 开发依赖 + PyYAML（PyYAML 不在其它依赖清单里，只在 e2e 用到）
+pip install -r requirements-e2e.txt
+
+# 项目根 .env 里配好 SQLALCHEMY_URI（mysql）与 REDIS_URL 后：
+python _e2e/e2e_http.py      # 跑单个脚本
+make e2e                     # 全部（先打印前置条件，任一脚本失败即停）
+```
+
+退出码：`0` 全通过、`1` 有用例失败、`2` 环境没配好（脚本打印 `[ERROR] 需要 …` 后
+`sys.exit(2)`，不会甩 traceback）。脚本清单、副作用与清理、常见问题见
+[`_e2e/README.md`](../_e2e/README.md)。
 
 ## 应用工厂（create_app）
 
@@ -116,6 +156,41 @@ pip install -r requirements.txt && python scripts/freeze_constraints.py
 
 生成脚本只收录 `requirements.txt` 直接依赖及其传递依赖闭包，不会把环境里的无关包写进去。
 
+## 发布流程
+
+`.github/workflows/release.yml` 由 `v*` tag 触发，顺序是**先测试、再校验、最后发 Release**：
+
+1. **test** — 与 CI `test` job 相同的快速检查（安装 `requirements.txt` + `requirements-dev.txt`，
+   跑 `pytest tests/ -q`）；`release` job 依赖它（`needs: test`），失败就不会发布；
+2. **标签格式校验** — 只接受 `v<major>.<minor>.<patch>`，可带预发布后缀（如 `v0.7.0-rc.1`）；
+   不匹配直接 `::error::` 失败，不会发出畸形版本；
+3. **CHANGELOG 提取** — 从 `CHANGELOG.md` 取 `## [<version>] - <日期>` 小节作为 Release 正文；
+   提取为空则失败，并提示补上该小节（避免"有 tag、正文是空的"）；
+4. **创建 Release** — `softprops/action-gh-release` 用上一步的正文发布（`contents: write` 只在
+   这个 workflow 里声明）。
+
+发版步骤：
+
+1. 在 `CHANGELOG.md` 里加版本小节（放在 `## [Unreleased]` 之下），填好本次内容：
+
+   ```markdown
+   ## [0.7.0] - 2026-11-20
+
+   ### 修复
+   - ...
+   ```
+
+2. 同步 `pyproject.toml` 的 `version` 与受影响文档；
+3. 打 annotated tag 并推送：
+
+   ```bash
+   git tag -a v0.7.0 -m "0.7.0"
+   git push origin v0.7.0
+   ```
+
+> tag 去掉前缀 `v` 后必须与 `CHANGELOG.md` 的标题**完全一致**：`v0.6.0` → `## [0.6.0] - <日期>`；
+> 带预发布后缀也一样：`v0.7.0-rc.1` → `## [0.7.0-rc.1] - <日期>`。
+
 ## 代码风格
 
 ```bash
@@ -138,6 +213,10 @@ pip install pip-audit
 pip-audit -r requirements.txt
 # 或 make audit
 ```
+
+CI 的 `security` job 每次 push / PR 都跑同一条命令。**发现漏洞请走私密渠道**（GitHub 私密
+安全公告或 `SECURITY.md` 里的安全邮箱），不要开公开 Issue；轮换 `SECRET_KEY` / 数据库 /
+Redis 凭据的步骤也写在 [SECURITY.md](../SECURITY.md) 里。
 
 ## 性能基准
 
@@ -235,4 +314,8 @@ SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request！
+欢迎提交 Issue 和 Pull Request！开发环境搭建、`make` 目标、提交信息风格
+（`fix:` / `feat:` / `docs:` / `chore:` + 中文简述）、新增 controller / handler / task 的
+自动发现约定、`.env.example` 与 `docs/configuration.md` 的同步规则，见
+[CONTRIBUTING.md](../CONTRIBUTING.md)；安全问题请按 [SECURITY.md](../SECURITY.md)
+的私密渠道报告，不要开公开 Issue。

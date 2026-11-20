@@ -10,10 +10,16 @@
 - 🧵 **后台任务队列**：`task/` 建文件定义任务即自动发现；Redis Streams 持久化、重试退避、死信、状态查询
 - ✅ **参数校验 + Swagger**：flask-smorest 自动校验入参并生成 `/docs` 文档
 - 🔐 **认证骨架**：注册/登录/Token 开箱可用（默认关闭，一键开启）
-- 📊 **可观测性**：request_id 全链路、JSON 日志、Prometheus `/metrics`（支持多进程聚合）、healthz/readyz 探针
-- 🗄️ **数据库**：SQLAlchemy + Flask-Migrate（MySQL/SQLite）、缓存（内存/Redis 自动降级）
+- 📊 **可观测性**：request_id 全链路、JSON 日志（`Logger.debug/info/warn/error/exception`）、
+  Prometheus `/metrics`（请求量/延迟 + 限流拒绝/登录锁定/任务拒绝计数，支持多进程聚合）、
+  healthz/readyz 探针
+- 🗄️ **数据库**：SQLAlchemy + Flask-Migrate（MySQL/SQLite）、缓存（内存/Redis 自动降级；
+  内存缓存有**条目上限**，超出淘汰最久未写入的键，不会无界增长）
+- 🧪 **质量门禁**：`ruff` + `mypy` 静态检查（只覆盖 `flask_server/`）、`pytest` 覆盖率门槛 85%、
+  单测 `--timeout=120` 防挂死
 - 🛡️ **安全基线**：路径穿越防护、URI 脱敏、限流、安全响应头（CSP/HSTS）、可信代理 XFF 最右解析
-- 🐳 **容器化**：多阶段 Dockerfile + dev/prod compose + CI（`.github/workflows/` 2 个 workflow：`ci.yml` 的 9 个 job + `release.yml`；含 Windows、多进程冒烟、依赖锁定）
+- 🐳 **容器化**：多阶段 Dockerfile + dev/prod compose + CI（`.github/workflows/` 2 个 workflow：
+  `ci.yml` 的 11 个 job + `release.yml`；含真实 MySQL/Redis、Windows、多进程冒烟、类型检查、依赖锁定）
 
 ## 🚀 快速开始（5 分钟）
 
@@ -56,7 +62,7 @@ py_flask_server/
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 任务消费者 / 冒烟与压测脚本
-├── tests/                     # 633 个用例（覆盖率门槛 85%；实测 91.22%）
+├── tests/                     # 663 个用例（门槛 85%；实测 90.85%）
 ├── webui/                     # 静态前端（webui_controller 提供页面与静态资源）
 ├── storage/                   # 上传文件根目录（运行期生成，勿提交）
 ├── deployments/               # ARMv7 等离线部署资料
@@ -67,7 +73,7 @@ py_flask_server/
 └── server.py / wsgi.py / wsgi_gunicorn.py   # 三个启动入口
 ```
 
-> 覆盖率快照（2026-11-19）：`pytest tests/ --cov=flask_server --cov-report=term` 实测 **91.22%**（门槛 85%）。
+> 覆盖率快照（2026-11-20）：`pytest tests/ --cov=flask_server --cov-report=term` 实测 **90.85%**（门槛 85%）。663 个用例中 6 个默认跳过——1 个依赖可选包 Flask-SocketIO，5 个是需真实 Redis 的 `redis_live` 用例（CI 的 `test-redis` job 会跑它们）。
 
 ## 🔧 常用命令
 
@@ -75,9 +81,11 @@ py_flask_server/
 make dev        # 启动开发服务器           python server.py
 make test       # 测试 + 覆盖率            pytest tests/ --cov=flask_server
 make lint       # 代码风格                 ruff check flask_server/ tests/ ...
+make typecheck  # 静态类型检查（mypy，只覆盖 flask_server/）
 make audit      # 依赖安全审计            pip-audit -r requirements.txt
 make verify     # 真实环境自检（MySQL/Redis 全链路，需配置 .env）
 make smoke-gunicorn  # 多进程冒烟（Linux/WSL；校验协议服务器不被重复绑定）
+make e2e        # 真实环境端到端（仅手动：需 MySQL/Redis/Docker，见 _e2e/README.md）
 make worker     # 启动任务队列消费者        python scripts/worker.py --concurrency 4
 make migrate m="create users table"  # 生成迁移   make upgrade   # 执行迁移
 python scripts/scaffold.py my_project   # 生成新项目
@@ -94,13 +102,16 @@ python scripts/scaffold.py my_project   # 生成新项目
 | [任务队列](docs/task-queue.md) | 后台任务：定义/入队/消费、重试与死信、状态查询、运维 |
 | [部署指南](docs/deployment.md) | Docker、生产入口选型、健康检查、安全建议 |
 | [API 约定](docs/api-conventions.md) | 统一响应、错误码表、分页/ETag、认证、限流 |
-| [开发与 FAQ](docs/development.md) | 测试、lint、常见问题 |
-| [代码/文档审计报告](docs/AUDIT_REPORT.md) | 2026-11-18 全量审计：发现的问题、判定依据与修复建议 |
+| [开发与 FAQ](docs/development.md) | 测试、lint、类型检查、E2E、发布流程、常见问题 |
+| [代码/文档审计报告](docs/AUDIT_REPORT.md) | 两轮全量审计：发现的问题、判定依据、修复状态 |
+| [贡献指南](CONTRIBUTING.md) | 开发环境、`make` 目标、自动发现约定、提交与 PR 要求 |
+| [安全策略](SECURITY.md) | 漏洞报告渠道、凭据轮换步骤、安全配置建议 |
 
 ## 📄 许可证
 
-本项目为模板项目，可自由使用和修改。
+本项目为模板项目，可自由使用和修改（MIT）。
 
 ## 📞 联系方式
 
-如有问题，请提交 [Issue](https://github.com/dowdyboy/py_flask_server/issues)。
+- 功能问题 / Bug：[Issue](https://github.com/dowdyboy/py_flask_server/issues)
+- **安全漏洞**：请勿开公开 Issue，按 [SECURITY.md](SECURITY.md) 走私密渠道

@@ -5,7 +5,108 @@
 
 ## [Unreleased]
 
-（暂无）
+### 修复（第二轮审计）
+
+- **示例拦器会让全站失效**：`examples/component/interceptor_example.py` 曾把
+  `@app.before_request` 叠在 `@json_response` 上——`json_response` 永远返回非 None，
+  于是**每个请求都在 before_request 阶段被短路成 200 `{"code":0}`**，视图永不执行；
+  且 `from flask_server import app` 在 `component/` 被导入时是循环导入。改为
+  `init_interceptor_example(app)` 形式（与 auth/metrics 一致），失败路径显式构造
+  统一响应，并补「返回值即短路」的说明
+- **SQLite 写锁泄漏**：`execute()`/`fetch()` 此前只对 `database is locked` 回滚。
+  sqlite3 在 DML 执行前就隐式 BEGIN，语句失败后事务仍持有 RESERVED 写锁，
+  一次可预期的业务错误（如唯一约束冲突）会把整库写入阻塞到 `busy_timeout`(30s)。
+  现在任何 `sqlite3.Error` 都先回滚，仅对 locked 做退避重试
+- **`DateTimeUtil.add_time_delta` 丢毫秒**：结果被截断到整秒，任何调用都向前回退
+  最多 999ms，`milliseconds` 参数完全无效。改为纯整数毫秒运算
+- **gunicorn 多 worker 共用同一条 MySQL 连接**：master 在 fork 前建库（反射），
+  N 个 worker 继承同一 socket → `Commands out of sync` / 报文错位，`pool_pre_ping`
+  无法识别。`post_worker_init` 现在 `engine.dispose(close=False)`（SQLAlchemy 官方 fork 建议）
+- **`verify_real_env.py` 可能 DROP 真实库**：`--reflect-db`/`--test-db` 可被误传成应用库名，
+  脚本会创建并在 finally 里 `DROP DATABASE`，却仍打印「未改动其它库」。现在两者不得等于
+  应用库、彼此不得相同，命名不符约定时告警
+- **Redis 缓存把参数错误当故障**：`RedisCache.set` 的 `json.dumps` 曾与网络操作共用
+  一个 try——传一个不可序列化的值就会让整个缓存降级 30s（登录态/限流/防爆破计数一起失效）。
+  序列化改为单独 try，失败只告警并返回 False
+- **`LocalFileStorage.copy` 两处语义缺陷**：`copytree` 默认解引用树内符号链接（可把存储根
+  之外的内容复制进来，绕过根边界校验）；目标是已存在目录时直接 `FileExistsError`（与文件的
+  `shutil.copy` 语义不一致）。改为 `symlinks=True` + 已存在目录时拷进该目录
+- **`pbkdf2_hmac(salt=...)` 契约与实现相反**：文档说任意「盐值」，实现是 `bytes.fromhex`，
+  传普通字符串在注册流程里抛 `ValueError` → 500。现在明确要求 32 位 hex 并给出可读错误
+- **交付脚本卫生**：`scripts/freeze_constraints.py` 在依赖全未安装时仍覆盖 `constraints.txt`
+  （只剩 header 且退出码 0）→ 现在无解析结果即拒绝覆盖，并改临时文件 + `os.replace` 原子写；
+  `scripts/smoke_gunicorn.py` 只 kill master 会留下孤儿 worker → 改为对独立进程组
+  SIGTERM→SIGKILL；`scripts/benchmark.py` 的 p95/p99 用 `int(n*p)-1`，小样本严重低估
+  （n=2 时 p95 报最小值）→ 改 nearest-rank
+- **雪花 ID 撞号风险被低估**：`worker_id` 派生只有 32 个槽，注释仅说「仍非严格保证」。
+  实际 2 副本≈3%、4 副本≈18%、8 副本≈61%，撞号且同毫秒发号即产生完全相同的 ID。
+  注释与文档给出量化结论，启动自检在多 worker 且未配 `SNOWFLAKE_WORKER_ID` 时告警
+- **`app.py` 头部注释失实**：声称「`from flask_server.util import Logger` 不再初始化整个应用」，
+  实际包 `__init__` 仍会执行 `create_app()`（含连库）。改为如实说明工厂化解决的是
+  「可替换配置 / 多实例」，不是「导入零副作用」
+
+### 加固
+
+- **任务队列延迟提升原子化**：`_promote_delayed` 的 `ZREM → XADD` 改为 **Lua 原子脚本**
+  （`register_script`），只有赢家入队；消除「已从 ZSET 移除但未进 stream」的崩溃丢失窗口。
+  `FakeRedis` 相应支持 `register_script`/`eval`，并补「单赢家 / 脚本失败重试」回归
+- **第二个数据库不再被静默忽略**：`init_SQLAlchemy` 记录绑定 URI，第二次 `create_app` 传入
+  **不同** URI 时抛 `RuntimeError`（含脱敏 URI），避免「以为在写测试库、实际写生产库」
+- **内存缓存加上限**：`SimpleMemoryCache(max_entries=10000)`，超出按「最久未写入」淘汰
+  （刚写入的键不会被淘汰），淘汰按间隔限流告警；防止无 TTL 的键无界增长撑爆内存
+- **日志 API 补全**：`Logger.debug()` / `Logger.exception()`（ERROR + 强制 traceback）/
+  `warning` 别名，全部走同一命名 logger 与 `\r\n` 转义
+- **可观测性补指标**：新增 `http_rate_limited_total{scope}`、`auth_login_locked_total`、
+  `task_rejected_total{reason}`，接入限流、登录锁定、任务 worker；`_inc()` 在指标不可用时
+  静默跳过，埋点绝不影响主流程
+- **`TRUSTED_PROXIES` 默认收窄**：prod compose 从信任整个 `172.16.0.0/12` 改为
+  `${TRUSTED_PROXIES:-127.0.0.1,::1}`，并在文档说明应填反向代理的具体地址/网关 IP
+  （信任整个私网段意味着网段内任意容器都能伪造 `X-Forwarded-For` 绕过限流）
+- **`deployments/armv7` 三个缺陷**：自检失败不再以退出码 0 伪装成功；安装前
+  `sha256sum -c SHA256SUMS`（缺 coreutils 时明确告警）；`--prefix` 真正贯通到
+  `scripts/pyflask` / init 脚本 / `uninstall.sh`（原先硬编码 `/opt/pyflask`）
+- **`SHA256SUMS` 编码**：由 CRLF + UTF-8 BOM 改为 LF 无 BOM（BusyBox `sha256sum` 不容错），
+  28 条校验逐条复核仍全部匹配
+
+### 工程化
+
+- **CI 扩到 11 个 job**：新增 `test-redis`（真实 `redis:7-alpine` service + healthcheck +
+  先自检 PING，跑 `redis_live` 标记的真实 Redis 用例：`GETDEL` 原子性、Streams
+  `XREADGROUP/XACK/XDEL`、`XAUTOCLAIM`、`XPENDING` 形状、真实队列 enqueue→reserve→ack）
+  与 `typecheck`（mypy）；全部 job 加 `timeout-minutes`
+- **`release.yml` 加门禁**：`release` 依赖新增的 `test` job；tag 必须是
+  `v<major>.<minor>.<patch>[-预发布]`；CHANGELOG 对应版本段落为空时直接失败
+  （此前任何 `v*` tag 都会立刻发版，且段落缺失只产生空正文）
+- **类型检查渐进门禁**：`[tool.mypy]` + `make typecheck` + CI job，目前覆盖
+  `flask_server/`（43 个文件，零错误）；修掉 `sqlite`/`redis_cache`/`webui_controller`/
+  `model.po.user`/`metrics` 的类型问题（用显式收窄与最小 `# type: ignore` + 说明）
+- **单测超时保护**：`pytest --timeout=120`（`pytest-timeout`），死锁用例不再把 CI 挂到上限
+- **测试质量整改**：新增 autouse 快照/还原 fixture（logger handlers、`sqlalchemy`
+  的 `db/_bound_uri/_app`、`AsyncTaskUtil.executor`、`config`、`model.po.user`、
+  `AuthService._store`），消除文件字母序依赖；**27 处 `sleep` 改为事件/注入时钟**；
+  一批恒真或名不副实的弱断言改为真正可失败的断言；新增 `tests/test_redis_live.py`
+  （真实 Redis）与 `tests/test_docs_consistency.py`（配置键 ↔ `.env.example` ↔
+  配置文档三方一致、Markdown 相对链接可解析、`pyproject` 版本 ↔ CHANGELOG 段落）
+- **`_e2e` 明确定性为手动**：新增 `requirements-e2e.txt`（含此前未声明的 PyYAML）、
+  `_e2e/README.md`、`make e2e`；脚本缺环境变量时打印可读提示并以退出码 2 结束（不再 traceback）
+- **仓库治理补齐**：`SECURITY.md`（漏洞报告渠道、`.env` 凭据轮换步骤）、`CONTRIBUTING.md`、
+  issue forms、PR 模板；根 `.gitattributes` 固定 `*.sh` / `SHA256SUMS` 为 LF（Windows 的
+  `core.autocrlf` 会把脚本转成 CRLF，拷到板子上 shebang 直接失效）
+- **打包元数据**：`pyproject.toml` 补 `classifiers` / `keywords` / `[project.urls]` /
+  `optional-dependencies`（dev / mysql / redis / wsgi / websocket）
+
+### 文档
+
+- `docs/AUDIT_REPORT.md` 新增「第二轮审计与加固」章节（17 项新发现 + 修复状态，
+  并记录一条被否定的误报：`examples/api.http` 实际存在且受版本控制）
+- 同步 `docs/architecture.md`（after_request 钩子表补 `set_retry_after_header`、
+  `request.args.to_dict()` 是快照、DB 换 URI 会报错、内存缓存有上限）、
+  `docs/development.md`（11 个 CI job、mypy、`make e2e`、发布流程、单测超时）、
+  `docs/configuration.md` / `docs/deployment.md`（雪花 ID 撞号量化、eventlet worker 三条件、
+  `TRUSTED_PROXIES` 收窄）、`docs/api-conventions.md`（新指标清单、非法 JSON → 1001、
+  OpenAPI 已声明错误码、429 的 `Retry-After`）、`docs/task-queue.md`（原子提升保证）
+- `examples/README.md` 修正两条失实说明（ORM 应配 `SQLALCHEMY_URI`；`BuyRecordPO` 已提供），
+  并补「`@app.route` 与 `create_app` 注入」「协议示例用 `-m` 运行」两条注意事项
 
 ## [0.6.0] - 2026-11-19
 

@@ -12,6 +12,7 @@ import requests
 from common import (
     Results, Server, TMP_DIR, base_env, cleanup_redis, dump_exception, free_port,
     get_json, install_probe_modules, parse_dotenv, redis_url, remove_probe_modules,
+    require_env,
 )
 
 # 在导入 flask_server 之前把测试进程的环境变量也清理干净（.env 的 load_dotenv 不覆盖已有变量）
@@ -712,6 +713,15 @@ def test_in_process():
 
 
 def main():
+    require_env(
+        'e2e_http',
+        required={
+            'SQLALCHEMY_URI': 'MySQL 连接串（真实库连通性/持久化用例），'
+                              '例 mysql+pymysql://user:pass@127.0.0.1:3306/pyflask?charset=utf8mb4',
+            'REDIS_URL': 'Redis 连接串（Redis 限流存储 + 跨进程 token 共享用例），'
+                         '例 redis://127.0.0.1:6379/0',
+        },
+    )
     install_probe_modules()
     try:
         test_main_server()

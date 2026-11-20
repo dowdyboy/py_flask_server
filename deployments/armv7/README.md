@@ -37,7 +37,7 @@ deployments/armv7/
 ├── config/
 │   └── env.example                              板端推荐配置
 ├── requirements.lock.txt                        实际安装的版本（可复现）
-└── SHA256SUMS                                   完整性校验
+└── SHA256SUMS                                   完整性校验（install.sh 先校验再装）
 ```
 
 ---
@@ -105,10 +105,21 @@ cd /opt/deploy-armv7
 sh install.sh --app /path/to/py_flask_server
 ```
 
-脚本会依次做：解压 Python → 部署应用 → 建 venv 装依赖 → 生成 `.env` →
+脚本会依次做：校验 `SHA256SUMS` → 解压 Python → 部署应用 → 建 venv 装依赖 → 生成 `.env` →
 安装 init 服务并注册开机自启 → 启动 → 健康检查。
 
 成功后会打印访问地址。
+
+> **失败即非 0 退出**：`SHA256SUMS` 校验不通过、服务启动失败、最后的
+> `http://127.0.0.1:$PORT/api/v1/healthz` 健康检查失败，都会让 `install.sh` 以退出码 1 结束
+> 并打印排查步骤；不会再出现"提示安装完成、其实服务是坏的"。
+>
+> - 校验：`SHA256SUMS` 覆盖 `runtime/` 与 `wheels/`，安装前逐个比对（`sha256sum -c`）。
+>   校验不通过直接中止；目标系统没有 `sha256sum`（极简 rootfs 缺 coreutils）时
+>   降级为**打印警告并跳过**，建议先在 x86 上校验再把包传上板子。
+> - 自检失败时按脚本提示依次看：`/etc/init.d/pyflask status`、
+>   `tail -50 /var/log/pyflask.log`、`curl -v http://127.0.0.1:<端口>/api/v1/healthz`、
+>   `$APPDIR/.env`（默认 `/opt/pyflask/app/.env`）。
 
 ### 4.4 改配置（必须）
 
@@ -127,6 +138,27 @@ python3 -c "import secrets;print(secrets.token_urlsafe(48))"
 ```bash
 /etc/init.d/pyflask restart
 ```
+
+### 4.5 自定义安装根目录（`--prefix`，可选）
+
+默认装在 `/opt`（`/opt/python3.11` + `/opt/pyflask`）。要换到别的**持久**目录：
+
+```bash
+sh install.sh --app /path/to/py_flask_server --prefix /srv/opt
+```
+
+- `--prefix` 必须是**绝对路径**，只支持字母/数字/`._-/`（会写进 init 脚本做 sed 替换），
+  尾部斜杠会被去掉；
+- 安装时把实际根目录写进 `/etc/init.d/pyflask` 的第一行 `PREFIX=<根目录>`，
+  `APP_DIR` / `PYTHON`（venv）随之变化。可随时确认：
+
+  ```bash
+  grep '^PREFIX=' /etc/init.d/pyflask
+  ```
+
+- 卸载时带上同一个 `--prefix`；不指定则从已安装的 `/etc/init.d/pyflask` 读回根目录，
+  再不行按默认 `/opt` 处理；
+- **不要**指向 `/tmp`（tmpfs，重启即失）。
 
 ---
 
@@ -184,6 +216,9 @@ update-rc.d pyflask defaults          # 注册开机自启
 /etc/init.d/pyflask start             # 会等端口就绪（约 10 秒）
 curl http://127.0.0.1:5000/api/v1/healthz
 ```
+
+> 手工复制时 `scripts/pyflask` 里的 `PREFIX` 保持默认 `/opt`，所以手工安装只适用默认根目录。
+> 用 `--prefix` 安装时由 `install.sh` 按实际根目录改写这一行，别再手工复制覆盖。
 
 ### 5.6 手工验证
 
@@ -304,6 +339,11 @@ with app.app_context():
 | 重启后用户没了 | `AUTH_STORE=memory` | 改 `sqlalchemy` + 持久化 DB |
 | 重启后应用没了 | 应用装在了 `/tmp` | 必须在 `/opt` |
 | `update-rc.d: not found` | 极简 rootfs | 手工 `ln -sf ../init.d/pyflask /etc/rc5.d/S20pyflask` |
+| `校验失败：安装包不完整或已被改动` | 传输损坏（U 盘拷贝易截断）/ 包被替换 | 重新传包；在 x86 上 `cd deployments/armv7 && sha256sum -c SHA256SUMS` 先核对 |
+| `警告：缺少 sha256sum（coreutils），跳过完整性校验` | 极简 rootfs 没装 coreutils | 先在 x86 上校验；或装 coreutils 后重跑 `install.sh` |
+| `健康检查: 失败` 且 `install.sh` 退出码 1 | 服务起来了但 `/api/v1/healthz` 不通 | 看 `/var/log/pyflask.log`；检查 `.env` 的 `SERVER_HOST` / `SERVER_PORT`、数据库/Redis 配置 |
+| `--prefix 必须是绝对路径` / `只支持字母/数字/._-/` | 传了相对路径或带特殊字符 | 用 `/srv/opt` 这类绝对路径，避免空格与 sed 特殊字符 |
+| `--prefix` 装完 `/etc/init.d/pyflask` 起不来 | 服务脚本里的 `PREFIX` 不是实际根目录 | `grep '^PREFIX=' /etc/init.d/pyflask` 确认，重跑 `install.sh --prefix ...` |
 
 ---
 
@@ -337,7 +377,11 @@ pip download --platform manylinux2014_armv7l --python-version 3.11 \
 cd /opt/deploy-armv7
 sh uninstall.sh                 # 全部删除
 sh uninstall.sh --keep-python   # 保留 Python 运行时
+sh uninstall.sh --prefix /srv/opt   # 安装时用了 --prefix 的，指定同一个根目录
 ```
+
+不指定 `--prefix` 时，`uninstall.sh` 会从已安装的 `/etc/init.d/pyflask` 里读回安装根目录
+（`install.sh` 写入的那行 `PREFIX=`），读不到按默认 `/opt` 处理。
 
 ---
 
@@ -386,6 +430,9 @@ sh uninstall.sh --keep-python   # 保留 Python 运行时
 [6/7] 启动服务          pyflask 已启动 (pid 822, 11s)
 [7/7] 自检              健康检查: 通过
 ```
+
+> 这次安装早于"`SHA256SUMS` 校验 + 自检失败退出码"的改动：新版会在 `[0/7]` 多打印
+> `校验 SHA256SUMS ...` / `校验通过` 两行，且健康检查失败时以退出码 1 结束。
 
 局域网访问验证（从另一台机器）：
 

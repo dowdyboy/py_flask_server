@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -74,6 +75,60 @@ def parse_dotenv(path=ROOT / '.env'):
         if m:
             env[m.group(1)] = m.group(2)
     return env
+
+
+# 环境没配好时的退出码：与"用例失败"(1) 区分，便于脚本/人工判断是什么原因
+EXIT_ENV_MISSING = 2
+
+
+def env_value(name):
+    """读进程环境，回退到项目根 .env；返回去掉首尾空白的值（未配置返回空串）。"""
+    value = os.environ.get(name) or parse_dotenv().get(name) or ''
+    return value.strip().strip('"\'')
+
+
+def require_env(script, required=None, optional=None, note=''):
+    """启动前检查真实环境依赖：先打印环境状态，缺 required 时给可执行提示并退出 2。
+
+    这些脚本是人工运维工具，报错要能照着做，所以只打印提示、不抛堆栈。
+
+    Args:
+        script (str): 脚本名，仅用于提示
+        required (dict): {变量名: 用途说明}，缺失即中止（退出码 2）
+        optional (dict): {变量名: 用途说明}，缺失只打印 [SKIP]（对应用例本来就会跳过）
+        note (str): 追加在状态行后的说明（如"纯 loopback 用例"）
+    """
+    required = required or {}
+    optional = optional or {}
+    if required:
+        status = ', '.join(f'{name}={"已配置" if env_value(name) else "未配置"}' for name in required)
+    else:
+        status = '无必需的外部服务'
+    print(f'[ENV] {script}: {status}' + (f'（{note}）' if note else ''))
+
+    missing = [(name, why) for name, why in required.items() if not env_value(name)]
+    if missing:
+        print(f'[ERROR] {script} 需要真实环境，以下变量未配置：')
+        for name, why in missing:
+            print(f'  - {name}: {why}')
+        print('  配置方式（任选其一）：')
+        print('    1) 复制 .env.example 为 .env（项目根）并填写上面的变量，脚本会自动读取')
+        print('    2) export SQLALCHEMY_URI=... REDIS_URL=... 后重新运行')
+        print('  需要的服务与启动方式见 _e2e/README.md')
+        sys.exit(EXIT_ENV_MISSING)
+
+    for name, why in optional.items():
+        if not env_value(name):
+            print(f'[SKIP] {name} 未配置：{why}（对应用例会跳过）')
+
+
+def require_command(script, command, purpose):
+    """检查外部命令是否存在；缺失时给出可执行提示并退出 2（不抛堆栈）。"""
+    if shutil.which(command):
+        return
+    print(f'[ERROR] {script} 需要命令 `{command}`（{purpose}），但当前 PATH 里找不到')
+    print(f'  - 安装 {command} 后重试；只跑不依赖它的脚本时见 _e2e/README.md')
+    sys.exit(EXIT_ENV_MISSING)
 
 
 def redis_url(db=15):

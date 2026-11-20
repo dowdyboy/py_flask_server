@@ -128,7 +128,7 @@ server.py（开发）        wsgi.py（waitress 生产）        wsgi_gunicorn.p
 | 序 | 钩子 | 作用 |
 |---|---|---|
 | 1 | `init_request_info` | 生成/清洗 `X-Request-Id`，写入 `g` 与日志上下文，初始化 `request.payload` |
-| 2 | `parse_request_param` | `request.params = request.args` |
+| 2 | `parse_request_param` | `request.params = request.args.to_dict()`（**快照**，不是 MultiDict 视图；需要 `getlist()` 请直接读 `request.args`） |
 | 3 | `parse_request_json` | JSON body → `request.payload`（非 dict 归一为 `{}`） |
 | 4 | `parse_request_form_data` | 表单/多部分 → `request.payload` |
 | 5 | `rate_limit_check` | 限流（IP+路径 与 IP 总配额） |
@@ -146,18 +146,23 @@ server.py（开发）        wsgi.py（waitress 生产）        wsgi_gunicorn.p
 |---|---|---|
 | 1 | `metrics_record` | 计数 + 延迟直方图 |
 | 2 | `set_security_headers` | CSP / HSTS / nosniff 等 |
-| 3 | `set_request_id_header` | 回写 `X-Request-Id` |
-| 4 | `cors_after_request` | flask-cors 注入 CORS 头 |
+| 3 | `set_retry_after_header` | 429 补 `Retry-After`（限流=窗口长度，登录锁定=锁定秒数） |
+| 4 | `set_request_id_header` | 回写 `X-Request-Id` |
+| 5 | `cors_after_request` | flask-cors 注入 CORS 头 |
 
 ### 异常处理
 
 | 异常 | HTTP | code | 说明 |
 |---|---|---|---|
 | `HTTPException` 4xx | 原状态码 | -1 | 404 统一文案；其余回显 description |
+| `HTTPException` 4xx 且带 `messages` | 原状态码 | **1001** | 如 webargs 的 `Invalid JSON body.`，字段级信息放 `data`，与 422 同形状 |
 | `HTTPException` 5xx | 原状态码 | -1 | 生产环境脱敏为"服务器内部错误" |
 | `UnprocessableEntity`（422） | 422 | 1001 | 字段级错误放 `data` |
 | `KeyError` | 400 | 1001 | `payload['x']` 缺字段 |
 | 其它 `Exception` | 500 | -1 | 记录 traceback，不回显细节 |
+
+> 非法 JSON body 不在 `before_request` 里抛裸 400：`parse_request_json` 用
+> `get_json(silent=True)` 静默失败，交给视图层的 webargs 统一产出 400 + 1001。
 
 ### 路由匹配
 
@@ -203,10 +208,10 @@ app 上下文时作用于进程默认配置，既有测试无需修改。
 
 | 组件 | 作用域 | 多 worker / 多副本时的行为 |
 |---|---|---|
-| `db` / Flask-Migrate | 进程内（fork 前创建，worker 继承） | 各 worker 独立连接池；**不同 URI 需多进程部署** |
+| `db` / Flask-Migrate | 进程内（fork 前创建，worker 继承） | 各 worker 独立连接池；**不同 URI 需多进程部署**——同进程第二次 `init_SQLAlchemy` 传入不同 URI 会直接报错（不再静默复用第一个库） |
 | SocketIO | 进程内 | eventlet monkey patch 是**导入期**决定的 |
 | Prometheus 指标 | 进程内 | 需 `PROMETHEUS_MULTIPROC_DIR` 才能聚合 |
-| 内存缓存 / 限流计数 / 认证 token | 进程内 | 需 `REDIS_URL` 才能跨 worker 一致 |
+| 内存缓存 / 限流计数 / 认证 token | 进程内 | 需 `REDIS_URL` 才能跨 worker 一致；内存缓存有**条目上限**（超出淘汰最旧，带限流告警） |
 | 认证用户存储 | 每个 app（`app.extensions`）；无 app 上下文回退进程默认 | 多 app 注入时按 `AUTH_STORE` 隔离；`memory` 为进程内，多 worker 需 `sqlalchemy` |
 | 任务队列 | 内存（默认）/ Redis | 多 worker 必须配 `REDIS_URL`，否则各消费各的；生产用独立 `scripts/worker.py` |
 | 日志 handler | 进程内 | 多 worker 写同一文件有轮转竞态，建议容器日志 |
@@ -282,7 +287,9 @@ def on_message(conn, data, addr):
 
 ## 10. 已知约束与取舍
 
-1. **同进程多实例共享** `db` / SocketIO / Prometheus 指标 / 日志 handler —— 见第 7 节
+1. **同进程多实例共享** `db` / SocketIO / Prometheus 指标 / 日志 handler / 内存缓存 —— 见第 7 节。
+   其中 `db` 额外有一条硬约束：第二次 `init_SQLAlchemy` 传入**不同** URI 会抛 `RuntimeError`，
+   而不是悄悄继续用第一个库（那会导致"以为在写测试库、实际写生产库"）
 2. **只有 eventlet monkey patch 是导入期行为**：`SOCKETIO_ASYNC_MODE=eventlet` 的 patch
    必须在 import 前完成；`SOCKETIO_ENABLED` / `SOCKETIO_ASYNC_MODE` 本身可按 app 注入
    （`create_app(framework_config=...)`）。若该 app 要求 eventlet 但导入期未打补丁，

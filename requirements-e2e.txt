@@ -1,0 +1,13 @@
+# _e2e 端到端脚本依赖（仅手动运行，未纳入 CI；说明见 _e2e/README.md）
+#
+# 安装：pip install -r requirements-e2e.txt
+# 还需要真实环境：项目根 .env 里配好 SQLALCHEMY_URI（MySQL）与 REDIS_URL，
+# e2e_misc.py 另外需要 docker + docker compose。
+
+# 运行时依赖：脚本会导入 flask_server（Flask / SQLAlchemy / redis 等）
+-r requirements.txt
+# 开发依赖：requests（e2e_http.py / e2e_tasks.py / e2e_misc.py 直接使用）
+-r requirements-dev.txt
+
+# e2e_misc.py 解析 .github/workflows/*.yml 需要；其它依赖清单里没有
+PyYAML>=6.0,<7.0

@@ -206,14 +206,24 @@ class ArticleView(MethodView):
 
 ## Prometheus 指标
 
-`GET /metrics`（`METRICS_ENABLED=true` 默认开）：
+`GET /metrics`（`METRICS_ENABLED=true` 默认开；关闭或未安装 `prometheus-client` 时返回 503）：
 
-- `http_requests_total{method,status,route}` — 请求计数（route 用路由规则聚合，防高基数）
-- `http_request_duration_seconds{method,route}` — 请求延迟直方图
+| 指标 | 标签 | 含义 |
+|---|---|---|
+| `http_requests_total` | `method` / `status` / `route` | 请求计数（`route` 用路由规则聚合，未匹配路由固定为 `__unmatched__`，防高基数） |
+| `http_request_duration_seconds` | `method` / `route` | 请求延迟直方图（`_bucket` / `_sum` / `_count`） |
+| `http_rate_limited_total` | `scope` | 被限流拒绝（429）的请求数；`scope="path"` 为路径级配额命中，`scope="ip"` 为 IP 级总配额命中 |
+| `auth_login_locked_total` | _无_ | 因登录锁定被拒绝（429 / code 4003）的登录次数；不按用户名/IP 打标签（避免高基数与账号信息泄漏） |
+| `task_rejected_total` | `reason` | 任务**未执行**即被拒绝/进入死信的数量：`reason="unavailable"`（队列后端不可用，`reserve` 失败）、`reason="unregistered"`（任务名未注册）、`reason="max_retries"`（handler 重试耗尽） |
+
+> 标签值全部来自固定集合（不取请求路径、用户名等用户输入），保证低基数、避免指标基数爆炸。
+> 业务代码通过 `flask_server.component.metrics._inc(counter, **labels)` 自增：`METRICS_ENABLED=false`、
+> 依赖缺失或标签非法时静默跳过，绝不影响主流程。
 
 ## 日志与链路追踪
 
-- `Logger.info/warn/error`（`flask_server.util.Logger`）
+- `Logger.debug/info/warn/error`（`flask_server.util.Logger`）；`Logger.warning` 是 `warn` 的等价别名，
+  `Logger.exception(txt)` 以 ERROR 级别记录并附带堆栈（**只能在 `except` 块内调用**）
 - 每次请求自动生成/透传 `X-Request-Id`（请求头传入则透传，否则自动生成），
   响应回写 `X-Request-Id`，日志以 `[rid:xxx]` 标记
 - `LOG_FORMAT=json` 时日志含 `request_id` 字段（ELK/Loki 聚合）

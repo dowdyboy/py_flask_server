@@ -27,10 +27,13 @@ services:
       # Logger.init 的兜底控制台 handler。配合下面 ./server.log 的 bind mount，
       # 让宿主能直接采集日志文件。
       LOG_FILE_PATH: /app/server.log
-      # Docker 网络下客户端请求经网关（172.x）进入容器：信任网关网段以解析真实 IP（限流/日志用）。
-      # ⚠️ 注意：信任整个 CIDR 意味着该网段内任意容器都能伪造 X-Forwarded-For（可绕过限流），
-      #    请确保网络内仅含可信服务；如严格隔离可改为具体网关 IP（docker network inspect 查看）。
-      TRUSTED_PROXIES: 127.0.0.1,::1,172.16.0.0/12
+      # 客户端请求经反向代理/网关进入容器：TRUSTED_PROXIES 只应列出真实的代理地址。
+      # 默认仅信任回环（127.0.0.1/::1）；不在代理后面时 get_real_ip 直接使用 remote_addr。
+      # ⚠️ 不要信任整个 172.16.0.0/12：该网段内任意容器/服务都能伪造 X-Forwarded-For
+      #    （绕过 IP 限流、污染审计日志）。请把此变量设为反向代理的实际地址/CIDR；
+      #    若请求经 Docker 网关进入，用 `docker network inspect <网络名>` 查到具体网关 IP
+      #    再填写，而不是把整个私网段纳入信任。
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1,::1}
     depends_on:
       mysql:
         condition: service_healthy

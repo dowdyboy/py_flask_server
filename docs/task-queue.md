@@ -68,11 +68,13 @@ TASK_WORKER_EMBEDDED=true python server.py
 | 重试 | 失败后按 `TASK_RETRY_BACKOFF * 2**(已失败次数)` 退避重投；超过 `TASK_MAX_RETRIES` 进死信 |
 | 崩溃恢复 | worker 崩溃后消息停留在 pending，超过 `TASK_VISIBILITY_TIMEOUT` 被其它 worker 接管 |
 | 流转原子性 | `ack/retry/dead` 用 Redis `MULTI/EXEC` 一次提交（全生效或全不生效）；EXEC 失败时消息留在 pending，可见性超时后重投，不会出现"已确认但目标结构没写进去"的丢失 |
+| 延迟回迁原子性 | 到期任务由 **Lua 脚本一次完成** `ZREM`（从 `{stream}:delayed` 摘除）+ `XADD`（写回 stream）：并发 worker 中只有 `ZREM` 成功的那个投递（不重复），进程在两步之间崩溃也不会丢——任务要么仍在延迟集合、要么已在 stream |
 | 死信 | 超过重试上限或任务未注册 → 写入死信列表（`{stream}:dead`，上限 `TASK_DEAD_LETTER_MAX`） |
 | 状态查询 | `get_task_status(task_id)` → `queued/running/succeeded/retrying/dead` + `attempts` + `last_error` |
 | 统计 | `get_task_queue().stats()`：两种后端都返回 `ready/pending/delayed/dead`（内存后端另含 `tracked`） |
 | 死信读取 | `get_task_queue().dead_letters(limit=20)`：**最新在前**；脏数据条目保留 `raw` 原始 payload |
 | 入队失败 | **抛 `TaskQueueUnavailable`**，不静默丢弃（与缓存降级策略刻意不同） |
+| 拒绝观测 | 队列不可用/任务未注册/重试耗尽分别计入 Prometheus `task_rejected_total{reason="unavailable"/"unregistered"/"max_retries"}` |
 
 ---
 

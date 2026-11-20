@@ -5,15 +5,21 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import uuid
 
 import requests
-import yaml
 
 from common import (
     PY, ROOT, Results, Server, TMP_DIR, base_env, dump_exception, free_port,
-    wait_http,
+    require_command, require_env, wait_http,
 )
+
+try:
+    import yaml
+except ImportError:  # 依赖缺失时给可执行提示，不要甩 traceback
+    print('[ERROR] 需要 PyYAML（解析 .github/workflows/*.yml）：pip install -r requirements-e2e.txt')
+    sys.exit(2)
 
 os.environ.update(base_env())
 
@@ -124,10 +130,14 @@ def test_compose_and_ci():
 
     ci = yaml.safe_load((ROOT / '.github' / 'workflows' / 'ci.yml').read_text(encoding='utf-8'))
     jobs = set(ci.get('jobs', {}))
-    expected = {'test', 'test-mysql', 'test-windows', 'test-locked-deps',
-                'test-gunicorn-multiprocess', 'lint', 'deps-sync', 'security', 'docker-build'}
-    R.eq('CI 流水线数量 9', len(jobs), 9)
+    expected = {'test', 'test-redis', 'test-mysql', 'test-windows', 'test-locked-deps',
+                'test-gunicorn-multiprocess', 'lint', 'typecheck', 'deps-sync', 'security',
+                'docker-build'}
+    # 数量与集合都断言：只断言集合的话，新增 job 时这里会先红、提醒同步文档
+    R.eq('CI job 数量与预期一致', len(jobs), len(expected))
     R.eq('CI job 集合', jobs, expected)
+    R.check('test-redis 使用真实 Redis 服务',
+            'redis' in (ci['jobs'].get('test-redis', {}).get('services') or {}), list(jobs))
 
     dockerfile = (ROOT / 'Dockerfile').read_text(encoding='utf-8')
     R.contains('Dockerfile 多阶段 builder', dockerfile, 'AS builder')
@@ -187,11 +197,14 @@ def test_docs_config_consistency():
         R.check(f'task-queue.md 配置表包含 {key}', key in task_docs)
 
     readme = (ROOT / 'README.md').read_text(encoding='utf-8')
-    R.contains('README 标注用例数', readme, '633')
-    # README 用 "2 个 workflow：ci.yml 的 9 个 job + release.yml" 描述 CI
+    R.contains('README 标注用例数', readme, '663')
+    # README 用 "2 个 workflow：ci.yml 的 N 个 job + release.yml" 描述 CI，
+    # N 从 ci.yml 实际读取，避免文档与流水线数量脱节（test_compose_and_ci 已校验集合）
+    ci_job_count = len(yaml.safe_load(
+        (ROOT / '.github' / 'workflows' / 'ci.yml').read_text(encoding='utf-8')).get('jobs', {}))
     R.contains('README 标注 workflow 数量', readme, '2 个 workflow')
-    R.contains('README 标注 job 数量', readme, '9 个 job')
-    R.check('README 覆盖率数字与实际接近', '91.2' in readme)
+    R.contains('README 标注 job 数量', readme, f'{ci_job_count} 个 job')
+    R.check('README 覆盖率数字与实际接近', '90.8' in readme)
 
     # 任务队列死信重放示例：死信记录现在保留 args/kwargs，示例应按原参数重放。
     R.contains('task-queue.md 死信重放示例', task_docs, "letter['name']")
@@ -257,6 +270,8 @@ def test_dev_entry_and_benchmark():
 
 
 def main():
+    require_env('e2e_misc', note='脚手架/编排/CI/文档一致性用例，只需要 docker 与 PyYAML')
+    require_command('e2e_misc', 'docker', '校验 docker compose 编排与应用镜像')
     try:
         test_scaffold()
         test_compose_and_ci()

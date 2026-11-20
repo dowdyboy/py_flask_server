@@ -6,8 +6,31 @@ build-backend = "setuptools.build_meta"
 name = "flask-server"
 version = "0.6.0"
 description = "A production-grade Flask web service scaffold with layered architecture"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+keywords = [
+    "flask",
+    "scaffold",
+    "web-framework",
+    "rest-api",
+    "sqlalchemy",
+    "redis",
+    "prometheus",
+    "production-ready",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Framework :: Flask",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "Flask>=3.1.2,<4.0",
     "flask-cors>=6.0.2,<7.0",
@@ -24,12 +47,54 @@ dependencies = [
     "prometheus-client>=0.20.0,<1.0",
 ]
 
+# 可选依赖分组（与 requirements.txt / requirements-dev.txt 的可选段保持一致）：
+#   pip install -e ".[dev]"            开发/测试工具
+#   pip install -e ".[mysql]"          MySQL 驱动（默认依赖里已含 PyMySQL，此分组便于按需安装）
+#   pip install -e ".[redis]"          Redis 客户端（默认依赖里已含 redis，同上）
+#   pip install -e ".[wsgi]"           生产 WSGI 服务器（waitress / gunicorn）
+#   pip install -e ".[websocket]"      WebSocket / SocketIO 运行时
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0,<9.0",
+    "pytest-cov>=5.0.0,<7.0",
+    "pytest-timeout>=2.3.0,<3.0",
+    "ruff>=0.16.0,<1.0",
+    "mypy>=2.0.0,<3.0",
+    "requests>=2.32.5,<3.0",
+]
+mysql = [
+    "PyMySQL>=1.1.2,<2.0",
+]
+redis = [
+    "redis>=5.0.0,<6.0",
+]
+wsgi = [
+    "waitress>=3.0.2,<4.0",
+    "gunicorn>=23.0.0,<24.0",
+]
+websocket = [
+    "Flask-SocketIO>=5.6.0,<6.0",
+    "simple-websocket>=1.0.0,<2.0",
+    "eventlet>=0.36.0,<1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/dowdyboy/py_flask_server"
+Repository = "https://github.com/dowdyboy/py_flask_server"
+Issues = "https://github.com/dowdyboy/py_flask_server/issues"
+Changelog = "https://github.com/dowdyboy/py_flask_server/blob/main/CHANGELOG.md"
+
 [tool.setuptools.packages.find]
 include = ["flask_server*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# --timeout：单个用例超过 120s 直接判失败。没有它，一个死锁/无限等待会把 CI 挂到
+# 6 小时上限才失败（需要 requirements-dev.txt 里的 pytest-timeout）。
+addopts = "-q --timeout=120"
+markers = [
+    "redis_live: 需要真实 Redis 的集成测试（未配置 REDIS_URL 时跳过）",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
@@ -50,6 +115,21 @@ exclude_lines = [
 [tool.ruff]
 target-version = "py310"
 line-length = 120
+
+# 类型检查（渐进式门禁）：只覆盖框架代码 flask_server/。
+# examples/、scripts/、tests/ 暂不纳入——它们是教学样例与一次性脚本，注解密度低，
+# 一次性纳入会产生大量噪音；先把"库代码"守住，再逐步扩大范围。
+[tool.mypy]
+python_version = "3.10"
+files = ["flask_server"]
+# 第三方库多数未带 py.typed（flask-smorest / redis / prometheus_client …），
+# 缺失存根的导入不应阻断门禁
+ignore_missing_imports = true
+warn_redundant_casts = true
+warn_unused_configs = true
+no_implicit_optional = true
+# 刻意不开 warn_unused_ignores：model/po/user.py 的 `# type: ignore` 依赖运行期分支
+# （配置 DB 前后的两份定义），检查器版本变化时可能被判定"多余"，会把门禁变成噪音源。
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]

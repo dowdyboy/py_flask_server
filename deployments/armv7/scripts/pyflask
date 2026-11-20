@@ -15,8 +15,11 @@
 # 手动控制：/etc/init.d/pyflask {start|stop|restart|status}
 
 NAME=pyflask
-APP_DIR=/opt/pyflask/app
-PYTHON=/opt/pyflask/venv/bin/python
+# 安装根目录：install.sh 会按 --prefix 把这一行改写成实际值；
+# 手工复制本脚本时保持默认 /opt 即可。
+PREFIX=/opt
+APP_DIR=$PREFIX/pyflask/app
+PYTHON=$PREFIX/pyflask/venv/bin/python
 PIDFILE=/var/run/${NAME}.pid
 LOGFILE=/var/log/${NAME}.log
 START_TIMEOUT=60

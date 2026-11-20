@@ -1,0 +1,87 @@
+name: Bug 报告
+description: 报告可复现的缺陷（安全漏洞请走 SECURITY.md 的私密渠道）
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > ⚠️ **安全漏洞不要在这里提交**：请按 [SECURITY.md](../../blob/main/SECURITY.md)
+        > 的私密安全公告或邮件渠道报告，不要公开复现细节。
+        >
+        > 提交前请先搜索现有 Issue，并去掉日志/配置里的真实凭据。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象
+      description: 实际发生了什么？期望的行为是什么？
+      placeholder: 期望 200，实际 500；或服务启动后 /api/v1/readyz 一直 503 ……
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 最小可复现步骤（命令、请求、配置片段）。请用占位值替换真实凭据。
+      placeholder: |
+        1. 从干净 .env（复制 .env.example）启动 python server.py
+        2. curl -X POST http://127.0.0.1:5000/api/v1/auth/login -d '...'
+        3. 观察到 ...
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / 提交
+      description: 发布版本号，或 git commit 短哈希
+      placeholder: 0.6.0 / 73dfc4d
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: 运行方式
+      options:
+        - python server.py（开发服务器）
+        - python wsgi.py（waitress）
+        - gunicorn 多 worker
+        - Docker / docker compose
+        - deployments/armv7（板端离线包）
+        - 其它（在补充说明里写）
+    validations:
+      required: true
+  - type: input
+    id: python-env
+    attributes:
+      label: Python 版本 / 操作系统
+      placeholder: 3.12.4 / Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 报错
+      description: 相关日志片段（控制台、/var/log/pyflask.log、pytest -q 输出）。务必去掉凭据。
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: config
+    attributes:
+      label: 相关配置
+      description: 涉及的 `.env` 配置项——**只写键名和占位值**（如 `AUTH_STORE=redis`），不要贴真实连接串。
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已搜索过现有 Issue，确认没有重复
+          required: true
+        - label: 已去掉日志、配置、截图里的真实凭据
+          required: true
+        - label: 这不是安全漏洞（安全问题走 SECURITY.md 的私密渠道）
+          required: true

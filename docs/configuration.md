@@ -85,7 +85,7 @@
 | `PROMETHEUS_MULTIPROC_DIR` | _无_ | 多进程指标目录。gunicorn 多 worker 时**必须设置**（指向一个目录），否则 `/metrics` 只返回被刮到的那个 worker 的数据；目录不存在会自动创建 |
 | `WORKER_NUM` | `4` | gunicorn worker 数（仅 `wsgi_gunicorn.py` 生效）。`wsgi.py` / `server.py` 会显式给启动 banner 传 `worker_num=1`，单进程运行不再读此值而误报多 worker 告警 |
 | `RATE_LIMIT_STORE` | `memory` | 限流计数存储：`memory`（进程内）/ `redis`（多实例准确，需 REDIS_URL）；拼错告警回退 `memory` |
-| `SNOWFLAKE_WORKER_ID` | _自动_ | 雪花 ID 机器标识（0-31）。未配置时按 `(crc32(hostname) + pid) % 32` 派生（容器内 hostname 可区分副本，但仍非严格保证），**多副本部署建议显式配置**；对唯一性零容忍请用 `KeyGenerator.generate_uuid7()` |
+| `SNOWFLAKE_WORKER_ID` | _自动_ | 雪花 ID 机器标识（0-31，仅 **32** 个槽位）。未配置时按 `(crc32(hostname) + pid) % 32` 派生——**只是尽力分散，不是唯一性保证**：按生日问题估算，至少两个副本撞到同一槽位的概率为 2 副本 **≈3%**、4 副本 **≈18%**、8 副本 **≈61%**；一旦撞号，两个副本在同一毫秒生成的 64 位 ID 会完全相同。因此**≥2 副本应显式配置**（每个副本不同值），**≥4 副本实际上必须配置**（如 K8s StatefulSet 按序号注入 / 每副本独立环境变量）；对唯一性零容忍或不想管理机器号时，直接用 `KeyGenerator.generate_uuid7()`（时间有序 UUID，零配置） |
 | `SNOWFLAKE_DATACENTER_ID` | `1` | 雪花 ID 数据中心标识（0-31）。多机房/多集群各配不同值，越界回退 1 并告警 |
 | `TASK_QUEUE_STREAM` | `tasks:default` | 任务队列名（Redis Streams）。详见 [任务队列](task-queue.md) |
 | `TASK_QUEUE_GROUP` | `default` | 任务队列 consumer group 名 |
@@ -126,7 +126,10 @@ export SQLALCHEMY_URI='sqlite:///storage/app.db'
 ## 缓存
 
 - 配置 `REDIS_URL` 后自动使用 Redis 缓存（多进程/多实例场景）
-- 未配置时使用内存缓存 `memory_cache`（线程安全，TTL 后台自动清理）
+- 未配置时使用内存缓存 `memory_cache`（线程安全，TTL 后台自动清理）。内存缓存**有容量上限**
+  （默认 `10_000` 条，可用 `SimpleMemoryCache(max_entries=...)` 为单实例覆盖）：写入超过上限时
+  按写入顺序淘汰最久未写入的键（刚写入的键不会被淘汰），并按"每累计 1000 次淘汰"限频打一条
+  `WARN`，便于发现缓存长期欠配。TTL 键仍由后台线程定期清理；容量淘汰与 TTL 过期互不替代
 - Redis 不可达时自动降级并冷却重试，不影响业务
 - **认证 token / 防爆破计数同此策略**：配置 `REDIS_URL` 后自动落 Redis（多 worker 共享），
   不可达时回退内存缓存（单实例仍可用），恢复后自动回 Redis

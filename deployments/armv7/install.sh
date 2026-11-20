@@ -20,7 +20,7 @@ PREFIX=/opt
 APP_SRC=""
 
 usage() {
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
 }
 
@@ -32,6 +32,17 @@ while [ $# -gt 0 ]; do
         *) echo "未知参数: $1"; usage ;;
     esac
 done
+
+# --prefix 必须是绝对路径（会写进 init 脚本与 venv 的绝对路径），去掉尾部斜杠
+case "$PREFIX" in
+    /*) ;;
+    *) echo "  !! --prefix 必须是绝对路径（当前: $PREFIX）"; exit 1 ;;
+esac
+case "$PREFIX" in
+    *[!A-Za-z0-9._/-]*) echo "  !! --prefix 只支持字母/数字/._-/（当前: $PREFIX）"; exit 1 ;;
+esac
+while [ "${PREFIX%/}" != "$PREFIX" ]; do PREFIX=${PREFIX%/}; done
+[ -n "$PREFIX" ] || { echo "  !! --prefix 不能是根目录 /"; exit 1; }
 
 PYROOT=$PREFIX/python3.11
 BASE=$PREFIX/pyflask
@@ -57,6 +68,31 @@ esac
 
 [ "$(id -u)" = "0" ] || { echo "  !! 需要 root 权限运行"; exit 1; }
 command -v tar >/dev/null || { echo "  !! 缺少 tar"; exit 1; }
+
+# 完整性校验：SHA256SUMS 覆盖 runtime/ 与 wheels/，先校验再解压/装依赖
+if [ -f "$HERE/SHA256SUMS" ]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+        echo "  校验 SHA256SUMS ..."
+        SUMS=$(mktemp)
+        # SHA256SUMS 带 BOM/注释行且可能是 CRLF（BusyBox 的 sha256sum 不会自己容错）：
+        # 先去掉 CR，只留"64 位哈希 + 两空格 + 文件名"的记录行。
+        tr -d '\r' < "$HERE/SHA256SUMS" | grep '  ' > "$SUMS" || true
+        if ( cd "$HERE" && sha256sum -c "$SUMS" ); then
+            echo "  校验通过"
+        else
+            rm -f "$SUMS"
+            echo "  !! 校验失败：安装包不完整或已被改动，不要继续安装"
+            echo "     重新从可信来源获取部署包，或核对 SHA256SUMS 后再试"
+            exit 1
+        fi
+        rm -f "$SUMS"
+    else
+        echo "  !! 警告：缺少 sha256sum（coreutils），跳过完整性校验"
+        echo "     建议先在有 sha256sum 的机器上执行 sha256sum -c SHA256SUMS"
+    fi
+else
+    echo "  !! 警告：缺少 SHA256SUMS，跳过完整性校验"
+fi
 
 # ---------------------------------------------------------------- 1. Python
 echo
@@ -140,7 +176,13 @@ fi
 echo
 echo "[5/7] 安装 init 服务"
 [ -f "$HERE/scripts/pyflask" ] || { echo "  !! 缺 scripts/pyflask"; exit 1; }
-cp -f "$HERE/scripts/pyflask" /etc/init.d/pyflask
+# 把 init 脚本里的默认安装根目录改写成实际值（--prefix /opt 时就是原样拷贝），
+# 否则 scripts/pyflask 里写死的 /opt 会让非默认前缀的服务启动失败。
+sed "s|^PREFIX=/opt\$|PREFIX=$PREFIX|" "$HERE/scripts/pyflask" > /etc/init.d/pyflask
+grep -q "^PREFIX=$PREFIX\$" /etc/init.d/pyflask || {
+    echo "  !! init 脚本安装根目录改写失败（期望: $PREFIX）"
+    exit 1
+}
 chmod 755 /etc/init.d/pyflask
 if command -v update-rc.d >/dev/null 2>&1; then
     update-rc.d pyflask defaults >/dev/null 2>&1 || true
@@ -170,7 +212,13 @@ echo "  本机地址: ${IP:-127.0.0.1}"
 if wget -q -T 3 -O /dev/null "http://127.0.0.1:$PORT/api/v1/healthz"; then
     echo "  健康检查: 通过"
 else
-    echo "  健康检查: 失败（看 /var/log/pyflask.log）"
+    # 自检失败必须让脚本以非 0 退出：无人值守部署不能"报成功但服务是坏的"
+    echo "  !! 健康检查: 失败（退出码 1），请依次检查："
+    echo "     1) /etc/init.d/pyflask status"
+    echo "     2) tail -50 /var/log/pyflask.log"
+    echo "     3) curl -v http://127.0.0.1:$PORT/api/v1/healthz"
+    echo "     4) 检查 $APPDIR/.env 里的 SERVER_HOST / SERVER_PORT 与数据库配置"
+    exit 1
 fi
 
 echo

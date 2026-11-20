@@ -1,0 +1,16 @@
+# 行尾策略（跨平台协作）
+#
+# 背景：Windows 上常见的 core.autocrlf=true 会把工作区文本文件转成 CRLF。
+# 对 shell 脚本来说这是致命的——拷到 Linux/ARM 设备后 shebang 变成 "#!/bin/sh\r"，
+# 直接报 "bad interpreter"（见 deployments/armv7 的安装脚本）。
+#
+# 这里只对"必须是 LF 才能运行"的文件类型做强制声明；其余文件保持 Git 默认行为，
+# 避免一次性重规范化整个仓库造成巨大 diff。
+
+# shell 脚本（deployments/armv7 下的 install.sh / uninstall.sh / scripts/pyflask 等）
+*.sh        text eol=lf
+# 不带扩展名的 POSIX 启动器（例如 deployments/armv7/scripts/pyflask）
+pyflask     text eol=lf
+
+# 部署包的校验文件：BusyBox sha256sum 不容错 BOM/CRLF，必须 LF 且无 BOM
+SHA256SUMS  text eol=lf

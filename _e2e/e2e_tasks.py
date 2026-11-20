@@ -6,7 +6,7 @@ import uuid
 
 from common import (
     Results, Server, TMP_DIR, base_env, cleanup_redis, dump_exception, free_port,
-    install_probe_modules, redis_url, remove_probe_modules, run_py, run_script,
+    install_probe_modules, redis_url, remove_probe_modules, require_env, run_py, run_script,
 )
 
 os.environ.update(base_env())
@@ -546,6 +546,13 @@ def test_auto_import_tasks():
 
 
 def main():
+    require_env(
+        'e2e_tasks',
+        required={
+            'REDIS_URL': 'Redis 连接串（Redis Streams 队列 / worker CLI / 内嵌 worker 用例），'
+                         '例 redis://127.0.0.1:6379/0',
+        },
+    )
     install_probe_modules()
     try:
         test_memory_queue_semantics()
