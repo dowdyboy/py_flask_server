@@ -144,7 +144,7 @@ def rate_limit_check():
     if _over_limit(path_count):
         # 日志也用截断后的 key：原样记录 100KB 的 URL 会让一条 429 变成一行 100KB 日志
         _warn_limited(f'rate limit exceeded (path): rate:{ip}:{path_key}')
-        metrics._inc(metrics._RATE_LIMITED, scope='path')
+        metrics.inc_rate_limited('path')
         g.retry_after = RATE_LIMIT_WINDOW   # 供 set_retry_after_header 写 Retry-After
         abort(429)
     # IP 级总配额（兜底，防路径随机化绕过）
@@ -152,7 +152,7 @@ def rate_limit_check():
     _remember_rate_limit_state(ip_count)
     if _over_limit(ip_count):
         _warn_limited(f'rate limit exceeded (ip): rate:{ip}')
-        metrics._inc(metrics._RATE_LIMITED, scope='ip')
+        metrics.inc_rate_limited('ip')
         g.retry_after = RATE_LIMIT_WINDOW
         abort(429)
     return None

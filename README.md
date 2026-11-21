@@ -12,9 +12,9 @@
 - 🔐 **认证骨架**：注册/登录/双 Token/改密/登出所有设备/refresh 重用检测（默认关闭，一键开启）
 - 📄 **HTTP 约定**：统一响应 + 错误码枚举、分页工具（`paginate` + `PageSchema`）、ETag/304、
   `X-RateLimit-*` 配额头
-- 📊 **可观测性**：request_id 全链路、JSON 日志（`Logger.debug/info/warn/error/exception`）、
-  Prometheus `/metrics`（请求量/延迟 + 限流拒绝/登录锁定/任务拒绝计数，支持多进程聚合）、
-  healthz/readyz 探针
+- 📊 **可观测性**：request_id 全链路、JSON 日志（`Logger.debug/info/warn/error/exception`，
+  按 app 隔离 handler）、Prometheus `/metrics`（请求量/延迟 + 限流拒绝/登录锁定/任务指标，
+  按 app 隔离 registry，支持多进程聚合）、healthz/readyz 探针
 - 🗄️ **数据库**：SQLAlchemy + Flask-Migrate（MySQL/SQLite）、缓存（内存/Redis 自动降级；
   内存缓存有**条目上限**，超出淘汰最久未写入的键，不会无界增长）
 - 🧪 **质量门禁**：`ruff`（全仓库）+ `mypy`（仅 `flask_server/`）静态检查、`pytest` 覆盖率门槛 85%、
@@ -65,7 +65,7 @@ py_flask_server/
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 任务消费者 / 冒烟与压测脚本
-├── tests/                     # 735 个用例（门槛 85%；实测 91.76%）
+├── tests/                     # 740 个用例（门槛 85%；实测 91.48%）
 ├── webui/                     # 静态前端（webui_controller 提供页面与静态资源）
 ├── storage/                   # 上传文件根目录（运行期生成，勿提交）
 ├── deployments/               # ARMv7 等离线部署资料
@@ -76,7 +76,7 @@ py_flask_server/
 └── server.py / wsgi.py / wsgi_gunicorn.py   # 三个启动入口
 ```
 
-> 覆盖率快照（2026-11-21）：`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term` 实测 **91.76%**（门槛 85%）。735 个用例中 6 个默认跳过——1 个依赖可选包 Flask-SocketIO，5 个是需真实 Redis 的 `redis_live` 用例（CI 的 `test-redis` job 会跑它们）。
+> 覆盖率快照（2026-11-21）：`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term` 实测 **91.48%**（门槛 85%）。740 个用例中 6 个默认跳过——1 个依赖可选包 Flask-SocketIO，5 个是需真实 Redis 的 `redis_live` 用例（CI 的 `test-redis` job 会跑它们）。
 
 ## 🔧 常用命令
 

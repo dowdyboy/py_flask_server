@@ -113,14 +113,14 @@ server.py（开发）        wsgi.py（waitress 生产）        wsgi_gunicorn.p
 
 | 步骤 | 内容 | 说明 |
 |---|---|---|
-| 1 | `Flask(__name__)`，写入 `app.extensions['flask_server.config']` | 必须最先，后续都从这里解析配置 |
+| 1 | `Flask(__name__)`，写入 `app.extensions['flask_server.config']`，`Logger.configure(app, cfg)` | 必须最先；app 独立 logger 也在此登记到 `app.extensions` |
 | 2 | CORS、`SECRET_KEY`、`MAX_CONTENT_LENGTH`、默认密钥告警 | 创建期读注入的配置 |
 | 3 | flask-smorest：OpenAPI/文档配置 + `Api(app)` | `/docs`、`/openapi.json` |
 | 4 | SocketIO（按配置，默认关闭） | 进程级单例 |
-| 5 | `init_SQLAlchemy` / `init_Migrate` | 进程级单例，二次创建直接复用 |
+| 5 | `init_SQLAlchemy` / `init_Migrate` | db/migrate 登记到 `app.extensions`；db 对象本身进程级单例，二次创建直接复用 |
 | 6 | `register_request_hooks` | 参数解析、request_id、安全头、teardown |
 | 7 | `register_error_handlers` | 4 类异常 → 统一 `{code,msg,data}` |
-| 8 | `init_components` | 限流 → 认证 → 指标（顺序决定执行序） |
+| 8 | `init_components` | 限流 → 认证 → 指标（指标 bundle 写入 `app.extensions`；顺序决定执行序） |
 | 9 | `register_controllers` | Blueprint + 模块级 `register(app)` |
 | 10 | 挂 `app.api` / `app.socketio` / `app.framework_config` | 便于调用方取用 |
 
@@ -215,13 +215,13 @@ app 上下文时作用于进程默认配置，既有测试无需修改。
 
 | 组件 | 作用域 | 多 worker / 多副本时的行为 |
 |---|---|---|
-| `db` / Flask-Migrate | 进程内（fork 前创建，worker 继承） | 各 worker 独立连接池；**不同 URI 需多进程部署**——同进程第二次 `init_SQLAlchemy` 传入不同 URI 会直接报错（不再静默复用第一个库） |
+| `db` / Flask-Migrate | 进程内单例，登记到每个 app 的 `app.extensions` | 各 worker 独立连接池；**不同 URI 需多进程部署**——同进程第二次 `init_SQLAlchemy` 传入不同 URI 会直接报错（不再静默复用第一个库） |
 | SocketIO | 进程内 | eventlet monkey patch 是**导入期**决定的 |
-| Prometheus 指标 | 进程内 | 需 `PROMETHEUS_MULTIPROC_DIR` 才能聚合 |
+| Prometheus 指标 | **每个 app 独立 bundle**（`app.extensions['flask_server.metrics']`，独立 registry） | 多进程聚合仍需 `PROMETHEUS_MULTIPROC_DIR` |
 | 内存缓存 / 限流计数 / 认证 token | 进程内 | 需 `REDIS_URL` 才能跨 worker 一致；内存缓存有**条目上限**（超出淘汰最旧，带限流告警） |
 | 认证用户存储 | 每个 app（`app.extensions`）；无 app 上下文回退进程默认 | 多 app 注入时按 `AUTH_STORE` 隔离；`memory` 为进程内，多 worker 需 `sqlalchemy` |
 | 任务队列 | 内存（默认）/ Redis | 多 worker 必须配 `REDIS_URL`，否则各消费各的；生产用独立 `scripts/worker.py` |
-| 日志 handler | 进程内 | 多 worker 写同一文件有轮转竞态，建议容器日志 |
+| 日志 handler | **每个 app 独立 logger**（`app.extensions['flask_server.logger']`） | 多 worker 写同一文件有轮转竞态，建议容器日志 |
 | TCP/UDP 协议服务器 | **每进程绑定同一端口** | 由 `post_worker_init` 在 `workers > 1` 时禁启；`stop()` 先关连接、再等待在途 handler（默认最多 5s），之后入口才释放 DB/Redis |
 | 雪花 ID worker | 进程内 | 按 `crc32(hostname)+pid` 派生；严格唯一请显式配置或改用 UUIDv7 |
 
@@ -294,16 +294,17 @@ def on_message(conn, data, addr):
 
 ## 10. 已知约束与取舍
 
-1. **同进程多实例共享** `db` / SocketIO / Prometheus 指标 / 日志 handler / 内存缓存 —— 见第 7 节。
-   其中 `db` 额外有一条硬约束：第二次 `init_SQLAlchemy` 传入**不同** URI 会抛 `RuntimeError`，
-   而不是悄悄继续用第一个库（那会导致"以为在写测试库、实际写生产库"）
+1. **0.9 的 app 容器**：logger 与 metrics 已按 app 隔离（`app.extensions`）；`db`/Migrate
+   实例登记到每个 app，但 **SQLAlchemy 对象本身仍是进程级单例**——第二次 `init_SQLAlchemy`
+   传入**不同** URI 会抛 `RuntimeError`，而不是悄悄继续用第一个库（那会导致"以为在写测试库、
+   实际写生产库"）。SocketIO / 内存缓存 / 限流计数仍是进程内共享
 2. **只有 eventlet monkey patch 是导入期行为**：`SOCKETIO_ASYNC_MODE=eventlet` 的 patch
    必须在 import 前完成；`SOCKETIO_ENABLED` / `SOCKETIO_ASYNC_MODE` 本身可按 app 注入
    （`create_app(framework_config=...)`）。若该 app 要求 eventlet 但导入期未打补丁，
    会降级为 `threading` 并告警
-3. **日志配置在导入期确定（进程级）**：`DEBUG` / `LOG_FORMAT` / `LOG_FILE_PATH` 在
-   `flask_server.util.Logger` 导入时由 `Logger.init()` 读取一次，运行期改这些配置不会重建
-   handler，也不随 app 注入变化
+3. **日志配置在 create_app 时按 cfg 确定（每个 app 独立 logger）**：`DEBUG` / `LOG_FORMAT` /
+   `LOG_FILE_PATH` 在 `Logger.configure(app, cfg)` 执行时读取；运行期改这些配置不会重建
+   handler，也不随其它 app 的配置变化（无 app 上下文的脚本回退进程默认 logger）
 4. **DB 反射在首次绑定时执行**：大库建议 `DB_REFLECT_ON_START=false`
 5. **静态站点 catch-all 会拦截任意路径**：新增 `@app.route` 时不必担心顺序，
    Werkzeug 按规则权重匹配；但纯路径型规则（`/<x>`）与 catch-all 并存时要注意优先级
@@ -311,6 +312,7 @@ def on_message(conn, data, addr):
    `from flask_server import app` 才惰性创建（PEP 562），模块级实例只存在于
    `flask_server/wsgi.py`；`from flask_server.factory import create_app/create_core_app`
    可显式创建完整/最小应用
-7. **0.9 候选（尚未完成）**：`db` / Prometheus 指标对象 / 日志 handler 仍是进程级单例，
-   只是通过 `app.extensions` 暴露配置与 auth store；要支持"同进程两套完全独立的
-   DB/指标/日志"，需要继续把它们收进 app 容器（当前建议用多进程）
+7. **仍未容器化的部分（0.10 候选）**：SQLAlchemy 的 `db` 对象、内存缓存、限流计数仍是
+   进程级单例；要支持"同进程两套完全独立的 DB/缓存"，需要按 app 构造独立扩展实例并改造
+   model 绑定（当前建议用多进程）。Prometheus 多 worker 聚合仍依赖
+   `PROMETHEUS_MULTIPROC_DIR`（这是 prometheus_client 的机制，与 app 容器无关）

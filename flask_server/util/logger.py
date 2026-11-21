@@ -1,7 +1,11 @@
 """日志工具（请求 ID 链路追踪 + 防日志伪造 + 多级别 API）
 
-对外统一使用 `Logger` 静态方法，内部走命名 logger `flask_server`
-（避免捕获 SQLAlchemy/redis/urllib3 等第三方库的日志）：
+对外统一使用 `Logger` 静态方法，内部走命名 logger（避免捕获 SQLAlchemy/redis/urllib3
+等第三方库的日志）：
+
+    - 有 app 上下文：使用该 app 的独立 logger（`flask_server.app.<id>`，见 `Logger.configure`）；
+    - 无 app 上下文（脚本/CLI/测试）：回退进程默认 logger `flask_server`，首次使用时按
+      默认配置初始化（`_default_logger`）。
 
     - `Logger.debug(txt, exc_info=False)`：调试日志（仅当 logger 级别 ≤ DEBUG 时输出；
       级别由 `DEBUG` 派生：`DEBUG=true` → DEBUG，否则 INFO，见 config）
@@ -16,13 +20,16 @@
 所有方法都经过 `_format_msg`：统一加 `[rid:xxx]` 请求前缀、转义 CR/LF（防攻击者用
 换行伪造日志行）。新增级别时也必须走这条路径，不要直接调用 logging。
 
-日志初始化（`Logger.init`）由模块底部按进程配置执行一次；支持 text/JSON 格式、
-文件轮转、控制台兜底。
+日志初始化有两个入口：`Logger.configure(app, cfg)`（每个 app 独立，create_app 调用）
+与 `Logger.init(...)`（进程默认/测试/脚本）；支持 text/JSON 格式、文件轮转、控制台兜底。
+app logger 的 `propagate=True` 指向父 logger `flask_server`（默认无 handler），
+测试/工具挂在父 logger 上的 handler 仍能收到 app 日志。
 """
 
 import logging
 import json
 import os
+import threading
 import time
 import contextvars
 from logging.handlers import RotatingFileHandler
@@ -100,10 +107,11 @@ class Logger:
                  to_console=False,
                  log_format='text',
                  to_file=True,
+                 logger_name='flask_server',
                  **args
                  ):
-        # 使用命名 logger，不污染 root
-        logger = logging.getLogger('flask_server')
+        # 使用命名 logger，不污染 root；每个 app 可用独立名字（flask_server.app.xxx）
+        logger = logging.getLogger(logger_name)
         # 清理已有 handler，避免重复初始化
         # 必须 close()：只 removeHandler 不关闭会泄漏文件描述符，Windows 下文件还会被占用
         # 导致无法删除/轮转（tests/test_logger.py 里手工 close 正是为了绕过这个缺陷）
@@ -157,19 +165,62 @@ class Logger:
                 'no log sink configured (LOG_FILE_PATH unset/empty and LOG_TO_CONSOLE=false); '
                 'falling back to console logging'
             )
+        return logger
+
+    @staticmethod
+    def configure(app, cfg=None):
+        """按 app 的配置创建独立 logger，并登记到 app.extensions（0.9 起）。
+
+        - logger 名：`flask_server.app.<id>`，每个 app 独立 handler/级别/格式；
+        - `propagate=True`：父 logger `flask_server` 默认没有 handler，正常不产生重复输出；
+          测试/工具往父 logger 挂 handler 时仍能收到 app 日志（保持既有捕获方式可用）；
+        - 返回 logger，同时写入 `app.extensions['flask_server.logger']`。
+        """
+        from ..module.container import LOGGER_EXT_KEY
+        cfg = cfg if cfg is not None else config
+        logger = Logger.init(
+            filename=cfg.log_filename if cfg.log_to_file else None,
+            level=cfg.log_level,
+            max_bytes=cfg.log_max_bytes,
+            backup_count=cfg.log_backup_count,
+            to_console=cfg.log_to_console,
+            log_format=cfg.log_format,
+            to_file=cfg.log_to_file,
+            logger_name=f'flask_server.app.{id(app):x}',
+        )
+        logger.propagate = True
+        # 父 logger 只作为"捕获入口"：不主动输出，避免 app logger + 父 logger 双重写盘
+        parent = logging.getLogger('flask_server')
+        parent.propagate = False
+        app.extensions[LOGGER_EXT_KEY] = logger
+        return logger
+
+    @staticmethod
+    def _get_logger():
+        """当前 app 的 logger（无 app 上下文时回退进程默认 logger）"""
+        try:
+            from flask import current_app, has_app_context
+            if has_app_context():
+                from ..module.container import LOGGER_EXT_KEY
+                logger = current_app.extensions.get(LOGGER_EXT_KEY)
+                if logger is not None:
+                    return logger
+        except ImportError:   # Flask 未安装（纯脚本）
+            pass
+        return _default_logger()
 
     @staticmethod
     def debug(txt, exc_info=False):
         """调试日志（经 _format_msg：request_id 前缀 + CR/LF 转义）"""
-        logging.getLogger('flask_server').debug(Logger._format_msg(txt), exc_info=exc_info)
+        Logger._get_logger().debug(Logger._format_msg(txt), exc_info=exc_info)
 
     @staticmethod
     def info(txt):
-        logging.getLogger('flask_server').info(Logger._format_msg(txt))
+        Logger._get_logger().info(Logger._format_msg(txt))
 
     @staticmethod
     def warn(txt, exc_info=False):
-        logging.getLogger('flask_server').warning(Logger._format_msg(txt), exc_info=exc_info)
+        Logger._get_logger().warning(Logger._format_msg(txt), exc_info=exc_info)
 
     @staticmethod
     def warning(txt, exc_info=False):
@@ -181,7 +232,7 @@ class Logger:
 
     @staticmethod
     def error(txt, exc_info=False):
-        logging.getLogger('flask_server').error(Logger._format_msg(txt), exc_info=exc_info)
+        Logger._get_logger().error(Logger._format_msg(txt), exc_info=exc_info)
 
     @staticmethod
     def exception(txt):
@@ -190,13 +241,32 @@ class Logger:
         在 except 块之外调用时 sys.exc_info() 为空，只会得到 `NoneType: None`，
         无法定位问题——那种场景请改用 `Logger.error(txt)`。
         """
-        logging.getLogger('flask_server').error(Logger._format_msg(txt), exc_info=True)
+        Logger._get_logger().error(Logger._format_msg(txt), exc_info=True)
 
 
-Logger.init(filename=config.log_filename,
-            level=config.log_level,
-            max_bytes=config.log_max_bytes,
-            backup_count=config.log_backup_count,
-            to_console=config.log_to_console,
-            log_format=config.log_format,
-            to_file=config.log_to_file, )
+_default_logger_instance = None
+_default_logger_lock = threading.Lock()
+
+
+def _default_logger():
+    """进程默认 logger（无 app 上下文的脚本/CLI/测试用），首次使用时按默认配置初始化"""
+    global _default_logger_instance
+    if _default_logger_instance is not None:
+        return _default_logger_instance
+    with _default_logger_lock:
+        if _default_logger_instance is None:
+            logger = logging.getLogger('flask_server')
+            if logger.handlers:
+                # 外部已配置（测试/conftest/手工 Logger.init）：直接复用，不清理其 handler
+                _default_logger_instance = logger
+            else:
+                _default_logger_instance = Logger.init(
+                    filename=config.log_filename,
+                    level=config.log_level,
+                    max_bytes=config.log_max_bytes,
+                    backup_count=config.log_backup_count,
+                    to_console=config.log_to_console,
+                    log_format=config.log_format,
+                    to_file=config.log_to_file,
+                )
+    return _default_logger_instance

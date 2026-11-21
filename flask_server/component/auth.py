@@ -303,13 +303,14 @@ class SqlAlchemyAuthStore:
         import importlib
 
         from flask_server.module.sqlalchemy import sqlalchemy
+        from flask_server.module.container import get_db
 
         user_module = importlib.import_module('flask_server.model.po.user')
 
         def _bound_to_db():
             # 不能用 hasattr(UserPO, 'query') 判断：真实模型的 query 是 Flask-SQLAlchemy
             # 的描述符，在 app 上下文外访问会抛 RuntimeError（本方法常在 app 上下文外调用）
-            db = sqlalchemy()
+            db = get_db(default=sqlalchemy())
             po = user_module.UserPO
             return db is not None and isinstance(po, type) and issubclass(po, db.Model)
 
@@ -519,7 +520,7 @@ class AuthService:
         if cls._is_login_locked(username, client_ip):
             Logger.warn(f'AuthService login blocked (locked): {username} ip={client_ip}')
             # 只计数不按用户名/IP 打标签：账号信息不适合进指标，且会造成高基数
-            metrics._inc(metrics._AUTH_LOGIN_LOCKED)
+            metrics.inc_login_locked()
             return None, 'locked'
         store = cls._get_store()
         user = store.get_by_username(username)

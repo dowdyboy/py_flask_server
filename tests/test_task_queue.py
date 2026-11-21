@@ -664,16 +664,7 @@ def test_task_processed_metric_uses_fixed_labels(monkeypatch):
     from flask_server.module import task_worker
 
     calls = []
-
-    class FakeCounter:
-        def labels(self, **kwargs):
-            calls.append(kwargs)
-            return self
-
-        def inc(self):
-            pass
-
-    monkeypatch.setattr(metrics, '_TASK_PROCESSED', FakeCounter())
+    monkeypatch.setattr(metrics, 'inc_task_processed', lambda result: calls.append(result))
     for result in ('succeeded', 'retried', 'dead'):
         task_worker._count_processed(result)
-    assert calls == [{'result': 'succeeded'}, {'result': 'retried'}, {'result': 'dead'}]
+    assert calls == ['succeeded', 'retried', 'dead']

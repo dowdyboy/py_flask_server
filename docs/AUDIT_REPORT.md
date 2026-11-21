@@ -395,8 +395,10 @@ finally:
 
 - **0.8 已完成的架构项**：`import flask_server` 不再创建 app；入口拆分到
   `flask_server/wsgi.py`；worker 使用 `create_core_app()`；handler 扫描改为按需触发。
-- **0.9 候选**：`db` / Prometheus 指标对象 / 日志 handler 仍是进程级单例（当前通过多进程部署
-  隔离）；要支持同进程多套完全独立的 DB/指标/日志，需要继续把它们收进 app 容器。
+- **0.9 已完成的 app 容器**：logger 与 Prometheus metrics 按 app 隔离（`app.extensions`）；
+  `db`/Migrate 登记到 `app.extensions` 并提供 `get_db()`；新增 `module/container.py`。
+- **0.10 候选**：SQLAlchemy 的 `db` 对象、内存缓存、限流计数仍是进程级单例；要支持同进程
+  多套完全独立的 DB/缓存，需按 app 构造独立扩展实例并改造 model 绑定（当前建议多进程）。
 - `reclaim_stale` 没有 handler 心跳，长任务只能靠调大 `TASK_VISIBILITY_TIMEOUT`。
 - token 索引是"尽力而为"：跨 worker 的批量吊销依赖 `REDIS_URL`。
 - 测试仍未覆盖：`server.py`/`wsgi_gunicorn.py`、真实 Docker/ARMv7、`verify_real_env` 的

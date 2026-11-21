@@ -15,8 +15,8 @@ pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term
 认证模块（Redis 存储降级与内存兜底、防爆破、refresh 轮换、登出吊销 refresh、入参限长）、
 Prometheus 指标、缓存降级恢复（含故障/脏数据自愈）、事务提交/回滚（CI 含真实 MySQL）、
 路径穿越防护、反射与声明式模型共存、雪花 ID 并发、SubprocessTask 哨兵停止等
-**735 个用例**。覆盖率快照（2026-11-21，`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term`）：
-**91.76%**，门槛 85%（快照仅供参考，随代码演进会变）。覆盖率包含 `flask_server/` 与生产入口
+**740 个用例**。覆盖率快照（2026-11-21，`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term`）：
+**91.48%**，门槛 85%（快照仅供参考，随代码演进会变）。覆盖率包含 `flask_server/` 与生产入口
 `wsgi.py`（`server.py`/`wsgi_gunicorn.py` 依赖 Windows 不支持的运行时，不计入）。
 
 真实环境自检（云服务器 MySQL/Redis 全链路验证）：
@@ -118,14 +118,18 @@ app = create_app(framework_config=cfg)                     # 该实例的装配�
 
 装配流程（顺序即行为）：
 
-1. `Flask(__name__)` + CORS + SECRET_KEY / MAX_CONTENT_LENGTH
+1. `Flask(__name__)` + 配置扩展 + `Logger.configure(app, cfg)` + CORS + SECRET_KEY / MAX_CONTENT_LENGTH
 2. flask-smorest `Api`（OpenAPI 文档与参数校验）
 3. SocketIO（按配置，默认关闭）
-4. SQLAlchemy / Flask-Migrate
+4. SQLAlchemy / Flask-Migrate（db/migrate 登记到 `app.extensions`）
 5. `register_request_hooks()`：参数解析等 before/after 钩子
 6. `register_error_handlers()`：HTTPException / 422 / KeyError / 兜底异常
-7. `init_components()`：限流 → 认证 → 指标（顺序决定 before_request 执行序）
+7. `init_components()`：限流 → 认证 → 指标（指标 bundle 写入 `app.extensions`；顺序决定 before_request 执行序）
 8. `register_controllers()`：`controller/` 下的 Blueprint 与 `register(app)` 钩子
+
+**app 容器（0.9）**：logger / metrics / db / migrate 都可通过 `app.extensions` 取用，
+统一键与访问器在 `flask_server.module.container`（`get_db/get_logger/get_metrics`）；
+无 app 上下文时回退进程默认对象（脚本/测试直调）。`db` 对象本身仍是进程级单例。
 
 **仍是进程级单例**（有意为之）：SQLAlchemy 的 `db`、Flask-Migrate、SocketIO、
 Prometheus 指标对象、内存缓存/限流/认证存储。同进程创建多个 app 会共享这些；

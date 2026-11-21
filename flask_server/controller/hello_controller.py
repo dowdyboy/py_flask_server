@@ -94,9 +94,10 @@ def _check_dependencies():
 
 
 def _live_db_check():
-    """实时 DB 连通性探测"""
+    """实时 DB 连通性探测（优先使用当前 app 容器里的 db）"""
     from flask_server.module import sqlalchemy
-    db = sqlalchemy()
+    from flask_server.module.container import get_db
+    db = get_db(default=sqlalchemy())
     if db is None:
         return True   # 未配置数据库视为通过
     try:
@@ -134,9 +135,11 @@ class ReadyzView(MethodView):
         # 直接复用 health 的探测实现（不经过缓存）：修复前这里内联复制了一份逻辑，
         # 且失败分支一行日志都不记，两处实现必然继续漂移。
         from flask_server.module import redis_cache, sqlalchemy
+        from flask_server.module.container import get_db
+        db = get_db(default=sqlalchemy())
         db_ok = _live_db_check()
         redis_ok = _live_redis_check()
-        if sqlalchemy() is not None:
+        if db is not None:
             status['db'] = 'ok' if db_ok else 'error'
         if redis_cache is not None:
             status['redis'] = 'ok' if redis_ok else 'error'

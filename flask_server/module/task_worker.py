@@ -34,19 +34,15 @@ TASK_REJECTED_REASONS = ('unavailable', 'unregistered', 'max_retries')
 
 
 def _count_rejected(reason):
-    """任务被拒绝/未执行即进入死信时计数（metrics 依赖缺失时自动跳过）
-
-    延迟导入：module 与 component 在导入期互相引用（component.auth → module），
-    放到调用时再取可避免循环导入，也让测试对 metrics 模块的 monkeypatch 立即生效。
-    """
-    from ..component.metrics import _TASK_REJECTED, _inc
-    _inc(_TASK_REJECTED, reason=reason)
+    """任务被拒绝/未执行即进入死信时计数（metrics 依赖缺失时自动跳过）"""
+    from ..component.metrics import inc_task_rejected
+    inc_task_rejected(reason)
 
 
 def _count_processed(result):
     """任务执行结果计数：succeeded / retried / dead（固定低基数标签）"""
-    from ..component.metrics import _TASK_PROCESSED, _inc
-    _inc(_TASK_PROCESSED, result=result)
+    from ..component.metrics import inc_task_processed
+    inc_task_processed(result)
 
 
 class TaskWorker:

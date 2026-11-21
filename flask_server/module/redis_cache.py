@@ -2,7 +2,7 @@ import json
 import time
 from typing import Any, Optional
 from ..config import config
-from ..util import Logger, CommonUtil
+from ..util import Logger
 
 # Redis 缓存模块，用于替代内存缓存（多进程/多实例场景）
 # 各操作有异常降级：Redis 不可达时 Logger.warn 并返回安全默认值，不中断业务
@@ -41,7 +41,8 @@ class RedisCache:
         self._retry_cooldown = 30
         self._unavailable_until = 0.0
         self._need_recovery = False
-        Logger.info(f'RedisCache initialized : {CommonUtil.mask_uri(url)}')
+        # 不在导入期打印初始化日志：那会提前初始化进程默认 logger，导致 app logger
+        # 与默认 logger 双写（0.9 起日志按 app 隔离）。需要时由调用方/首次使用记录。
 
     def _mark_unavailable(self):
         """标记不可用，进入冷却期（冷却结束后自动重试恢复）"""

@@ -3,6 +3,8 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from ..config import config
 from ..util import Logger, CommonUtil
+from .container import DB_EXT_KEY, MIGRATE_EXT_KEY
+
 
 # 使用SQLAlchemy作为数据库访问层，具体使用参考sqlalchemy库
 # 本文件中的函数用于初始化SQLAlchemy对象，以及提供一个装饰器用于事务处理
@@ -11,7 +13,6 @@ from ..util import Logger, CommonUtil
 def _mask_uri(uri):
     return CommonUtil.mask_uri(uri)
 
-Logger.info(f'SQLALCHEMY_DATABASE_URI : {_mask_uri(config.sqlalchemy_uri)}')
 
 db = None         # SQLAlchemy 实例（进程级单例；首次 init_SQLAlchemy 时创建）
 migrate = None    # Migrate 实例
@@ -65,6 +66,10 @@ def init_SQLAlchemy(app, cfg=None, reflect=None):
         requested_uri = cfg.sqlalchemy_uri
         # 同库复用（或调用方未指定 URI）保持历史行为；换库必须失败而不是静默忽略。
         if requested_uri is None or current_uri is None or requested_uri == current_uri:
+            # 0.9：把进程级单例登记到该 app 的容器里（每个 app 都能从 extensions 取到）
+            app.extensions[DB_EXT_KEY] = db
+            if migrate is not None:
+                app.extensions[MIGRATE_EXT_KEY] = migrate
             return
         raise RuntimeError(
             'SQLAlchemy 是进程级单例（Flask-SQLAlchemy 的 db 只能 init_app 一次），'
@@ -98,6 +103,8 @@ def init_SQLAlchemy(app, cfg=None, reflect=None):
     db = SQLAlchemy(app)
     _bound_uri = cfg.sqlalchemy_uri
     setattr(db, _BOUND_URI_ATTR, _bound_uri)
+    # 0.9：app 容器登记（后续通过 get_db() 按当前 app 解析）
+    app.extensions[DB_EXT_KEY] = db
     should_reflect = cfg.db_reflect_on_start if reflect is None else reflect
     if should_reflect:
         # 容错：反射失败（如 DB 短暂不可达）不应导致应用启动崩溃，
@@ -124,9 +131,11 @@ def init_SQLAlchemy(app, cfg=None, reflect=None):
 # 初始化 Flask-Migrate（数据库迁移），仅 db 非None时启用
 def init_Migrate(app):
     global migrate
-    if db is not None and migrate is None:
-        migrate = Migrate(app, db)
-        Logger.info('init_Migrate : Flask-Migrate enabled')
+    if db is not None:
+        if migrate is None:
+            migrate = Migrate(app, db)
+            Logger.info('init_Migrate : Flask-Migrate enabled')
+        app.extensions[MIGRATE_EXT_KEY] = migrate
 
 
 # 获取SQLAlchemy对象

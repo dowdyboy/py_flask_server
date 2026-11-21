@@ -398,6 +398,8 @@ def create_app(app_config=None, framework_config=None):
     app.config.update(app_config)
     # 先落配置：组件注册与请求期钩子都从这里解析（必须早于任何装配）
     app.extensions[CONFIG_EXT_KEY] = cfg
+    # 0.9：日志、指标等运行时对象按 app 隔离（见 module/container.py）
+    Logger.configure(app, cfg)
 
     CORS(app, origins=cfg.cors_origins)
 
@@ -470,6 +472,7 @@ def create_core_app(framework_config=None):
     app = Flask(__name__)
     app.config['SECRET_KEY'] = cfg.secret_key
     app.extensions[CONFIG_EXT_KEY] = cfg
+    Logger.configure(app, cfg)
     # worker 不需要反射（反射会真实连库且拖慢启动）；DB 仍按 SQLALCHEMY_URI 初始化，
     # 任务里第一次查询时才真正建立连接。
     init_SQLAlchemy(app, cfg, reflect=False)

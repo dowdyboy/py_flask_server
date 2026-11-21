@@ -2,6 +2,7 @@ from .sqlite import SQLite
 from .simple_memory_cache import memory_cache
 from .local_file_storage import local_file_storage
 from .sqlalchemy import sqlalchemy_trans, init_SQLAlchemy, init_Migrate, sqlalchemy, get_migrate, in_app_context
+from .container import get_db
 from .redis_cache import redis_cache
 from .tcp_server import tcp_server
 from .udp_server import udp_server
@@ -20,6 +21,7 @@ __all__ = [
     'memory_cache',
     'local_file_storage',
     'sqlalchemy', 'sqlalchemy_trans', 'init_SQLAlchemy', 'init_Migrate', 'get_migrate', 'in_app_context',
+    'get_db',
     'redis_cache',
     'tcp_server', 'udp_server',
     'start_protocol_servers', 'stop_protocol_servers', 'start_embedded_task_worker',

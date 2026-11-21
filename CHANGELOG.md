@@ -3,6 +3,33 @@
 本模板项目的变更记录。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.9.0] - 2026-11-21
+
+### 变更（app 容器）
+
+- **日志按 app 隔离**：新增 `Logger.configure(app, cfg)`，每个 app 在
+  `app.extensions['flask_server.logger']` 持有独立 `logging.Logger`
+  （独立 handler/级别/格式，名字 `flask_server.app.<id>`）；无 app 上下文时回退
+  进程默认 logger（首次使用时按默认配置初始化）。移除 `import flask_server.util`
+  时的日志初始化副作用
+- **指标按 app 隔离**：新增 `MetricsBundle`（独立 `CollectorRegistry` + Counter/Histogram），
+  `init_metrics(app, cfg)` 把 bundle 写入 `app.extensions['flask_server.metrics']`；
+  `/metrics` 输出当前 app 的 registry，多 app 不再在默认 registry 里重名冲突。
+  埋点统一为 `inc_rate_limited/inc_login_locked/inc_task_rejected/inc_task_processed`
+- **DB 登记到 app 容器**：`init_SQLAlchemy/init_Migrate` 把实例写入
+  `app.extensions['flask_server.db']` / `['flask_server.migrate']`；新增
+  `flask_server/module/container.py`（扩展键 + `get_db/get_logger/get_metrics`）与
+  `flask_server.module.get_db`；health/auth 改为按当前 app 解析 db
+- 新增测试 `tests/test_app_container.py`：logger/metrics/db 的 app 隔离、
+  `create_core_app` 不装配 HTTP 栈、无上下文回退行为
+
+### 说明（仍未完成）
+
+- SQLAlchemy 的 `db` **对象本身仍是进程级单例**（Flask-SQLAlchemy 限制）：同进程只能绑一个
+  `SQLALCHEMY_URI`（换库会抛 `RuntimeError`），现在只是把该实例登记进每个 app 的容器。
+  真正"同进程两套独立 DB"仍需多进程；Prometheus 多进程聚合仍用 `PROMETHEUS_MULTIPROC_DIR`
+- 全量：**740 个用例**（734 passed / 6 skipped），覆盖率 **91.48%**
+
 ## [0.8.0] - 2026-11-21
 
 ### 变更（架构）

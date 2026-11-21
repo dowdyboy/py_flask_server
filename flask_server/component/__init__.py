@@ -27,7 +27,7 @@ def init_components(app, cfg=None):
     """
     rate_limit.init_rate_limit(app, cfg)
     auth.init_auth(app, cfg)
-    metrics.init_metrics(app)
+    metrics.init_metrics(app, cfg)
 
 
 __all__ = [
