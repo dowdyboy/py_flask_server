@@ -164,3 +164,24 @@ def test_logger_info_single_line_with_injected_newline(tmp_path):
         assert '[rid:rid-1]' in lines[0]
     finally:
         Logger.clear_request_id()
+
+
+def test_default_logger_restores_level_when_reusing_external_handlers(monkeypatch):
+    """外部先挂 handler（level=NOTSET）再首次写日志：必须补上默认级别，不能吞 INFO。
+
+    回归：CI test-mysql job 只跑 sqlalchemy/sqlite 用例，默认 logger 在父级 level 被
+    conftest 恢复成 NOTSET 后复用缓存实例，INFO 全部被 root WARNING 过滤。
+    """
+    import flask_server.util.logger as logger_module
+
+    parent = logging.getLogger('flask_server')
+    monkeypatch.setattr(logger_module, '_default_logger_instance', None)
+    parent.setLevel(logging.NOTSET)
+    handler = logging.NullHandler()
+    parent.addHandler(handler)
+    try:
+        selected = Logger._get_logger()
+        assert selected is parent
+        assert selected.level == logger_module.config.log_level
+    finally:
+        parent.removeHandler(handler)

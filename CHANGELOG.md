@@ -3,6 +3,27 @@
 本模板项目的变更记录。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.9.1] - 2026-11-21
+
+### 修复（GitHub Actions 首轮）
+
+- **TCP `stop()` 在 Linux 上会卡住**：`_close_all_connections()` 只 `close()` 不保证唤醒
+  另一线程中阻塞的 `recv()`，在途 handler 计数永远不归零，`stop()` 会等到
+  `TCP_IDLE_TIMEOUT`（默认 300s）。改为先 `shutdown(SHUT_RDWR)` 再 `close()`；
+  补 `test_close_all_connections_shuts_down_before_close`
+- **`_is_path_safe` 跨平台不一致**：POSIX 上把 `..\\..\\etc\\passwd` 当普通文件名，
+  CI（Linux）的穿越用例失败。校验前把反斜杠归一为正斜杠，安全边界跨平台一致
+- **默认 logger 在复用外部 handler 时吞掉 INFO**：conftest 把父 logger level 恢复成
+  `NOTSET` 后，`_default_logger` 复用缓存实例却没有补默认级别，`DEBUG_SQL` 的 INFO
+  在只跑 sqlite 用例的 CI job 里不输出。现在缓存命中时也会补齐 `config.log_level`；
+  补回归用例
+- CI 失败详情：`test (3.12)` / `test-locked-deps` 各 2 例（TCP 关闭 + WebUI 路径），
+  `test-mysql` 1 例（DEBUG_SQL 日志）
+
+### 验证
+
+- 全量：**742 个用例**（736 passed / 6 skipped），覆盖率 **91.86%**
+
 ## [0.9.0] - 2026-11-21
 
 ### 变更（app 容器）

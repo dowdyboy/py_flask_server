@@ -1,4 +1,5 @@
 import socketserver
+import socket
 import threading
 
 from ..config import config
@@ -206,11 +207,20 @@ class TcpServer(ProtocolServer):
             self._connections.discard(conn)
 
     def _close_all_connections(self):
-        """关闭所有已建立的连接（stop 时调用；连接的 recv 解除阻塞自然退出）"""
+        """关闭所有已建立的连接（stop 时调用）。
+
+        必须先 `shutdown(SHUT_RDWR)` 再 `close()`：Linux 上只 close() 不保证唤醒
+        另一个线程中阻塞的 recv()（常表现为 stop 要等满 TCP_IDLE_TIMEOUT 才返回，
+        或在途 handler 计数永远不归零）。shutdown 会立即让 recv 返回 EOF/错误。
+        """
         with self._connections_lock:
             conns = list(self._connections)
             self._connections.clear()
         for conn in conns:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 conn.close()
             except OSError:

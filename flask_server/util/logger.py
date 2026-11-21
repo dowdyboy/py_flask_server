@@ -252,12 +252,20 @@ def _default_logger():
     """进程默认 logger（无 app 上下文的脚本/CLI/测试用），首次使用时按默认配置初始化"""
     global _default_logger_instance
     if _default_logger_instance is not None:
+        # conftest/测试可能把父 logger 的 level 恢复成 NOTSET；补回默认级别，
+        # 否则后续 INFO 会被 root 的 WARNING 过滤（只在"复用缓存 logger"路径发生）。
+        if _default_logger_instance.level == logging.NOTSET:
+            _default_logger_instance.setLevel(config.log_level)
         return _default_logger_instance
     with _default_logger_lock:
         if _default_logger_instance is None:
             logger = logging.getLogger('flask_server')
             if logger.handlers:
-                # 外部已配置（测试/conftest/手工 Logger.init）：直接复用，不清理其 handler
+                # 外部已配置（测试/conftest/手工 Logger.init）：直接复用其 handler。
+                # 但 logger 级别可能仍是 NOTSET（继承 root 的 WARNING），会吞掉 INFO；
+                # 这里补上进程默认级别，保证"先挂 handler、后首次 Logger.info"也能输出。
+                if logger.level == logging.NOTSET:
+                    logger.setLevel(config.log_level)
                 _default_logger_instance = logger
             else:
                 _default_logger_instance = Logger.init(

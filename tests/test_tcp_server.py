@@ -979,3 +979,20 @@ def test_idle_timeout_defaults_from_config(monkeypatch):
     assert server.idle_timeout == 42
     monkeypatch.setattr(config, 'tcp_idle_timeout', 0)
     assert TcpServer(host='127.0.0.1', port=0).idle_timeout == 0
+
+
+def test_close_all_connections_shuts_down_before_close():
+    """stop 关闭连接时必须先 shutdown 再 close（Linux 上只 close 不唤醒阻塞的 recv）"""
+    server = TcpServer(host='127.0.0.1', port=0)
+    events = []
+
+    class _FakeConn:
+        def shutdown(self, how):
+            events.append(('shutdown', how))
+
+        def close(self):
+            events.append(('close', None))
+
+    server._connections.add(_FakeConn())
+    server._close_all_connections()
+    assert events == [('shutdown', socket.SHUT_RDWR), ('close', None)]

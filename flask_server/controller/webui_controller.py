@@ -47,9 +47,14 @@ STATIC_EXT_SET = {
 
 
 def _is_path_safe(filename):
-    """校验 filename 经 realpath 解析后仍在 webui_dir 内，防止 .. 路径探测"""
+    """校验 filename 经 realpath 解析后仍在 webui_dir 内，防止 .. 路径探测。
+
+    统一把反斜杠归一为正斜杠再校验：Windows 上反斜杠是分隔符，POSIX 上虽然只是
+    普通字符，但让安全边界跨平台一致（`..\\..\\etc\\passwd` 在所有平台都按穿越处理）。
+    """
     webui_real = os.path.realpath(config.webui_dir)
-    filepath_real = os.path.realpath(os.path.join(config.webui_dir, filename))
+    normalized = filename.replace('\\', '/')
+    filepath_real = os.path.realpath(os.path.join(config.webui_dir, normalized))
     return filepath_real.startswith(webui_real + os.sep) or filepath_real == webui_real
 
 
