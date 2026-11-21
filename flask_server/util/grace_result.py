@@ -2,15 +2,17 @@
 
 from typing import Any
 
+from .error_code import ErrorCode
+
 
 # HTTP响应对象工具类
 
 
 class GraceResult:
 
-    OK = 0
-    PARAM_ERROR = 1001
-    INNER_ERROR = -1
+    OK = int(ErrorCode.OK)
+    PARAM_ERROR = int(ErrorCode.PARAM_ERROR)
+    INNER_ERROR = int(ErrorCode.INTERNAL_ERROR)
 
     def __init__(self, code: int, msg: str, data: Any) -> None:
         self.code = code

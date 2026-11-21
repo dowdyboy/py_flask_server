@@ -95,6 +95,34 @@ def _over_limit(count):
     return count is not None and count > config.rate_limit_per_minute
 
 
+def _remember_rate_limit_state(count):
+    """记录本请求的配额状态，供 after_request 写 X-RateLimit-* 头（含 429 响应）"""
+    limit = config.rate_limit_per_minute
+    remaining = max(0, limit - int(count or 0))
+    current = getattr(g, 'rate_limit_state', None)
+    if current is not None:
+        remaining = min(current['remaining'], remaining)
+        current['remaining'] = remaining
+        return
+    g.rate_limit_state = {
+        'limit': limit,
+        'remaining': remaining,
+        'reset': RATE_LIMIT_WINDOW,
+    }
+
+
+def set_rate_limit_headers(resp):
+    """把配额状态写入 X-RateLimit-Limit / Remaining / Reset（未启用限流时无状态，不写）"""
+    state = getattr(g, 'rate_limit_state', None)
+    if not state:
+        return resp
+    resp.headers.setdefault('X-RateLimit-Limit', str(state['limit']))
+    resp.headers.setdefault('X-RateLimit-Remaining', str(state['remaining']))
+    # 窗口是"顺延窗口"（每次请求刷新 TTL），这里给的是最长等待秒数，客户端按此退避即可
+    resp.headers.setdefault('X-RateLimit-Reset', str(state['reset']))
+    return resp
+
+
 def rate_limit_check():
     """限流拦截器（由 init_rate_limit 注册为 before_request）"""
     if not config.rate_limit_enabled:
@@ -112,6 +140,7 @@ def rate_limit_check():
 
     # 路径级配额（可被随机路径绕过，仅防单端点滥用；超长路径哈希截断防内存放大）
     path_count = _incr(cache, f'rate:{ip}:{path_key}')
+    _remember_rate_limit_state(path_count)
     if _over_limit(path_count):
         # 日志也用截断后的 key：原样记录 100KB 的 URL 会让一条 429 变成一行 100KB 日志
         _warn_limited(f'rate limit exceeded (path): rate:{ip}:{path_key}')
@@ -120,6 +149,7 @@ def rate_limit_check():
         abort(429)
     # IP 级总配额（兜底，防路径随机化绕过）
     ip_count = _incr(cache, f'rate:{ip}')
+    _remember_rate_limit_state(ip_count)
     if _over_limit(ip_count):
         _warn_limited(f'rate limit exceeded (ip): rate:{ip}')
         metrics._inc(metrics._RATE_LIMITED, scope='ip')
@@ -138,3 +168,5 @@ def init_rate_limit(app, cfg=None):
         Logger.warn('RATE_LIMIT_STORE=redis 但未配置 REDIS_URL：限流计数将退化为'
                     '进程内内存，多实例/多 worker 下实际配额是单实例的 N 倍')
     app.before_request(rate_limit_check)
+    # 配额状态头（X-RateLimit-*）在请求结束后统一写入；未启用限流时 g 上无状态，自动跳过
+    app.after_request(set_rate_limit_headers)

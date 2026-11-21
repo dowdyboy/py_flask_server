@@ -3,6 +3,54 @@
 本模板项目的变更记录。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.7.0] - 2026-11-21
+
+### 新增
+
+- **错误码枚举**：新增 `flask_server/util/error_code.py::ErrorCode`，controller 不再散落
+  `4001/4002/5030` 魔法数字；`GraceResult.OK/PARAM_ERROR/INNER_ERROR` 改为引用同一枚举，
+  数值契约不变（有回归用例锁定）
+- **OpenAPI 安全方案**：`/openapi.json` 新增 `components.securitySchemes.XAuthToken`
+  （`X-AUTH-TOKEN` 请求头），`/api/v1/auth/me` 等受保护接口用 `@blp.doc(security=...)`
+  标注，生成的 SDK 能识别认证要求
+- **ETag / 条件请求**：`ETAG_ENABLED=true`（默认）时，GET/HEAD 的 JSON 成功响应自动生成
+  `ETag`，`If-None-Match` 命中返回 304（空 body）；静态文件/流式响应不参与
+- **分页工具**：`flask_server.util.paginate` + `PageSchema` / `PaginationQuerySchema`，
+  SQLAlchemy Query 走原生分页、普通列表按切片，响应体统一为
+  `{items, page, per_page, total, pages}`
+- **限流配额响应头**：所有响应（含 429）带 `X-RateLimit-Limit` / `-Remaining` / `-Reset`
+- **任务可观测性**：新增 `task_processed_total{result}`（succeeded/retried/dead）；
+  新增 `scripts/task_replay.py`（`--list` / `--replay N` / `--replay-all` / `--dry-run`），
+  队列侧新增 `replay_dead()`（先入队、后移除，避免重放失败丢记录）
+- **认证能力**：
+  - `POST /api/v1/auth/password`：校验旧密码后改密，成功后该用户全部旧会话失效（需重新登录）
+  - `POST /api/v1/auth/logout_all`：吊销该用户全部 access/refresh token（登出所有设备）
+  - **refresh 重用检测**：已使用的 refresh_token 在 5 分钟内再次出现（被窃取/重放）时，
+    判定泄露并吊销该用户全部会话
+  - 按用户维护 token 索引（每用户上限 20），支撑改密/全端登出时的批量吊销
+
+### 变更
+
+- **`KeyError` 不再映射为 400**：未捕获的 KeyError 是服务端缺陷，改为 500 + traceback；
+  示例 controller 改为显式校验缺字段（`request.payload.get` + `GraceResult.param_error`）
+- 覆盖率统计纳入生产入口 `wsgi.py`（`--cov=flask_server --cov=wsgi`），使 P0-3
+  崩溃退出码的修复进入门禁；`server.py` / `wsgi_gunicorn.py` 因平台限制仍不计入
+- mypy 对 `flask_server.module.*` 与 `flask_server.util.*` 打开 `check_untyped_defs`
+  （45 文件零错误）；controller/component 后续版本再收紧
+- CI `test` 矩阵加入 Python 3.11，并为 `test` / `test-windows` 启用 pip 依赖缓存
+
+### 文档
+
+- 新增 [CI 与本地命令](docs/ci.md)（11 个 job ↔ 本地命令、额外依赖/环境变量、失败排查）
+  与 [运维手册](docs/operations-runbook.md)（waitress/gunicorn/Docker/ARMv7 的日志、重启、
+  优雅关闭、探针、故障速查）
+- `docs/api-conventions.md` 补分页工具、全局 ETag、X-RateLimit 头、认证新接口与
+  refresh 重用检测；`docs/task-queue.md` 补死信重放 CLI 与 `task_processed_total`；
+  `docs/development.md` 更新覆盖率口径与 Python 矩阵
+- prod compose 日志挂载由单个 `./server.log` 改为 `./logs` 目录 +
+  `LOG_FILE_PATH=/app/logs/server.log`（宿主文件不存在时 Docker 会把挂载点建成目录，
+  导致文件日志初始化失败）
+
 ## [0.6.1] - 2026-11-21
 
 ### 修复（第三轮审计）

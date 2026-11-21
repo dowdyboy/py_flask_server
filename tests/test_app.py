@@ -314,8 +314,20 @@ def test_internal_error_500(client, monkeypatch):
         monkeypatch.setitem(app.config, 'TESTING', True)
 
 
-def test_key_error_400(client):
-    """KeyError → 400 + 参数错误"""
+def test_openapi_declares_api_key_security(client):
+    """OpenAPI 必须声明 X-AUTH-TOKEN 安全方案，受保护接口引用它（生成的客户端才知道要认证）"""
+    spec = client.get('/openapi.json').get_json()
+    scheme = spec['components']['securitySchemes']['XAuthToken']
+    assert scheme['type'] == 'apiKey'
+    assert scheme['in'] == 'header'
+    assert scheme['name'] == 'X-AUTH-TOKEN'
+
+    me_op = spec['paths']['/api/v1/auth/me']['get']
+    assert me_op['security'] == [{'XAuthToken': []}]
+
+
+def test_key_error_500(client):
+    """未捕获的 KeyError 是服务端缺陷 → 500（不再伪装成客户端参数错误）"""
     from flask_server import app
 
     def missing_key():
@@ -324,10 +336,10 @@ def test_key_error_400(client):
     teardown = _probe(app, missing_key)
     try:
         resp = client.get('/hello')
-        assert resp.status_code == 400
+        assert resp.status_code == 500
         body = resp.get_json()
-        assert body['code'] == 1001
-        assert body['msg'] == '参数错误'
+        assert body['code'] == -1
+        assert body['msg'] == '接口发生错误'
     finally:
         teardown()
 
@@ -440,22 +452,25 @@ def test_put_json_payload(client):
 
 
 def test_non_dict_json_payload_normalized(client, monkeypatch):
-    """顶层 JSON 为数组/字符串时应归一为空 dict（视图字段访问走 KeyError → 400 而非 500）"""
+    """顶层 JSON 为数组/字符串时应归一为空 dict（不会因字段访问抛 TypeError）"""
     from flask_server import app
-    monkeypatch.setitem(app.config, 'TESTING', False)   # 让 500 走 errorhandler
+    monkeypatch.setitem(app.config, 'TESTING', False)
 
-    def missing_key():
-        return request.payload['username']
+    captured = {}
 
-    teardown = _probe(app, missing_key)
+    def capture_payload():
+        captured['payload'] = request.payload
+
+    teardown = _probe(app, capture_payload)
     try:
         r = client.post('/api/v1/echo', data='[1, 2, 3]', content_type='application/json')
-        assert r.status_code == 400
-        assert r.get_json()['code'] == 1001
+        assert captured['payload'] == {}
+        # 非 dict body 交给 webargs 校验 → 422（字段级错误），不是 500
+        assert r.status_code == 422
 
         r = client.post('/api/v1/echo', data='"hello"', content_type='application/json')
-        assert r.status_code == 400
-        assert r.get_json()['code'] == 1001
+        assert captured['payload'] == {}
+        assert r.status_code == 422
     finally:
         teardown()
         monkeypatch.setitem(app.config, 'TESTING', True)

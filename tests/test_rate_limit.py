@@ -239,6 +239,34 @@ def test_non_429_has_no_retry_after(client):
     assert client.get('/api/v1/healthz').headers.get('Retry-After') is None
 
 
+def test_rate_limit_headers_present(client, monkeypatch):
+    """启用限流后响应带 X-RateLimit-*；429 也带（客户端能知道配额与退避）"""
+    from flask_server.component import rate_limit as rl
+    monkeypatch.setattr(config, 'rate_limit_enabled', True)
+    monkeypatch.setattr(config, 'rate_limit_per_minute', 3)
+    monkeypatch.setattr(rl, 'redis_cache', None)
+    try:
+        first = client.get('/hello')
+        assert first.status_code == 200
+        assert first.headers['X-RateLimit-Limit'] == '3'
+        assert first.headers['X-RateLimit-Remaining'] == '2'
+        assert first.headers['X-RateLimit-Reset'] == str(rl.RATE_LIMIT_WINDOW)
+
+        client.get('/hello')
+        third = client.get('/hello')
+        assert third.status_code == 200
+        assert third.headers['X-RateLimit-Remaining'] == '0'
+
+        blocked = client.get('/hello')
+        assert blocked.status_code == 429
+        assert blocked.headers['X-RateLimit-Remaining'] == '0'
+        assert blocked.headers.get('Retry-After')
+    finally:
+        for k in list(memory_cache.cache.keys()):
+            if k.startswith('rate:'):
+                memory_cache.delete(k)
+
+
 def test_limit_warning_is_throttled(monkeypatch):
     """429 告警必须限频：洪泛时逐条 WARN 会把日志/采集端打爆"""
     import logging

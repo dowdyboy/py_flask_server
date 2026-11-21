@@ -115,6 +115,7 @@ class Logger:
                 pass   # 关闭失败不应阻断日志初始化
         logger.setLevel(level)
         logger.propagate = False   # 不向 root 传播
+        formatter: logging.Formatter
         if log_format == 'json':
             formatter = JsonFormatter()
         else:

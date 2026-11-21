@@ -154,6 +154,8 @@ def sqlalchemy_trans(func):
 
 
 def _run_trans(func, *args, **kwargs):
+    if db is None:      # 防御：wrapper 已检查；这里让类型检查与运行期都明确非 None
+        raise RuntimeError('SQLAlchemy 未初始化，请配置 SQLALCHEMY_URI')
     try:
         ret = func(*args, **kwargs)
         db.session.commit()

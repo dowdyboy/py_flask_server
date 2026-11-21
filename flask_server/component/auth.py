@@ -6,7 +6,7 @@ from flask import request, jsonify
 
 from ..config import config, CONFIG_EXT_KEY
 from ..module import memory_cache, redis_cache
-from ..util import DataEncryptUtil, RandomGenerator, CommonUtil, Logger, GraceResult
+from ..util import DataEncryptUtil, RandomGenerator, CommonUtil, Logger, GraceResult, ErrorCode
 from . import metrics
 
 # 认证模块骨架
@@ -36,6 +36,14 @@ _REFRESH_TOKEN_KEY_PREFIX = 'auth:refresh:'
 _LOGIN_FAIL_KEY_PREFIX = 'auth:login_fail:'
 _LOGIN_LOCK_KEY_PREFIX = 'auth:login_lock:'
 _LOGIN_FAIL_GLOBAL_PREFIX = 'auth:login_fail_global:'
+# 按用户维护的已签发令牌索引：支持"改密后旧会话全部失效"/"登出所有设备"。
+# 索引本身也是缓存值（JSON 列表），进程内更新加锁；多进程下为尽力而为（新登录通常
+# 落在同一 worker，改密/全端登出会在当前 worker 读到自己的列表）。
+_USER_ACCESS_KEY_PREFIX = 'auth:user_access:'
+_USER_REFRESH_KEY_PREFIX = 'auth:user_refresh:'
+_REFRESH_USED_KEY_PREFIX = 'auth:refresh_used:'
+_TOKEN_INDEX_LOCK = threading.Lock()
+_MAX_TOKENS_PER_USER = 20
 # 每个 app 独立的用户存储（create_app 配置注入时 AUTH_STORE 可不同）
 _AUTH_STORE_EXT_KEY = 'flask_server.auth_store'
 # 惰性创建 store 的锁：避免并发首次请求各自 build 一个 MemoryAuthStore，
@@ -172,6 +180,55 @@ def _cache_delete(key, what='认证缓存'):
                     f'(key prefix {key.rsplit(":", 1)[0]}); it may stay valid until TTL')
     return bool(ok)
 
+def _append_token_index(index_key, token, token_key_prefix, ttl):
+    """把已签发 token 记入用户索引（调用方持锁）；超过上限时淘汰最旧并真正删除其 token"""
+    tokens = _cache_get(index_key)
+    if not isinstance(tokens, list):
+        tokens = []
+    tokens.append(token)
+    while len(tokens) > _MAX_TOKENS_PER_USER:
+        stale = tokens.pop(0)
+        _cache_delete(f'{token_key_prefix}{stale}', what='evicted token')
+    _cache_set(index_key, tokens, ttl=ttl)
+
+
+def _remember_issued_tokens(uid, access, refresh):
+    """登录/续期后登记 token（用于改密与"登出所有设备"时批量吊销）"""
+    if not uid:
+        return
+    with _TOKEN_INDEX_LOCK:
+        _append_token_index(f'{_USER_ACCESS_KEY_PREFIX}{uid}', access,
+                            _TOKEN_KEY_PREFIX, config.auth_token_ttl)
+        _append_token_index(f'{_USER_REFRESH_KEY_PREFIX}{uid}', refresh,
+                            _REFRESH_TOKEN_KEY_PREFIX, config.auth_refresh_token_ttl)
+
+
+def _forget_issued_token(uid, token, index_prefix):
+    if not uid or not token:
+        return
+    with _TOKEN_INDEX_LOCK:
+        key = f'{index_prefix}{uid}'
+        tokens = _cache_get(key)
+        if isinstance(tokens, list) and token in tokens:
+            tokens.remove(token)
+            _cache_set(key, tokens)
+
+
+def _revoke_all_tokens(uid):
+    """吊销某用户的全部 access/refresh token（改密、登出所有设备）"""
+    with _TOKEN_INDEX_LOCK:
+        for index_prefix, token_prefix in (
+                (_USER_ACCESS_KEY_PREFIX, _TOKEN_KEY_PREFIX),
+                (_USER_REFRESH_KEY_PREFIX, _REFRESH_TOKEN_KEY_PREFIX)):
+            key = f'{index_prefix}{uid}'
+            tokens = _cache_get(key)
+            if isinstance(tokens, list):
+                for token in tokens:
+                    _cache_delete(f'{token_prefix}{token}', what='revoked token')
+            _cache_delete(key)
+
+
+
 # ------------------------- AuthUser -------------------------
 
 
@@ -211,6 +268,16 @@ class MemoryAuthStore:
 
     def get_by_uid(self, uid):
         return self._by_uid.get(uid)
+
+    def update_password(self, username, passwd_hash):
+        """更新密码哈希；用户不存在返回 False"""
+        with self._lock:
+            user = self._users.get(username)
+            if user is None:
+                return False
+            # AuthUser 对象同时被 _by_uid 引用，原地更新即可
+            user.passwd = passwd_hash
+            return True
 
 
 # UserPO 占位类 → 真实 ORM 模型的重绑锁：并发首次认证请求只允许一个线程执行 reload
@@ -309,6 +376,21 @@ class SqlAlchemyAuthStore:
             return AuthUser(user.uid, user.username, user.passwd, user.create_time)
 
         return in_app_context(_query)
+
+    @staticmethod
+    def update_password(username, passwd_hash):
+        from flask_server.module.sqlalchemy import sqlalchemy_trans
+        UserPO = SqlAlchemyAuthStore._get_po()
+
+        @sqlalchemy_trans
+        def _do():
+            user = UserPO.query.filter(UserPO.username == username).first()
+            if user is None:
+                return False
+            user.passwd = passwd_hash
+            return True
+
+        return _do()
 
 
 # ------------------------- AuthService -------------------------
@@ -454,18 +536,32 @@ class AuthService:
         refresh = RandomGenerator.secrets_token(32)
         _cache_set(f'{_TOKEN_KEY_PREFIX}{access}', user.uid, ttl=config.auth_token_ttl)
         _cache_set(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh}', user.uid, ttl=config.auth_refresh_token_ttl)
+        _remember_issued_tokens(user.uid, access, refresh)
         Logger.info(f'AuthService login: uid={user.uid}')
         return (access, refresh), None
 
     @classmethod
     def refresh_access_token(cls, refresh_token):
-        """用 refresh_token 换取新令牌（轮换：旧 refresh 原子作废，单次使用）"""
+        """用 refresh_token 换取新令牌（轮换：旧 refresh 原子作废，单次使用）
+
+        重用检测：已使用过的 refresh_token 若再次出现（旧值被窃取/重放），视为令牌泄露，
+        吊销该用户全部会话（access + refresh），返回 None。客户端网络重试造成的一次
+        误判会要求重新登录，这是安全优先的取舍。
+        """
         if not refresh_token:
             return None
+        used_key = f'{_REFRESH_USED_KEY_PREFIX}{refresh_token}'
         # 原子读取并删除（GETDEL）：并发使用同一 refresh_token 时仅一次成功
         uid = _cache_getdel(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
         if uid is None:
+            replayed_uid = _cache_get(used_key)
+            if replayed_uid is not None:
+                Logger.warn(f'AuthService refresh token reuse detected for uid={replayed_uid}; '
+                            'revoking all sessions of this user')
+                _revoke_all_tokens(replayed_uid)
             return None
+        # 记录"该 refresh 已被使用"，用于识别后续重放（窗口取 access token TTL 的较小值）
+        _cache_set(used_key, uid, ttl=300)
         # 用户已被删除（或存储被重置）时不再签发新令牌：否则调用方按 uid 查库得到 None，
         # 会在取 user.uid 时抛 AttributeError → 500（历史缺陷）
         if cls.get_user_by_uid(uid) is None:
@@ -475,6 +571,8 @@ class AuthService:
         new_refresh = RandomGenerator.secrets_token(32)
         _cache_set(f'{_TOKEN_KEY_PREFIX}{access}', uid, ttl=config.auth_token_ttl)
         _cache_set(f'{_REFRESH_TOKEN_KEY_PREFIX}{new_refresh}', uid, ttl=config.auth_refresh_token_ttl)
+        _forget_issued_token(uid, refresh_token, _USER_REFRESH_KEY_PREFIX)
+        _remember_issued_tokens(uid, access, new_refresh)
         Logger.info(f'AuthService refresh: uid={uid}')
         return access, new_refresh
 
@@ -489,9 +587,47 @@ class AuthService:
         本地会话状态已不可恢复，报错也帮不上用户，告警用于运维发现"登出未生效"。
         """
         if token:
+            uid = _cache_get(f'{_TOKEN_KEY_PREFIX}{token}')
             _cache_delete(f'{_TOKEN_KEY_PREFIX}{token}', what='access token')
+            _forget_issued_token(uid, token, _USER_ACCESS_KEY_PREFIX)
         if refresh_token:
+            uid = _cache_get(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}')
             _cache_delete(f'{_REFRESH_TOKEN_KEY_PREFIX}{refresh_token}', what='refresh token')
+            _forget_issued_token(uid, refresh_token, _USER_REFRESH_KEY_PREFIX)
+
+    @classmethod
+    def logout_all(cls, uid):
+        """吊销该用户全部 access/refresh token（登出所有设备）"""
+        if not uid:
+            return
+        _revoke_all_tokens(uid)
+        Logger.info(f'AuthService logout all sessions: uid={uid}')
+
+    @classmethod
+    def change_password(cls, username, old_password, new_password):
+        """校验旧密码后更新密码，并吊销该用户全部会话。
+
+        Returns:
+            tuple: `(True, None)` 成功；`(False, 'not_found' | 'invalid')` 失败
+                （`invalid` = 旧密码错误；调用方建议返回 401，避免暴露账号是否存在）
+        """
+        store = cls._get_store()
+        user = store.get_by_username(username)
+        if user is None:
+            # 与登录一致：用户不存在也做一次等价 PBKDF2，避免用户名枚举时序差
+            DataEncryptUtil.verify_pbkdf2(old_password, _dummy_password_hash())
+            return False, 'not_found'
+        if not DataEncryptUtil.verify_pbkdf2(old_password, user.passwd):
+            return False, 'invalid'
+        update = getattr(store, 'update_password', None)
+        if update is None:
+            raise RuntimeError('当前用户存储不支持修改密码（缺少 update_password）')
+        new_hash = DataEncryptUtil.pbkdf2_hmac(new_password)
+        if not update(username, new_hash):
+            return False, 'not_found'
+        _revoke_all_tokens(user.uid)
+        Logger.info(f'AuthService password changed: uid={user.uid}')
+        return True, None
 
     @classmethod
     def get_user_by_token(cls, token):
@@ -515,7 +651,7 @@ class AuthService:
 
 def _unauthorized_response():
     return jsonify(CommonUtil.obj_to_dict(
-        GraceResult.business_error(4002, '未登录或 Token 已过期'))), 401
+        GraceResult.business_error(ErrorCode.UNAUTHORIZED, '未登录或 Token 已过期'))), 401
 
 
 def login_required(func):

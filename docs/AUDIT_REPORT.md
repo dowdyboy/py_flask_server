@@ -354,3 +354,50 @@ finally:
 
 **第二轮验证**：`ruff check .` 全仓库零告警；`mypy` 对 `flask_server/`（43 个文件）零错误；
 全量测试通过（数量与覆盖率见 README 快照）；`_e2e` 在无真实依赖时以退出码 2 给出可读提示。
+
+---
+
+# 第三轮审计与 0.6.1 / 0.7.0（2026-11-21）
+
+第三轮聚焦**前两轮修复的残留窗口**与**只测量、不验证的路径**，并把结论落实为 0.6.1
+（补丁）与 0.7.0（可靠性/契约）两个版本。完整变更见 `CHANGELOG.md`。
+
+## 0.6.1 修复（P1/P2）
+
+| # | 问题 | 修复 |
+|---|---|---|
+| 1 | 协议服务器 `stop()` 不等在途 handler（daemon 线程不被 `ThreadingMixIn` join），入口随即 dispose DB/Redis | `ProtocolServer` 记录在途 handler 计数：停 accept → 关连接 → 有界等待（默认 5s，超时告警）；TCP/UDP 各补回归 |
+| 2 | `enqueue` 状态写入失败被当成入队失败 → 调用方重试导致重复执行 | 状态写入改 `best_effort`；`to_json()` 提前并区分 `ValueError`；内存后端补 JSON 校验 |
+| 3 | retry/dead 的 `MULTI/EXEC` 遇运行期错误不回滚 → 仍可能丢任务 | 改为 Lua 原子脚本，固定"先写目标结构、再 ACK/DEL"顺序（失败方向只能是重复投递） |
+| 4 | `TASK_RESERVE_TIMEOUT` 大于 Redis `socket_timeout` 时空队列 reserve 恒超时 | socket 读超时自动按 `max(5, 值+2)` 放大 |
+| 5 | `reclaim_stale` 不尊重重试预算、退避固定、异常静默 | 预算耗尽进死信；指数退避；异常 WARN 且失败不推进节流 |
+| 6 | `TaskWorker.stop()` 超时后丢线程引用，`start()` 会复活旧线程 | 保留存活线程引用并告警；`start()` 拒绝在有存活线程时重启 |
+| 7 | dummy PBKDF2 哈希导入期算死，注入配置后时序差反转 | 按当前 `AUTH_PBKDF2_ITERATIONS` 懒计算并缓存 |
+| 8 | `AUTH_STORE=sqlalchemy` 漏配 URI 拖到首请求才 500；store 惰性创建有竞态 | `create_app` 启动期构建 store（fail-fast）并预置 `app.extensions`，加锁 |
+| 9 | `RATE_LIMIT_STORE=redis` 漏配 `REDIS_URL` 静默退化内存 | 启动告警 + banner 显示 store |
+| 10 | 限流 429 日志逐条、原样记录完整 path（日志放大） | path 哈希截断 + 5s 窗口限频汇总 |
+| 11 | Redis 黑洞时 `delete()` 让登出阻塞 ~6s | 独立 0.5s 超时吊销客户端，失败语义不变 |
+| 12 | 429 `Retry-After` 返回完整锁定窗口 | 返回锁定剩余秒数 |
+
+## 0.7.0 新增/变更
+
+- 错误码枚举 `ErrorCode`；`KeyError` 从 400 改为 500（服务端缺陷不再伪装成客户端错误）
+- OpenAPI `XAuthToken` 安全方案；受保护接口标注 `@blp.doc(security=...)`
+- 全局 ETag / `If-None-Match` → 304（`ETAG_ENABLED`）；`flask_server.util.paginate` +
+  `PageSchema`；`X-RateLimit-*` 响应头
+- 任务：`task_processed_total{result}`、`scripts/task_replay.py`、`replay_dead()`
+- 认证：改密、登出所有设备、refresh 重用检测、按用户 token 索引
+- 覆盖率纳入 `wsgi.py`；mypy 对 `module/`、`util/` 开启 `check_untyped_defs`；
+  CI 加 Python 3.11 与 pip 缓存
+- 文档：`docs/ci.md`、`docs/operations-runbook.md`；prod compose 日志改为目录挂载
+
+## 仍保留 / 下一轮候选
+
+- **导入期副作用**（`import flask_server` 即 `create_app()`）与进程级单例（db/metrics/logger）
+  仍是最大架构债；0.8 建议拆出 `flask_server/wsgi.py:app`，让 CLI/worker 不再装配整个应用。
+- `reclaim_stale` 没有 handler 心跳，长任务只能靠调大 `TASK_VISIBILITY_TIMEOUT`。
+- token 索引是"尽力而为"：跨 worker 的批量吊销依赖 `REDIS_URL`。
+- 测试仍未覆盖：`server.py`/`wsgi_gunicorn.py`、真实 Docker/ARMv7、`verify_real_env` 的
+  `--force-migrations` 成功路径、`TASK_RESERVE_TIMEOUT` 实机 Redis 行为。
+- `sqlite.py`、`async_task_util.py` 覆盖率仍低于其它模块（75% / 77%），失败路径值得补测。
+

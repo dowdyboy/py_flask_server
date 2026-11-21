@@ -52,7 +52,7 @@ class _TcpConnectionHandler(socketserver.BaseRequestHandler):
     """
 
     def handle(self):
-        tcp = self.server.protocol
+        tcp = getattr(self.server, 'protocol')
         conn = self.request
         addr = self.client_address
         try:

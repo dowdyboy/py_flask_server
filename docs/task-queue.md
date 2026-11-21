@@ -140,27 +140,31 @@ print(get_task_queue().stats())
 # 内存后端额外有 'tracked'（状态表条数），且 pending 恒为 0（没有可见性超时）
 PY
 
-# 重放一条死信：取出信封（含 args/kwargs）重新入队（示例）
+# 查看死信（最新在前；需要配置 REDIS_URL，内存后端的 CLI 看不到业务进程的死信）
+python scripts/task_replay.py --list 20
+
+# 重放一条（下标来自 --list；先重新入队，成功后才从死信列表移除）
+python scripts/task_replay.py --replay 0
+
+# 重放全部死信 / 只看不执行
+python scripts/task_replay.py --replay-all
+python scripts/task_replay.py --replay 0 --dry-run
+
+# 代码里查统计：两种后端返回同一组键，可直接接看板/告警
 python - <<'PY'
-import json
 from flask_server.module.task_queue import get_task_queue
 
-q = get_task_queue()
-letter = q.dead_letters(limit=1)[0]          # [0] 是最新一条；{'id','name','args','kwargs','status','last_error',...}
-if letter.get('id'):
-    # 用同一 task_id + 原参数重新入队（相当于重跑；handler 需幂等）
-    q.enqueue(
-        letter['name'],
-        args=letter.get('args'),
-        kwargs=letter.get('kwargs'),
-        delay=0,
-        task_id=letter['id'],
-    )
+print(get_task_queue().stats())
+# {'ready': 3, 'pending': 1, 'delayed': 0, 'dead': 2}
+# 内存后端额外有 'tracked'（状态表条数），且 pending 恒为 0（没有可见性超时）
 PY
 ```
 
 > 死信记录统一带 `id/name/args/kwargs`；无法反序列化的脏数据没有信封，字段为空但保留 `raw`
 > 原始 payload（Redis 后端），方便人工还原现场。
+
+**可观测性**：worker 暴露 `task_processed_total{result}`（succeeded/retried/dead）与
+`task_rejected_total{reason}`（unavailable/unregistered/max_retries），可直接做成功率/死信告警。
 
 **进程退出**：worker 收到 SIGTERM 后不再取新任务，等在途任务完成再退出；
 容器里请把 `stop_grace_period` 设得比最长任务长一点。

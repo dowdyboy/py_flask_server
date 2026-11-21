@@ -29,7 +29,7 @@ class _UdpDatagramHandler(socketserver.BaseRequestHandler):
     """
 
     def handle(self):
-        udp = self.server.protocol
+        udp = getattr(self.server, 'protocol')
         data, sock = self.request
         addr = self.client_address
         if not udp._has_handler('on_message'):
@@ -101,7 +101,8 @@ class UdpServer(ProtocolServer):
 
     def _create_server(self):
         server = _ThreadingUdpServer((self.host, self.port), self)
-        server.max_packet_size = self.max_message_length
+        # socketserver 在 get_request 里读取该属性；类属性不能通过实例直接赋值（类型检查）
+        setattr(server, 'max_packet_size', self.max_message_length)
         return server
 
     def send(self, data, addr):

@@ -656,3 +656,24 @@ def test_worker_can_restart_after_clean_stop(fast_config):
         assert worker.running is True
     finally:
         worker.stop()
+
+
+def test_task_processed_metric_uses_fixed_labels(monkeypatch):
+    """task_processed_total{result} 只允许 succeeded/retried/dead（低基数）"""
+    from flask_server.component import metrics
+    from flask_server.module import task_worker
+
+    calls = []
+
+    class FakeCounter:
+        def labels(self, **kwargs):
+            calls.append(kwargs)
+            return self
+
+        def inc(self):
+            pass
+
+    monkeypatch.setattr(metrics, '_TASK_PROCESSED', FakeCounter())
+    for result in ('succeeded', 'retried', 'dead'):
+        task_worker._count_processed(result)
+    assert calls == [{'result': 'succeeded'}, {'result': 'retried'}, {'result': 'dead'}]

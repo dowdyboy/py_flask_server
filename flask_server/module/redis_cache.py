@@ -37,7 +37,7 @@ class RedisCache:
         # 吊销专用客户端（短超时）：delete() 对失败零容忍、必须绕过冷却期真实执行，
         # 但正常客户端的 3s connect + 3s read 会让 Redis 黑洞时的登出阻塞 6s，
         # 少量并发登出就能占满 waitress 线程池。这里单独用 0.5s 超时快速失败。
-        self._fast_client = None
+        self._fast_client: Optional[Any] = None
         self._retry_cooldown = 30
         self._unavailable_until = 0.0
         self._need_recovery = False

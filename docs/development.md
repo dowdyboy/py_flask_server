@@ -7,7 +7,7 @@
 pip install -r requirements-dev.txt
 
 # 运行测试并输出覆盖率（85% 门槛由 CI `test` job 的 --cov-fail-under=85 强制）
-pytest tests/ --cov=flask_server --cov-report=term
+pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term
 # 或 make test
 ```
 
@@ -15,8 +15,9 @@ pytest tests/ --cov=flask_server --cov-report=term
 认证模块（Redis 存储降级与内存兜底、防爆破、refresh 轮换、登出吊销 refresh、入参限长）、
 Prometheus 指标、缓存降级恢复（含故障/脏数据自愈）、事务提交/回滚（CI 含真实 MySQL）、
 路径穿越防护、反射与声明式模型共存、雪花 ID 并发、SubprocessTask 哨兵停止等
-**689 个用例**。覆盖率快照（2026-11-21，`pytest tests/ --cov=flask_server --cov-report=term`）：
-**91.14%**，门槛 85%（快照仅供参考，随代码演进会变）。
+**716 个用例**。覆盖率快照（2026-11-21，`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term`）：
+**90.86%**，门槛 85%（快照仅供参考，随代码演进会变）。覆盖率包含 `flask_server/` 与生产入口
+`wsgi.py`（`server.py`/`wsgi_gunicorn.py` 依赖 Windows 不支持的运行时，不计入）。
 
 真实环境自检（云服务器 MySQL/Redis 全链路验证）：
 
@@ -38,6 +39,8 @@ python scripts/smoke_gunicorn.py     # 或 make smoke-gunicorn
 ```bash
 python scripts/worker.py --concurrency 4    # 或 make worker；多进程请配置 REDIS_URL
 python scripts/worker.py --once             # 处理完当前任务即退出（联调/定时触发）
+python scripts/task_replay.py --list        # 查看死信
+python scripts/task_replay.py --replay 0    # 重放最近一条死信（先入队后移除）
 ```
 
 校验两件事：`WORKER_NUM=2 + TCP_ENABLED=true` 时协议服务器被自动跳过且两个 worker 都存活
@@ -45,7 +48,7 @@ python scripts/worker.py --once             # 处理完当前任务即退出（�
 正常监听、HTTP 可用、SIGTERM 后退出码为 0。
 
 CI 流水线（`.github/workflows/ci.yml`，共 11 个 job）：
-1. **test** — Python 3.10/3.12/3.13 矩阵 + 覆盖率门槛 85%
+1. **test** — Python 3.10/3.11/3.12/3.13 矩阵 + 覆盖率门槛 85%（pip 依赖缓存）
 2. **test-mysql** — 真实 MySQL 8.0 集成测试（`TEST_DB_URI` 环境变量）
 3. **test-redis** — 真实 Redis 7（`redis:7-alpine` service + healthcheck）+ 只跑标了
    `redis_live` 的用例（`tests/test_redis_live.py`）；Streams / `GETDEL` / `XAUTOCLAIM` /

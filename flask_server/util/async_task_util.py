@@ -6,6 +6,7 @@ import time
 import atexit
 import shlex
 import os
+from typing import Any
 
 from ..config import config
 from .logger import Logger
@@ -258,8 +259,8 @@ class SubprocessTask:
 
     def __init__(self, instance):
         self.instance = instance
-        self.thread_queue = multiprocessing.Queue()
-        self.subprocess_queue = multiprocessing.Queue()
+        self.thread_queue: Any = multiprocessing.Queue()
+        self.subprocess_queue: Any = multiprocessing.Queue()
         self.thread_handler = None
         self.subprocess_handler = None
         self.subprocess_watcher = None

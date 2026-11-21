@@ -192,6 +192,27 @@ class FakeRedis:
         items = list(self.lists.get(key, []))
         return items[start:end + 1]
 
+    def lindex(self, key, index):
+        self._maybe_fail()
+        items = list(self.lists.get(key, []))
+        try:
+            return items[index]
+        except IndexError:
+            return None
+
+    def lrem(self, key, count, value):
+        self._maybe_fail()
+        items = list(self.lists.get(key, []))
+        removed = 0
+        out = []
+        for item in items:
+            if item == value and (count == 0 or removed < count):
+                removed += 1
+                continue
+            out.append(item)
+        self.lists[key] = deque(out)
+        return removed
+
     # ---- pipeline（MULTI/EXEC）----
     def pipeline(self, transaction=True):
         """返回缓冲式管道：execute 时原子应用，失败回滚（对应 redis-py 的事务管道）"""
@@ -689,6 +710,26 @@ def test_get_status_raises_unavailable_when_backend_down(queue, fake):
     fake.fail = ConnectionError('down')
     with pytest.raises(TaskQueueUnavailable):
         queue.get_status(task_id)
+
+
+def test_replay_dead_requeues_and_removes_from_list(queue, fake):
+    queue.enqueue('doomed', args=[1], kwargs={'k': 'v'})
+    queue.dead(queue.reserve(timeout=0.01), 'boom')
+    assert len(queue.dead_letters()) == 1
+
+    task_id = queue.replay_dead(0)
+    assert queue.dead_letters() == []
+    reserved = queue.reserve(timeout=0.01)
+    assert reserved is not None
+    assert reserved.envelope.id == task_id
+    assert reserved.envelope.name == 'doomed'
+    assert reserved.envelope.args == [1]
+    assert reserved.envelope.kwargs == {'k': 'v'}
+
+
+def test_replay_dead_out_of_range_raises(queue):
+    with pytest.raises(TaskNotFound):
+        queue.replay_dead(0)
 
 
 def test_init_raises_unavailable_when_backend_down():

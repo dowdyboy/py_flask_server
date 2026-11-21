@@ -43,6 +43,12 @@ def _count_rejected(reason):
     _inc(_TASK_REJECTED, reason=reason)
 
 
+def _count_processed(result):
+    """任务执行结果计数：succeeded / retried / dead（固定低基数标签）"""
+    from ..component.metrics import _TASK_PROCESSED, _inc
+    _inc(_TASK_PROCESSED, result=result)
+
+
 class TaskWorker:
     """任务消费者（N 个线程，各自 reserve → execute → ack）"""
 
@@ -188,6 +194,7 @@ class TaskWorker:
             Logger.error(f'TaskWorker {msg} (id={env.id})')
             _count_rejected('unregistered')
             self.queue.dead(reserved, msg)
+            _count_processed('dead')
             self._count(failed=True)
             return
 
@@ -204,17 +211,20 @@ class TaskWorker:
             if env.attempts < max_retries:
                 delay = max(0, config.task_retry_backoff) * (2 ** env.attempts)
                 self.queue.retry(reserved, delay, error)
+                _count_processed('retried')
                 Logger.warn(f'TaskWorker task failed, retry in {delay}s '
                             f'(attempt {attempt_no}/{max_retries + 1}) id={env.id} name={env.name}: {error}')
             else:
                 self.queue.dead(reserved, error)
                 _count_rejected('max_retries')
+                _count_processed('dead')
                 Logger.error(f'TaskWorker task dead after {attempt_no} attempt(s) '
                              f'id={env.id} name={env.name}: {error}', exc_info=True)
                 self._count(failed=True)
             return
 
         self.queue.ack(reserved)
+        _count_processed('succeeded')
         elapsed = (time.perf_counter() - started) * 1000
         Logger.info(f'TaskWorker done id={env.id} name={env.name} elapsed={elapsed:.1f}ms')
         self._count(failed=False)

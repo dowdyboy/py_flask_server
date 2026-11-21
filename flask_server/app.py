@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from functools import wraps
 
@@ -125,10 +126,11 @@ def parse_request_json():
         # silent=True：非法 JSON 不在这里抛裸 400。Werkzeug 的 BadRequest 只带一句英文
         # description，客户端拿不到字段级信息；静默失败后把 payload 留空，交给视图层的
         # flask-smorest/webargs 统一产出 400 + messages（→ code=1001 参数错误）。
-        # 没有 @blp.arguments 的视图读到 {} 时也会走 KeyError → 400 参数错误。
+        # 视图应使用 schema 校验或 request.payload.get(...) 显式处理缺失字段；
+        # 未捕获的 KeyError 属于服务端缺陷，按 500 处理（见 key_error_handler）。
         data = request.get_json(silent=True)
         # 顶层 JSON 必须为对象：数组/字符串等非 dict 会被视图按字段访问
-        # （payload['x']）抛 TypeError → 500，归一为 {} 后走 KeyError → 400 参数错误
+        # （payload['x']）抛 TypeError → 500，归一为 {} 后由视图/校验层处理
         if data is not None and not isinstance(data, dict):
             Logger.warn(f'non-dict JSON payload ignored: {type(data).__name__}')
             data = {}
@@ -188,6 +190,26 @@ def _csp_docs(swagger_origin):
         f"font-src 'self'{cdn}; "
         "connect-src 'self'"
     )
+
+
+def set_etag_header(resp):
+    """为 GET/HEAD 的 JSON 成功响应加 ETag，并处理 If-None-Match → 304。
+
+    轮询类接口（探针/列表）重复返回同一份内容时，客户端带 If-None-Match 即可拿到
+    空 body 的 304（`make_conditional` 负责比较 ETag 与 If-None-Match）。
+    静态文件（send_file）、流式响应不参与：它们可能很大且已有自己的缓存语义。
+    """
+    if not config.etag_enabled:
+        return resp
+    if request.method not in ('GET', 'HEAD') or resp.status_code != 200:
+        return resp
+    if resp.is_streamed or resp.direct_passthrough:
+        return resp
+    if resp.mimetype != 'application/json':
+        return resp
+    digest = hashlib.sha256(resp.get_data()).hexdigest()[:32]
+    resp.set_etag(digest)
+    return resp.make_conditional(request)
 
 
 def set_security_headers(resp):
@@ -260,10 +282,14 @@ def unprocessable_entity_handler(e):
 
 
 @json_response
-def param_exception_handler(e):
-    # 视图按字段取值时抛的 KeyError（缺少 payload 字段）→ 400 参数错误，同属客户端错误
-    Logger.warn(f'param_exception_handler : {e}')
-    return GraceResult.param_error(data=str(e)), 400
+def key_error_handler(e):
+    """未捕获的 KeyError 按 500 处理：它几乎总是服务端缺陷（字段名写错/数据缺失），
+    把它映射成 400 会让监控看不到真实错误，还会向客户端泄漏内部字段名。
+
+    视图若想对"缺字段"返回 400，请显式校验（schema 或 payload.get + 参数错误）。
+    """
+    Logger.error(f'unhandled KeyError (server bug): {e}', exc_info=True)
+    return GraceResult.error(data=_internal_error_detail(e)), 500
 
 
 @json_response
@@ -291,6 +317,8 @@ def register_request_hooks(app):
     app.after_request(set_request_id_header)
     app.after_request(set_retry_after_header)
     app.after_request(set_security_headers)
+    # 注册顺序的逆序执行：ETag/条件请求先算（可能在 304 上继续叠加其它头）
+    app.after_request(set_etag_header)
     app.teardown_request(clear_request_id)
 
 
@@ -298,7 +326,8 @@ def register_error_handlers(app):
     """注册统一异常处理（HTTPException / 422 / KeyError / 兜底 Exception）"""
     app.register_error_handler(HTTPException, http_exception_handler)
     app.register_error_handler(UnprocessableEntity, unprocessable_entity_handler)
-    app.register_error_handler(KeyError, param_exception_handler)
+    # KeyError 是服务端缺陷（不是参数错误）：见 key_error_handler 的说明
+    app.register_error_handler(KeyError, key_error_handler)
     app.register_error_handler(Exception, all_exception_handler)
 
 
@@ -398,6 +427,15 @@ def create_app(app_config=None, framework_config=None):
         'OPENAPI_SWAGGER_UI_URL': cfg.swagger_ui_url,
     })
     api = Api(app)
+    # OpenAPI 安全方案：受保护接口在 spec 里引用 XAuthToken，生成客户端才能知道
+    # 需要 X-AUTH-TOKEN 头（此前 /me 等接口在 /openapi.json 里看不出如何认证）。
+    api.spec.components.security_scheme('XAuthToken', {
+        'type': 'apiKey',
+        'in': 'header',
+        'name': 'X-AUTH-TOKEN',
+        'description': '登录接口返回的 access token；AUTH_ENABLED=true 时 /api/ 下未豁免路径需要它',
+    })
+
 
     socketio = _init_socketio(app, cfg)
 

@@ -37,7 +37,7 @@ python server.py                       # http://127.0.0.1:5000/docs
 ## 3. 提交前必须通过
 
 ```bash
-make test     # pytest tests/ --cov=flask_server --cov-report=term（输出覆盖率）
+make test     # pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term（输出覆盖率）
 make lint     # ruff check flask_server/ tests/ examples/ scripts/ _e2e/ server.py wsgi.py wsgi_gunicorn.py
 ```
 

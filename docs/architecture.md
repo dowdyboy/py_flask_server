@@ -145,10 +145,12 @@ server.py（开发）        wsgi.py（waitress 生产）        wsgi_gunicorn.p
 | 执行序 | 钩子 | 作用 |
 |---|---|---|
 | 1 | `metrics_record` | 计数 + 延迟直方图 |
-| 2 | `set_security_headers` | CSP / HSTS / nosniff 等 |
-| 3 | `set_retry_after_header` | 429 补 `Retry-After`（限流=窗口长度，登录锁定=锁定秒数） |
-| 4 | `set_request_id_header` | 回写 `X-Request-Id` |
-| 5 | `cors_after_request` | flask-cors 注入 CORS 头 |
+| 2 | `set_rate_limit_headers` | 写 `X-RateLimit-Limit/Remaining/Reset`（启用限流时） |
+| 3 | `set_etag_header` | JSON 200 响应生成 `ETag`，`If-None-Match` 命中转 304 |
+| 4 | `set_security_headers` | CSP / HSTS / nosniff 等 |
+| 5 | `set_retry_after_header` | 429 补 `Retry-After`（限流=窗口长度，登录锁定=锁定剩余秒数） |
+| 6 | `set_request_id_header` | 回写 `X-Request-Id` |
+| 7 | `cors_after_request` | flask-cors 注入 CORS 头 |
 
 ### 异常处理
 
@@ -158,7 +160,7 @@ server.py（开发）        wsgi.py（waitress 生产）        wsgi_gunicorn.p
 | `HTTPException` 4xx 且带 `messages` | 原状态码 | **1001** | 如 webargs 的 `Invalid JSON body.`，字段级信息放 `data`，与 422 同形状 |
 | `HTTPException` 5xx | 原状态码 | -1 | 生产环境脱敏为"服务器内部错误" |
 | `UnprocessableEntity`（422） | 422 | 1001 | 字段级错误放 `data` |
-| `KeyError` | 400 | 1001 | `payload['x']` 缺字段 |
+| `KeyError` | 500 | -1 | 视为服务端缺陷（字段名/数据缺失），记录 traceback；视图应对缺字段显式校验返回 400 |
 | 其它 `Exception` | 500 | -1 | 记录 traceback，不回显细节 |
 
 > 非法 JSON body 不在 `before_request` 里抛裸 400：`parse_request_json` 用

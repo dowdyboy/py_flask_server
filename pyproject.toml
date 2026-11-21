@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flask-server"
-version = "0.6.1"
+version = "0.7.0"
 description = "A production-grade Flask web service scaffold with layered architecture"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -101,7 +101,8 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["flask_server"]
+# wsgi.py 是生产入口：P0-3 的"崩溃→exit(1)"修复必须有可测量的覆盖
+source = ["flask_server", "wsgi.py"]
 branch = true
 
 [tool.coverage.report]
@@ -131,6 +132,12 @@ warn_unused_configs = true
 no_implicit_optional = true
 # 刻意不开 warn_unused_ignores：model/po/user.py 的 `# type: ignore` 依赖运行期分支
 # （配置 DB 前后的两份定义），检查器版本变化时可能被判定"多余"，会把门禁变成噪音源。
+
+# 渐进式收紧：先让"基础设施 + 工具"里未注解的函数体也接受检查（0.7.0 起）。
+# controller/component 里仍有较多未注解函数，后续版本再逐目录打开。
+[[tool.mypy.overrides]]
+module = ["flask_server.module.*", "flask_server.util.*"]
+check_untyped_defs = true
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]

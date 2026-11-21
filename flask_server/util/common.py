@@ -117,9 +117,9 @@ class CommonUtil:
             if obj_id in _seen:
                 return None
             _seen.add(obj_id)
-            result = {key: CommonUtil.obj_to_dict(value, _seen) for key, value in obj.items()}
+            result_dict = {key: CommonUtil.obj_to_dict(value, _seen) for key, value in obj.items()}
             _seen.discard(obj_id)
-            return result
+            return result_dict
 
         # 如果是自定义对象，获取对象的所有属性，递归转换
         if hasattr(obj, '__dict__'):
@@ -129,13 +129,13 @@ class CommonUtil:
             if obj_id in _seen:
                 return None
             _seen.add(obj_id)
-            result = {}
+            result_obj = {}
             for key, value in obj.__dict__.items():
                 if key.startswith('_'):
                     continue  # 忽略私有属性
-                result[key] = CommonUtil.obj_to_dict(value, _seen)
+                result_obj[key] = CommonUtil.obj_to_dict(value, _seen)
             _seen.discard(obj_id)
-            return result
+            return result_obj
 
         # 如果是其他类型，无法处理，返回其字符串表示
         return str(obj)

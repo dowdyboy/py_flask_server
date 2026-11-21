@@ -13,7 +13,7 @@ prod:               ## 启动生产服务器（waitress）
 	python wsgi.py
 
 test:               ## 运行测试（含覆盖率门槛）
-	pytest tests/ --cov=flask_server --cov-report=term
+	pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term
 
 lint:               ## 代码风格检查（ruff）
 	ruff check flask_server/ tests/ examples/ scripts/ _e2e/ server.py wsgi.py wsgi_gunicorn.py

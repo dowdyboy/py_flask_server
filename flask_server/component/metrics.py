@@ -12,6 +12,7 @@ from ..config import config
 #   - http_request_duration_seconds_bucket/...      请求延迟直方图
 #   - http_rate_limited_total{scope}               限流拒绝数（scope=path/ip）
 #   - auth_login_locked_total                      登录因锁定被拒数
+#   - task_processed_total{result}                 任务执行结果（succeeded/retried/dead）
 #   - task_rejected_total{reason}                  任务未执行即被拒绝/死信数
 # 标签值全部来自固定集合（不取用户输入），保证低基数；业务代码统一用 `_inc`
 # 自增（指标未启用/依赖缺失时自动跳过，绝不影响主流程）。
@@ -36,6 +37,7 @@ _DURATION: Optional[Any] = None
 _RATE_LIMITED: Optional[Any] = None
 _AUTH_LOGIN_LOCKED: Optional[Any] = None
 _TASK_REJECTED: Optional[Any] = None
+_TASK_PROCESSED: Optional[Any] = None
 
 try:
     from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
@@ -62,6 +64,10 @@ try:
     _TASK_REJECTED = Counter(
         'task_rejected_total', 'Tasks rejected or dead-lettered before execution',
         ['reason'],
+    )
+    # 任务执行结果：result 只有 succeeded/retried/dead 三个固定值（低基数）
+    _TASK_PROCESSED = Counter(
+        'task_processed_total', 'Tasks processed by worker', ['result'],
     )
     _METRICS_AVAILABLE = True
 except ImportError:

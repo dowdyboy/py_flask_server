@@ -17,6 +17,10 @@
 
 ## 错误码表
 
+错误码的单一事实来源是 [`flask_server/util/error_code.py`](../flask_server/util/error_code.py)
+的 `ErrorCode` 枚举；controller 用 `GraceResult.business_error(ErrorCode.XXX, ...)` 引用，
+新增错误码时同步本表。
+
 ### 框架内置
 
 | code | 含义 | HTTP 状态 |
@@ -35,9 +39,13 @@
 |---|---|---|
 | 422 | 参数校验失败（flask-smorest） | 统一格式，字段错误在 `data` |
 | 404 | 资源不存在 | 统一格式（code=-1） |
-| 429 | 触发限流或登录锁定 | 统一格式（限流 code=-1，锁定 code=4003）；响应头带 `Retry-After` |
+| 429 | 触发限流或登录锁定 | 统一格式（限流 code=-1，锁定 code=4003）；响应头带 `Retry-After`（剩余秒数） |
 | 401 | 未登录 / Token 无效或已过期 | 统一格式（code=4001/4002） |
 | 503 | 依赖未就绪（DB/Redis 故障）；登录成功但会话不可读 | 统一格式（code=5030 / 4002） |
+
+> **`KeyError` 不映射为 400**：未捕获的 KeyError 几乎总是服务端缺陷（字段名写错/数据缺失），
+> 现在按 500 处理并记录 traceback。若业务想对"缺字段"返回 400，请显式校验
+> （`@blp.arguments` schema，或 `request.payload.get(...)` + `GraceResult.param_error()`）。
 
 业务自定义错误码：`GraceResult.business_error(2001, '用户不存在')`。
 
@@ -75,19 +83,24 @@
 
 ## 认证模块
 
-接口：`POST /api/v1/auth/register`、`/login`、`/refresh`、`/logout`、`GET /me`
-（见 [快速上手](getting-started.md) 与配置 `AUTH_*` 变量）。
+接口：`POST /api/v1/auth/register`、`/login`、`/refresh`、`/logout`、`/logout_all`、
+`/password`、`GET /me`（见 [快速上手](getting-started.md) 与配置 `AUTH_*` 变量）。
 
 **双令牌机制**：
 - 登录返回 `{token, refresh_token}`：`token` 用于请求头 `X-AUTH-TOKEN`（有效期 `AUTH_TOKEN_TTL`），
   `refresh_token` 用于续期
 - `POST /api/v1/auth/refresh`（body `{"refresh_token": "..."}`）换取新令牌——**旧 refresh 作废（单次使用）**
-- `POST /api/v1/auth/logout` 使 access token 失效；body 可选携带 `{"refresh_token": "..."}`
+- **refresh 重用检测**：已使用的 refresh_token 在 5 分钟内再次出现（被窃取/重放）时，判定为泄露，
+  吊销该用户**全部** access/refresh token（客户端需重新登录）。正常轮换不受影响
+- `POST /api/v1/auth/logout` 使当前 access token 失效；body 可选携带 `{"refresh_token": "..."}`
   一并吊销 refresh（彻底结束会话），不携带则 refresh 到期自然失效（向后兼容）
+- `POST /api/v1/auth/logout_all`（需登录）吊销该用户全部会话（登出所有设备）
+- `POST /api/v1/auth/password`（需登录，body `{"old_password","new_password"}`）修改密码；
+  成功后该用户全部旧会话立即失效，需用新密码重新登录。旧密码错误统一返回 401（不区分账号是否存在）
 
 **防爆破**：同一 **(用户名, 来源 IP)** 连续登录失败 `AUTH_LOGIN_MAX_FAILS`（默认 5）次后锁定
 `AUTH_LOGIN_LOCK_SECONDS`（默认 300）秒，锁定期间正确密码也拒绝（code 4003，HTTP 429，
-响应头 `Retry-After` 为锁定秒数）。
+响应头 `Retry-After` 为**锁定剩余秒数**）。
 
 > 锁定键按 (用户名, IP) 隔离，而不是只按用户名：否则攻击者遍历已知用户名、各打几次错误密码，
 > 就能把全站账号逐个锁死（锁定型 DoS）。代价是分布式撞库可绕过单 IP 阈值——跨 IP 失败累计
@@ -101,6 +114,9 @@
   **Redis 不可达时自动回退内存缓存**（单实例下登录/防爆破仍可用，恢复后自动回 Redis）
 - `AUTH_STORE=sqlalchemy` 只解决用户数据持久化（UserPO 建表），**token 共享仍依赖 Redis**；
   多进程部署建议配置 `REDIS_URL`（启动 banner 会告警）
+- 已签发 token 会按用户维护索引（每用户最多保留 20 个），用于改密与"登出所有设备"时批量吊销；
+  索引与 token 存在同一缓存（内存/Redis），多实例下吊销是**尽力而为**：跨 worker 的场景请确保
+  配置 `REDIS_URL`，否则每个进程只能看到自己签发的会话
 
 **保护单个接口**（推荐）：
 
@@ -110,11 +126,16 @@ from flask_server.component.auth import login_required
 @blp.route('/profile')
 class ProfileView(MethodView):
     @blp.response(200, GraceResultSchema)
+    @blp.doc(security=[{'XAuthToken': []}])   # 写进 OpenAPI：该接口需要 X-AUTH-TOKEN
     @login_required          # 校验 X-AUTH-TOKEN，通过后 request.info['uid'] 可用
     def get(self):
         uid = request.info['uid']
         return GraceResult.ok({'uid': uid})
 ```
+
+> `/openapi.json` 的 `components.securitySchemes.XAuthToken` 已声明 `X-AUTH-TOKEN` 请求头；
+> 受保护接口同时用 `@blp.doc(security=[{'XAuthToken': []}])` 标注，生成的客户端可以直接
+> 带上认证头。`/api/v1/auth/me` 已作为示例标注。
 
 **全局保护**：`AUTH_ENABLED=true` 时，`/api/` 下除 auth/文档/健康检查外的路径
 都需要 `X-AUTH-TOKEN` 请求头（CORS 预检 `OPTIONS` 请求自动放行，不影响跨域前端）。
@@ -126,7 +147,28 @@ class ProfileView(MethodView):
 
 ## 分页与 ETag
 
-**分页**（flask-smorest 0.47 的 `@blp.paginate()`；注意 `Page` 不是 Schema，而是分页器类）：
+**脚手架内置分页工具**（推荐，双后端/双数据源语义一致）：
+
+```python
+from flask_smorest import Blueprint
+from flask_server.schema import PageSchema, PaginationQuerySchema
+from flask_server.util import paginate
+
+@blp.route('/items')
+class ItemListView(MethodView):
+    @blp.arguments(PaginationQuerySchema, location='query')
+    @blp.response(200, PageSchema)
+    def get(self, args):
+        return paginate(ItemPO.query, page=args['page'],
+                        per_page=args['per_page']).to_dict()
+```
+
+`paginate()` 对 Flask-SQLAlchemy Query 走原生 `paginate()`（不全量加载），对普通列表按切片；
+响应体固定为 `{items, page, per_page, total, pages}`。`page`/`per_page` 非法值会钳到
+`1`/`[1,100]`，不会 500。
+
+**flask-smorest 自带分页**（`@blp.paginate()`；注意 `Page` 不是 Schema，而是分页器类，
+其元数据走响应头 `X-Pagination`）：
 
 ```python
 from flask.views import MethodView
@@ -156,7 +198,10 @@ class UserPageView(MethodView):
 如果直接拿到的是 Flask-SQLAlchemy `paginate()` 对象，它提供 `.items` / `.page` / `.per_page` /
 `.total`：把 `.items` 作为视图返回值、用 `.total` 回填 `pagination_parameters.item_count` 即可。
 
-**ETag 缓存协商**：
+**ETag 缓存协商**：框架默认对 `GET/HEAD` 的 JSON 成功响应自动生成 `ETag`
+（`ETAG_ENABLED=true`，默认开启；静态文件/流式响应不参与）。客户端带
+`If-None-Match` 命中时自动返回 304（空 body），无需业务代码配合。
+需要按业务语义自定义时，也可以只用 flask-smorest 的装饰器：
 
 ```python
 @blp.route('/articles/<string:aid>')
@@ -177,6 +222,8 @@ class ArticleView(MethodView):
 `RATE_LIMIT_ENABLED=true` 时启用，顺延窗口计数（`RATE_LIMIT_PER_MINUTE`，默认 60 次/分钟；
 每次请求刷新窗口 TTL，活动期内计数不会按整分钟重置），
 超限返回 429（code=-1），响应头 `Retry-After: 60`（= 窗口长度）供客户端退避。
+所有响应（含 429）都带 `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`
+（Reset 为最长等待秒数，窗口是顺延式而非固定时钟窗口）。
 
 **双层配额**（原子 INCR 计数，防并发竞态绕过）：
 
@@ -214,6 +261,7 @@ class ArticleView(MethodView):
 | `http_request_duration_seconds` | `method` / `route` | 请求延迟直方图（`_bucket` / `_sum` / `_count`） |
 | `http_rate_limited_total` | `scope` | 被限流拒绝（429）的请求数；`scope="path"` 为路径级配额命中，`scope="ip"` 为 IP 级总配额命中 |
 | `auth_login_locked_total` | _无_ | 因登录锁定被拒绝（429 / code 4003）的登录次数；不按用户名/IP 打标签（避免高基数与账号信息泄漏） |
+| `task_processed_total` | `result` | 任务执行结果：`succeeded` / `retried` / `dead`（固定低基数） |
 | `task_rejected_total` | `reason` | 任务**未执行**即被拒绝/进入死信的数量：`reason="unavailable"`（队列后端不可用，`reserve` 失败）、`reason="unregistered"`（任务名未注册）、`reason="max_retries"`（handler 重试耗尽） |
 
 > 标签值全部来自固定集合（不取请求路径、用户名等用户输入），保证低基数、避免指标基数爆炸。

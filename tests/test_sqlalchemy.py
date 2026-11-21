@@ -90,7 +90,14 @@ def test_in_app_context_creates_context_when_missing(monkeypatch, tmp_path):
 
     app = Flask(__name__)
     sa_module.init_SQLAlchemy(app)
-    assert sa_module.in_app_context(lambda: 'ok') == 'ok'
+    db = sa_module.sqlalchemy()
+    try:
+        assert sa_module.in_app_context(lambda: 'ok') == 'ok'
+    finally:
+        # 释放连接（否则全量跑会留下 ResourceWarning: unclosed database）
+        with app.app_context():
+            db.session.remove()
+            db.engine.dispose()
 
 
 def test_reflect_with_existing_user_table_imports_ok(tmp_path):

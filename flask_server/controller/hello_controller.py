@@ -2,7 +2,7 @@ from flask.views import MethodView
 from flask import current_app, has_app_context
 from flask_smorest import Blueprint
 from ..app import json_response
-from ..util import Logger, GraceResult
+from ..util import Logger, GraceResult, ErrorCode
 from ..schema import GraceResultSchema, EchoSchema
 from ..config import config
 import time
@@ -141,7 +141,8 @@ class ReadyzView(MethodView):
         if redis_cache is not None:
             status['redis'] = 'ok' if redis_ok else 'error'
         if not db_ok or not redis_ok:
-            return GraceResult.business_error(5030, 'dependency not ready', status), 503
+            return GraceResult.business_error(
+                ErrorCode.DEPENDENCY_NOT_READY, 'dependency not ready', status), 503
         return GraceResult.ok(status)
 
 

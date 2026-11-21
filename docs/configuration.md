@@ -74,6 +74,7 @@
 | `RATE_LIMIT_PER_MINUTE` | `60` | 每个 IP+路径 每分钟允许的请求数，超出返回 429。探针/监控端点（/metrics、healthz、readyz、health，含尾斜杠写法）豁免限流；超长路径的计数键自动哈希截断 |
 | `TRUSTED_PROXIES` | `127.0.0.1,::1` | 可信代理 IP 列表（支持精确 IP 与 CIDR 前缀，如 `172.16.0.0/12` 覆盖 Docker 网关网段）；`get_real_ip` 仅信任来自这些地址的 `X-Forwarded-For`。⚠️ CIDR 内任何主机都可伪造 `X-Forwarded-For`（绕过限流/污染日志），请确保网段内仅含可信服务 |
 | `SECURITY_HEADERS_ENABLED` | `true` | 是否注入安全响应头（X-Frame-Options/CSP 等） |
+| `ETAG_ENABLED` | `true` | 条件请求：GET/HEAD 的 JSON 成功响应自动生成 `ETag`，`If-None-Match` 命中时返回 304（静态文件/流式响应不参与） |
 | `AUTH_ENABLED` | `false` | 是否启用全局认证保护（开启后 /api/ 下未豁免路径需 X-AUTH-TOKEN） |
 | `AUTH_TOKEN_TTL` | `604800` | access token 有效期（秒，默认 7 天） |
 | `AUTH_REFRESH_TOKEN_TTL` | `2592000` | refresh token 有效期（秒，默认 30 天） |

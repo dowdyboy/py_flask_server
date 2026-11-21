@@ -430,6 +430,10 @@ class Config:
         # 安全响应头（默认开启）
         self.security_headers_enabled = os.environ.get('SECURITY_HEADERS_ENABLED', 'true').lower() in ('1', 'true', 'yes')
 
+        # 条件请求：GET/HEAD 的 JSON 200 响应自动生成 ETag，并处理 If-None-Match → 304
+        # （减少轮询类接口的带宽；静态文件/流式响应不参与）
+        self.etag_enabled = os.environ.get('ETAG_ENABLED', 'true').lower() in ('1', 'true', 'yes')
+
         # 静态文件存储配置
         self.file_saved_path = os.path.join(self.project_dir, 'storage')
 

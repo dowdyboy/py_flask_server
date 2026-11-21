@@ -1,4 +1,19 @@
 from flask_server.util.grace_result import GraceResult
+from flask_server.util.error_code import ErrorCode
+
+
+def test_error_code_enum_is_stable():
+    """对外契约：错误码数值不能变（客户端/文档依赖这些数字）"""
+    assert int(ErrorCode.OK) == 0
+    assert int(ErrorCode.PARAM_ERROR) == 1001
+    assert int(ErrorCode.INTERNAL_ERROR) == -1
+    assert int(ErrorCode.AUTH_INVALID) == 4001
+    assert int(ErrorCode.UNAUTHORIZED) == 4002
+    assert int(ErrorCode.LOGIN_LOCKED) == 4003
+    assert int(ErrorCode.DEPENDENCY_NOT_READY) == 5030
+    assert GraceResult.OK == ErrorCode.OK
+    assert GraceResult.PARAM_ERROR == ErrorCode.PARAM_ERROR
+    assert GraceResult.INNER_ERROR == ErrorCode.INTERNAL_ERROR
 
 
 def test_ok():

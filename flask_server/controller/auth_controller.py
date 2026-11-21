@@ -2,10 +2,10 @@ from flask.views import MethodView
 from flask import request, g
 from flask_smorest import Blueprint
 from ..config import config
-from ..util import GraceResult, CommonUtil, Logger
+from ..util import GraceResult, CommonUtil, Logger, ErrorCode
 from ..schema import GraceResultSchema
 from ..schema.auth_schema import (
-    AuthRegisterSchema, AuthLoginSchema, AuthRefreshSchema,
+    AuthRegisterSchema, AuthLoginSchema, AuthRefreshSchema, AuthChangePasswordSchema,
 )
 from ..component.auth import AuthService, login_required
 
@@ -27,7 +27,7 @@ class RegisterView(MethodView):
         try:
             uid = AuthService.register(data['username'], data['password'])
         except ValueError:
-            return GraceResult.business_error(4001, '用户名已存在'), 400
+            return GraceResult.business_error(ErrorCode.AUTH_INVALID, '用户名已存在'), 400
         return GraceResult.ok({'uid': uid})
 
 
@@ -57,15 +57,15 @@ class LoginView(MethodView):
                 client_ip=CommonUtil.get_real_ip(request, config.trusted_proxies),
             )
             g.retry_after = remaining or config.auth_login_lock_seconds
-            return GraceResult.business_error(4003, '失败次数过多，请稍后再试'), 429
+            return GraceResult.business_error(ErrorCode.LOGIN_LOCKED, '失败次数过多，请稍后再试'), 429
         if tokens is None:
-            return GraceResult.business_error(4001, '用户名或密码错误'), 401
+            return GraceResult.business_error(ErrorCode.AUTH_INVALID, '用户名或密码错误'), 401
         access, refresh = tokens
         user = AuthService.get_user_by_token(access)
         if user is None:
             # 令牌刚写入却读不出来（缓存降级/写入失败）：不能对 None 取属性 → 500
             Logger.error(f'login succeeded but session unreadable for username={data["username"]}')
-            return GraceResult.business_error(4002, '会话不可用，请重试'), 503
+            return GraceResult.business_error(ErrorCode.UNAUTHORIZED, '会话不可用，请重试'), 503
         return GraceResult.ok({
             'token': access,
             'refresh_token': refresh,
@@ -85,12 +85,12 @@ class RefreshView(MethodView):
         """用 refresh_token 换取新令牌（旧 refresh 作废，单次使用）"""
         tokens = AuthService.refresh_access_token(data['refresh_token'])
         if tokens is None:
-            return GraceResult.business_error(4002, 'refresh_token 无效或已过期'), 401
+            return GraceResult.business_error(ErrorCode.UNAUTHORIZED, 'refresh_token 无效或已过期'), 401
         access, new_refresh = tokens
         user = AuthService.get_user_by_token(access)
         if user is None:
             # 用户已被删除/存储被重置：refresh_access_token 已拦截，这里兜底竞态
-            return GraceResult.business_error(4002, 'refresh_token 无效或已过期'), 401
+            return GraceResult.business_error(ErrorCode.UNAUTHORIZED, 'refresh_token 无效或已过期'), 401
         return GraceResult.ok({
             'token': access,
             'refresh_token': new_refresh,
@@ -112,9 +112,42 @@ class LogoutView(MethodView):
         return GraceResult.ok()
 
 
+@blp.route('/password')
+class ChangePasswordView(MethodView):
+    @blp.arguments(AuthChangePasswordSchema)
+    @blp.response(200, GraceResultSchema)
+    @blp.doc(security=[{'XAuthToken': []}])
+    @blp.alt_response(401, schema=GraceResultSchema,
+                      description='未登录 / Token 过期 / 旧密码不正确（code 4001/4002）')
+    @blp.alt_response(422, schema=GraceResultSchema, description='参数校验失败')
+    @login_required
+    def post(self, data):
+        """修改密码（成功后该用户全部旧 access/refresh token 立即失效，需重新登录）"""
+        ok, _err = AuthService.change_password(
+            request.info.get('username'), data['old_password'], data['new_password'])
+        if not ok:
+            # 不区分"用户不存在"与"旧密码错误"，避免账号枚举
+            return GraceResult.business_error(ErrorCode.AUTH_INVALID, '旧密码不正确'), 401
+        return GraceResult.ok({'relogin_required': True})
+
+
+@blp.route('/logout_all')
+class LogoutAllView(MethodView):
+    @blp.response(200, GraceResultSchema)
+    @blp.doc(security=[{'XAuthToken': []}])
+    @blp.alt_response(401, schema=GraceResultSchema,
+                      description='未登录或 Token 已过期（code 4002）')
+    @login_required
+    def post(self):
+        """登出所有设备：吊销该用户全部 access/refresh token"""
+        AuthService.logout_all(request.info.get('uid'))
+        return GraceResult.ok()
+
+
 @blp.route('/me')
 class MeView(MethodView):
     @blp.response(200, GraceResultSchema)
+    @blp.doc(security=[{'XAuthToken': []}])
     @blp.alt_response(401, schema=GraceResultSchema,
                       description='未登录或 Token 已过期（code 4002）')
     @login_required
@@ -123,10 +156,10 @@ class MeView(MethodView):
         # login_required 已校验 token 并把 uid 写入 request.info，这里直接按 uid 查询
         uid = request.info.get('uid')
         if uid is None:
-            return GraceResult.business_error(4002, '未登录或 Token 已过期'), 401
+            return GraceResult.business_error(ErrorCode.UNAUTHORIZED, '未登录或 Token 已过期'), 401
         user = AuthService.get_user_by_uid(uid)
         if user is None:
-            return GraceResult.business_error(4002, '未登录或 Token 已过期'), 401
+            return GraceResult.business_error(ErrorCode.UNAUTHORIZED, '未登录或 Token 已过期'), 401
         # 注意：只返回安全字段，绝不泄露 passwd 哈希
         return GraceResult.ok(CommonUtil.dict_map(
             CommonUtil.obj_to_dict(user), mapper_list=['uid', 'username', 'create_time']))

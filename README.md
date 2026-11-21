@@ -7,9 +7,11 @@
 - 📐 **分层架构**：Controller-Service-Model-Module，目录即约定
 - ⚡ **零注册接口**：在 `controller/` 新建文件定义 `blp`，路由自动注册
 - 🔌 **TCP/UDP 协议服务器**：在 `handler/` 新建文件注册装饰器处理器即接收 TCP/UDP 消息（分隔符/固定长度/帧头帧尾/raw 四种定界；**UDP** 返回 bytes 自动回发，**TCP** 需在处理器里自行 `conn.sendall`）
-- 🧵 **后台任务队列**：`task/` 建文件定义任务即自动发现；Redis Streams 持久化、重试退避、死信、状态查询
-- ✅ **参数校验 + Swagger**：flask-smorest 自动校验入参并生成 `/docs` 文档
-- 🔐 **认证骨架**：注册/登录/Token 开箱可用（默认关闭，一键开启）
+- 🧵 **后台任务队列**：`task/` 建文件定义任务即自动发现；Redis Streams 持久化、重试退避、死信、状态查询、死信重放 CLI
+- ✅ **参数校验 + Swagger**：flask-smorest 自动校验入参并生成 `/docs` 文档；OpenAPI 声明 `X-AUTH-TOKEN` 安全方案
+- 🔐 **认证骨架**：注册/登录/双 Token/改密/登出所有设备/refresh 重用检测（默认关闭，一键开启）
+- 📄 **HTTP 约定**：统一响应 + 错误码枚举、分页工具（`paginate` + `PageSchema`）、ETag/304、
+  `X-RateLimit-*` 配额头
 - 📊 **可观测性**：request_id 全链路、JSON 日志（`Logger.debug/info/warn/error/exception`）、
   Prometheus `/metrics`（请求量/延迟 + 限流拒绝/登录锁定/任务拒绝计数，支持多进程聚合）、
   healthz/readyz 探针
@@ -62,7 +64,7 @@ py_flask_server/
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 任务消费者 / 冒烟与压测脚本
-├── tests/                     # 689 个用例（门槛 85%；实测 91.14%）
+├── tests/                     # 716 个用例（门槛 85%；实测 90.86%）
 ├── webui/                     # 静态前端（webui_controller 提供页面与静态资源）
 ├── storage/                   # 上传文件根目录（运行期生成，勿提交）
 ├── deployments/               # ARMv7 等离线部署资料
@@ -73,13 +75,13 @@ py_flask_server/
 └── server.py / wsgi.py / wsgi_gunicorn.py   # 三个启动入口
 ```
 
-> 覆盖率快照（2026-11-21）：`pytest tests/ --cov=flask_server --cov-report=term` 实测 **91.14%**（门槛 85%）。689 个用例中 6 个默认跳过——1 个依赖可选包 Flask-SocketIO，5 个是需真实 Redis 的 `redis_live` 用例（CI 的 `test-redis` job 会跑它们）。
+> 覆盖率快照（2026-11-21）：`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term` 实测 **90.86%**（门槛 85%）。716 个用例中 6 个默认跳过——1 个依赖可选包 Flask-SocketIO，5 个是需真实 Redis 的 `redis_live` 用例（CI 的 `test-redis` job 会跑它们）。
 
 ## 🔧 常用命令
 
 ```bash
 make dev        # 启动开发服务器           python server.py
-make test       # 测试 + 覆盖率            pytest tests/ --cov=flask_server
+make test       # 测试 + 覆盖率            pytest tests/ --cov=flask_server --cov=wsgi
 make lint       # 代码风格                 ruff check flask_server/ tests/ ...
 make typecheck  # 静态类型检查（mypy，只覆盖 flask_server/）
 make audit      # 依赖安全审计            pip-audit -r requirements.txt
@@ -103,7 +105,9 @@ python scripts/scaffold.py my_project   # 生成新项目
 | [部署指南](docs/deployment.md) | Docker、生产入口选型、健康检查、安全建议 |
 | [API 约定](docs/api-conventions.md) | 统一响应、错误码表、分页/ETag、认证、限流 |
 | [开发与 FAQ](docs/development.md) | 测试、lint、类型检查、E2E、发布流程、常见问题 |
-| [代码/文档审计报告](docs/AUDIT_REPORT.md) | 两轮全量审计：发现的问题、判定依据、修复状态 |
+| [CI 与本地命令](docs/ci.md) | 11 个 CI job ↔ 本地等价命令、额外依赖/环境变量、失败排查 |
+| [运维手册](docs/operations-runbook.md) | waitress/gunicorn/Docker/ARMv7 的日志、重启、优雅关闭、健康检查、故障速查 |
+| [代码/文档审计报告](docs/AUDIT_REPORT.md) | 三轮全量审计：发现的问题、判定依据、修复状态 |
 | [贡献指南](CONTRIBUTING.md) | 开发环境、`make` 目标、自动发现约定、提交与 PR 要求 |
 | [安全策略](SECURITY.md) | 漏洞报告渠道、凭据轮换步骤、安全配置建议 |
 

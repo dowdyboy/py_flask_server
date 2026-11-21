@@ -13,3 +13,21 @@ class GraceResultSchema(Schema):
 class EchoSchema(Schema):
     """Echo 入参 Schema（校验示例）"""
     message = fields.String(required=True, metadata={'description': '要回显的消息'})
+
+
+class PaginationQuerySchema(Schema):
+    """分页 query 参数（配合 flask_server.util.paginate 使用）"""
+    page = fields.Integer(load_default=1, validate=lambda v: v >= 1,
+                          metadata={'description': '页码（从 1 开始）'})
+    per_page = fields.Integer(load_default=20, validate=lambda v: 1 <= v <= 100,
+                              metadata={'description': '每页条数（1-100）'})
+
+
+class PageSchema(Schema):
+    """分页响应：{items, page, per_page, total, pages}"""
+    items = fields.List(fields.Dict(), metadata={'description': '当前页数据'})
+    page = fields.Integer(metadata={'description': '当前页码'})
+    per_page = fields.Integer(metadata={'description': '每页条数'})
+    total = fields.Integer(metadata={'description': '总条数'})
+    pages = fields.Integer(metadata={'description': '总页数'})
+

@@ -12,15 +12,38 @@ from examples.service.article_service import ArticleService
 Logger.info("article_controller.py loaded")
 
 
+def _require_fields(*names):
+    """校验请求体字段是否齐全；缺失时返回 (None, 400 响应元组)。
+
+    示例刻意不依赖 KeyError → 400：未捕获的 KeyError 属于服务端缺陷，框架按 500 处理。
+    """
+    payload = request.payload if isinstance(request.payload, dict) else {}
+    missing = [name for name in names if name not in payload]
+    if missing:
+        return None, (GraceResult.param_error(data={'missing': missing}), 400)
+    return {name: payload[name] for name in names}, None
+
+
+def _require_param(name):
+    """校验 query 参数是否存在；缺失时返回 (None, 400 响应元组)"""
+    value = request.params.get(name)
+    if value is None:
+        return None, (GraceResult.param_error(data={'missing': [name]}), 400)
+    return value, None
+
+
 @app.route('/api/article/admin/put', methods=['POST'])
 @json_response
 def add():
+    data, error = _require_fields('title', 'content', 'secret_content', 'money', 'state')
+    if error is not None:
+        return error
     ArticleService.add(
-        request.payload['title'],
-        request.payload['content'],
-        request.payload['secret_content'],
-        request.payload['money'],
-        request.payload['state'],
+        data['title'],
+        data['content'],
+        data['secret_content'],
+        data['money'],
+        data['state'],
     )
     return GraceResult.ok()
 
@@ -28,13 +51,16 @@ def add():
 @app.route('/api/article/admin/modify', methods=['POST'])
 @json_response
 def modify():
+    data, error = _require_fields('aid', 'title', 'content', 'secret_content', 'money', 'state')
+    if error is not None:
+        return error
     ArticleService.modify_by_aid(
-        request.payload['aid'],
-        request.payload['title'],
-        request.payload['content'],
-        request.payload['secret_content'],
-        request.payload['money'],
-        request.payload['state'],
+        data['aid'],
+        data['title'],
+        data['content'],
+        data['secret_content'],
+        data['money'],
+        data['state'],
     )
     return GraceResult.ok()
 
@@ -42,7 +68,10 @@ def modify():
 @app.route('/api/article/admin/delete', methods=['POST'])
 @json_response
 def delete():
-    ArticleService.delete_by_aid(request.payload['aid'])
+    data, error = _require_fields('aid')
+    if error is not None:
+        return error
+    ArticleService.delete_by_aid(data['aid'])
     return GraceResult.ok()
 
 
@@ -59,7 +88,10 @@ def list_backend():
 @app.route('/api/article/admin/get', methods=['GET'])
 @json_response
 def get_backend():
-    article = ArticleService.get(request.params['aid'])
+    aid, error = _require_param('aid')
+    if error is not None:
+        return error
+    article = ArticleService.get(aid)
     if article is None:
         return GraceResult.business_error(4004, '文章不存在'), 404
     article = CommonUtil.dict_map(article, mapper_list=[
@@ -72,8 +104,11 @@ def get_backend():
 @app.route('/api/article/get', methods=['GET'])
 @json_response
 def get_frontend():
-    is_buy = ArticleService.is_buy(request.info['user_key'], request.params['aid'])
-    article = ArticleService.get(request.params['aid'], inc_access_count=True)
+    aid, error = _require_param('aid')
+    if error is not None:
+        return error
+    is_buy = ArticleService.is_buy(request.info.get('user_key'), aid)
+    article = ArticleService.get(aid, inc_access_count=True)
     if article is None or article['state'] == 0:
         return GraceResult.param_error()
     article = CommonUtil.dict_map(article, mapper_list=[

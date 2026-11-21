@@ -168,6 +168,15 @@ def new_task_id() -> str:
     return f'{int(time.time() * 1000):013d}-{uuid.uuid4().hex[:12]}'
 
 
+def _unwrap(value: Any) -> Any:
+    """收窄 redis-py 的返回类型。
+
+    redis-py 同时兼容同步/异步客户端，读命令的标注是 `Any | Awaitable[Any]`；
+    本项目只用同步客户端，这里显式收窄，避免在每个调用点写 cast/ignore。
+    """
+    return value
+
+
 # --------------------------------------------------------------------------
 # 后端接口
 # --------------------------------------------------------------------------
@@ -215,6 +224,14 @@ class BaseTaskQueue:
         """
         raise NotImplementedError
 
+    def replay_dead(self, index=0) -> str:
+        """按 `dead_letters()` 的下标重放一条死信，返回新任务 id。
+
+        顺序：先重新入队，成功后才从死信列表移除——入队失败时死信仍在，可重试。
+        移除与入队不是原子的：两次之间进程崩溃会产生一次重复执行（at-least-once）。
+        """
+        raise NotImplementedError
+
     def close(self) -> None:
         pass
 
@@ -253,10 +270,10 @@ class MemoryTaskQueue(BaseTaskQueue):
     def __init__(self, max_status=None, dead_max=None):
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
-        self._ready = deque()
+        self._ready: deque = deque()
         self._delayed: List[tuple] = []      # heapq: (available_at, seq, envelope)
         self._seq = 0
-        self._dead = deque(maxlen=dead_max or config.task_dead_letter_max)
+        self._dead: deque = deque(maxlen=dead_max or config.task_dead_letter_max)
         self._status: 'OrderedDict[str, Dict]' = OrderedDict()
         self._status_max = max_status or config.task_status_max
         self._closed = False
@@ -359,6 +376,29 @@ class MemoryTaskQueue(BaseTaskQueue):
             return []
         with self._lock:
             return list(reversed(list(self._dead)[-limit:]))
+
+    def replay_dead(self, index=0):
+        if index < 0:
+            raise TaskNotFound(f'dead letter index {index}')
+        with self._cv:
+            items = list(self._dead)
+            # dead_letters() 是"最新在前"，index=0 对应 deque 的末尾
+            pos = len(items) - 1 - index
+            if pos < 0:
+                raise TaskNotFound(f'dead letter index {index}')
+            record = items[pos]
+            # deque 不支持按索引删除：rotate + popleft + rotate 恢复原顺序
+            self._dead.rotate(-pos)
+            self._dead.popleft()
+            self._dead.rotate(pos)
+        name = record.get('name')
+        if not name:
+            # 脏数据（无法反序列化）没有任务名，无法重放；记录放回去由人工处理
+            with self._cv:
+                self._dead.append(record)
+            raise ValueError('dead letter has no task name (corrupt payload), cannot replay')
+        return self.enqueue(name, record.get('args') or [], record.get('kwargs') or {},
+                            max_retries=record.get('max_retries'))
 
     def close(self):
         with self._cv:
@@ -538,7 +578,8 @@ class RedisTaskQueue(BaseTaskQueue):
         # 连接抖动会以裸 ConnectionError 逃出 reserve()，让只捕获 TaskQueueUnavailable 的
         # 调用方（如 scripts/worker.py --once）直接崩出 traceback。
         try:
-            due = self.client.zrangebyscore(self.delayed_key, '-inf', now, start=0, num=100)
+            due = _unwrap(self.client.zrangebyscore(
+                self.delayed_key, '-inf', now, start=0, num=100))
             for raw in due:
                 # 脚本内 ZREM+XADD 是一次原子执行：返回 1 表示本进程抢到并已投递，
                 # 返回 0 表示别的 worker 已经抢走（本进程不得重复入队）。
@@ -552,9 +593,9 @@ class RedisTaskQueue(BaseTaskQueue):
         self._promote_delayed()
         block_ms = max(1, int(timeout * 1000))
         try:
-            resp = self.client.xreadgroup(
+            resp = _unwrap(self.client.xreadgroup(
                 self.group, self.consumer, {self.stream: '>'}, count=1, block=block_ms,
-            )
+            ))
         except Exception as e:
             # 消费端遇到 Redis 故障：交给上层循环重试（不要吞掉后假装"没有任务"死循环刷日志）
             raise TaskQueueUnavailable(f'任务出队失败（Redis 不可用？）: {e}') from e
@@ -658,8 +699,9 @@ class RedisTaskQueue(BaseTaskQueue):
         """
         min_idle_ms = int(config.task_visibility_timeout * 1000)
         try:
-            resp = self.client.xautoclaim(self.stream, self.group, self.consumer,
-                                          min_idle_time=min_idle_ms, start_id='0-0', count=count)
+            resp = _unwrap(self.client.xautoclaim(
+                self.stream, self.group, self.consumer,
+                min_idle_time=min_idle_ms, start_id='0-0', count=count))
         except Exception as e:
             # 不能静默：Redis 故障时崩溃恢复完全停摆，运维必须看得到
             Logger.warn(f'task reclaim (XAUTOCLAIM) failed: {e}')
@@ -694,7 +736,7 @@ class RedisTaskQueue(BaseTaskQueue):
     # -- 查询 --
     def get_status(self, task_id) -> Dict[str, Any]:
         try:
-            raw = self.client.get(self.status_prefix + task_id)
+            raw = _unwrap(self.client.get(self.status_prefix + task_id))
         except Exception as e:
             raise TaskQueueUnavailable(f'读取任务状态失败: {e}') from e
         if raw is None:
@@ -710,7 +752,7 @@ class RedisTaskQueue(BaseTaskQueue):
         if limit <= 0:
             return []
         try:
-            raws = self.client.lrange(self.dead_key, 0, limit - 1)
+            raws = _unwrap(self.client.lrange(self.dead_key, 0, limit - 1))
         except Exception as e:
             raise TaskQueueUnavailable(f'读取死信失败: {e}') from e
         out = []
@@ -725,12 +767,37 @@ class RedisTaskQueue(BaseTaskQueue):
                 out.append({'id': None, 'name': None, 'args': [], 'kwargs': {}, 'raw': raw})
         return out
 
+    def replay_dead(self, index=0):
+        if index < 0:
+            raise TaskNotFound(f'dead letter index {index}')
+        try:
+            raw = _unwrap(self.client.lindex(self.dead_key, index))
+        except Exception as e:
+            raise TaskQueueUnavailable(f'读取死信失败: {e}') from e
+        if raw is None:
+            raise TaskNotFound(f'dead letter index {index}')
+        try:
+            record = json.loads(raw)
+        except Exception as e:
+            raise ValueError(f'dead letter is not valid JSON, cannot replay: {e}') from e
+        if not isinstance(record, dict) or not record.get('name'):
+            raise ValueError('dead letter has no task name (corrupt payload), cannot replay')
+        # 先入队、后移除：入队失败时死信仍在，可安全重试（中间崩溃最多重复一次）
+        task_id = self.enqueue(record['name'], record.get('args') or [],
+                               record.get('kwargs') or {},
+                               max_retries=record.get('max_retries'))
+        try:
+            self.client.lrem(self.dead_key, 1, raw)
+        except Exception as e:
+            Logger.warn(f'dead letter replayed but removal failed (may replay again): {e}')
+        return task_id
+
     def stats(self) -> Dict[str, int]:
         try:
             # ready = 流中未被消费的消息（XLEN 含"已投递待确认"的消息，需扣掉 pending）
-            total = int(self.client.xlen(self.stream))
+            total = int(_unwrap(self.client.xlen(self.stream)))
             try:
-                pending = self.client.xpending(self.stream, self.group)
+                pending = _unwrap(self.client.xpending(self.stream, self.group))
                 # redis-py 5.x 的 XPENDING 摘要返回 dict（{'pending': n, ...}），
                 # 旧版本/部分假客户端返回 [count, min, max, consumers]；两种都要兼容。
                 # 修复前只按 list 取 pending[0]，真实 Redis 下 KeyError 被吞后 pending 恒为 0，
@@ -746,8 +813,8 @@ class RedisTaskQueue(BaseTaskQueue):
             return {
                 'ready': max(0, total - pending_count),
                 'pending': pending_count,
-                'delayed': int(self.client.zcard(self.delayed_key)),
-                'dead': int(self.client.llen(self.dead_key)),
+                'delayed': int(_unwrap(self.client.zcard(self.delayed_key))),
+                'dead': int(_unwrap(self.client.llen(self.dead_key))),
             }
         except Exception as e:
             raise TaskQueueUnavailable(f'读取队列统计失败: {e}') from e

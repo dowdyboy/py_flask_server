@@ -53,6 +53,14 @@ class AuthRefreshSchema(Schema):
                                   metadata={'description': '登录返回的 refresh_token'})
 
 
+class AuthChangePasswordSchema(Schema):
+    """修改密码入参（需登录；成功后该用户全部旧会话失效）"""
+    old_password = fields.String(required=True, validate=validate.Length(min=6, max=128),
+                                 metadata={'description': '当前密码'})
+    new_password = fields.String(required=True, validate=validate.Length(min=6, max=128),
+                                 metadata={'description': '新密码（6-128 字符）'})
+
+
 class AuthUserResponseSchema(Schema):
     """用户信息响应"""
     uid = fields.String(metadata={'description': '用户ID'})

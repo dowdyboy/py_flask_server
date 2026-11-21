@@ -30,7 +30,8 @@ def _clear_auth_cache():
     """清空内存缓存中的认证相关键（sqlalchemy 存储测试直接调用 login 会残留 token）"""
     from flask_server.module import memory_cache
     prefixes = ('auth:token:', 'auth:refresh:', 'auth:login_fail:',
-                'auth:login_lock:', 'auth:login_fail_global:')
+                'auth:login_lock:', 'auth:login_fail_global:',
+                'auth:user_access:', 'auth:user_refresh:', 'auth:refresh_used:')
     for k in list(memory_cache.cache.keys()):
         if k.startswith(prefixes):
             memory_cache.delete(k)
@@ -343,13 +344,23 @@ def test_refresh_token_rotation(client, fresh_store):
     assert len(data['token']) == 32
     assert data['refresh_token'] != old_refresh
 
-    # 旧 refresh 已作废 → 再次使用返回 401
+    # 旧 refresh 已作废 → 再次使用返回 401（并会触发重用检测，见独立用例）
     r = client.post('/api/v1/auth/refresh', json={'refresh_token': old_refresh})
     assert r.status_code == 401
     assert r.get_json()['code'] == 4002
 
-    # 新 refresh 仍可用
+
+def test_refresh_token_rotation_new_token_still_works(client, fresh_store):
+    """正常轮换（不重放旧 token）：新 refresh 可以继续换取令牌"""
+    client.post('/api/v1/auth/register', json={'username': 'lena', 'password': 'secret123'})
+    data = client.post('/api/v1/auth/login',
+                       json={'username': 'lena', 'password': 'secret123'}).get_json()['data']
+
     r = client.post('/api/v1/auth/refresh', json={'refresh_token': data['refresh_token']})
+    assert r.status_code == 200
+    new_data = r.get_json()['data']
+
+    r = client.post('/api/v1/auth/refresh', json={'refresh_token': new_data['refresh_token']})
     assert r.status_code == 200
 
 
@@ -432,6 +443,82 @@ def test_login_rejects_control_chars_in_username(client, fresh_store):
         r = client.post('/api/v1/auth/login',
                         json={'username': bad, 'password': 'secret123'})
         assert r.status_code == 422, f'{bad!r} 应被拒绝'
+
+
+def _login(client, username='pam', password='secret123'):
+    client.post('/api/v1/auth/register', json={'username': username, 'password': password})
+    resp = client.post('/api/v1/auth/login', json={'username': username, 'password': password})
+    assert resp.status_code == 200, resp.get_json()
+    return resp.get_json()['data']
+
+
+def test_change_password_revokes_old_sessions(client, fresh_store):
+    """改密成功后旧 access/refresh 全部失效，旧密码不能再登录"""
+    data = _login(client)
+    old_token = data['token']
+
+    wrong = client.post('/api/v1/auth/password',
+                        json={'old_password': 'wrong-old', 'new_password': 'newpass1'},
+                        headers={'X-AUTH-TOKEN': old_token})
+    assert wrong.status_code == 401
+    assert client.get('/api/v1/auth/me',
+                      headers={'X-AUTH-TOKEN': old_token}).status_code == 200
+
+    changed = client.post('/api/v1/auth/password',
+                          json={'old_password': 'secret123', 'new_password': 'newpass1'},
+                          headers={'X-AUTH-TOKEN': old_token})
+    assert changed.status_code == 200, changed.get_json()
+
+    assert client.get('/api/v1/auth/me',
+                      headers={'X-AUTH-TOKEN': old_token}).status_code == 401
+    assert client.post('/api/v1/auth/refresh',
+                       json={'refresh_token': data['refresh_token']}).status_code == 401
+    assert client.post('/api/v1/auth/login',
+                       json={'username': 'pam', 'password': 'secret123'}).status_code == 401
+    assert client.post('/api/v1/auth/login',
+                       json={'username': 'pam', 'password': 'newpass1'}).status_code == 200
+
+
+def test_logout_all_revokes_every_session(client, fresh_store):
+    first = _login(client)
+    second = _login(client)
+
+    resp = client.post('/api/v1/auth/logout_all',
+                       headers={'X-AUTH-TOKEN': first['token']})
+    assert resp.status_code == 200
+
+    for data in (first, second):
+        assert client.get('/api/v1/auth/me',
+                          headers={'X-AUTH-TOKEN': data['token']}).status_code == 401
+        assert client.post('/api/v1/auth/refresh',
+                           json={'refresh_token': data['refresh_token']}).status_code == 401
+
+
+def test_refresh_token_reuse_revokes_all_sessions(client, fresh_store):
+    """旧 refresh token 被重放 → 判定泄露，吊销该用户全部会话（含刚签发的新令牌）"""
+    data = _login(client)
+    rotated = client.post('/api/v1/auth/refresh',
+                          json={'refresh_token': data['refresh_token']})
+    assert rotated.status_code == 200
+    new_tokens = rotated.get_json()['data']
+
+    replay = client.post('/api/v1/auth/refresh',
+                         json={'refresh_token': data['refresh_token']})
+    assert replay.status_code == 401
+
+    # 泄露响应：新 access 与新 refresh 都应被吊销
+    assert client.get('/api/v1/auth/me',
+                      headers={'X-AUTH-TOKEN': new_tokens['token']}).status_code == 401
+    assert client.post('/api/v1/auth/refresh',
+                       json={'refresh_token': new_tokens['refresh_token']}).status_code == 401
+
+
+def test_change_password_rejects_too_short_new_password(client, fresh_store):
+    data = _login(client)
+    resp = client.post('/api/v1/auth/password',
+                       json={'old_password': 'secret123', 'new_password': '123'},
+                       headers={'X-AUTH-TOKEN': data['token']})
+    assert resp.status_code == 422
 
 
 @pytest.fixture
@@ -935,3 +1022,19 @@ def test_dummy_hash_follows_current_iterations(monkeypatch):
     monkeypatch.setattr(config, 'auth_pbkdf2_iterations', 12345)
     stored = auth_mod._dummy_password_hash()
     assert stored.split('$')[1] == '12345'
+
+
+def test_auth_sqlalchemy_change_password_persists(auth_db_env):
+    """SQLAlchemy 存储改密：新哈希落库、旧会话失效、旧密码失效"""
+    AuthService.register('mia', 'oldpass1')
+    tokens, err = AuthService.login('mia', 'oldpass1')
+    assert err is None
+    assert AuthService.get_user_by_token(tokens[0]) is not None
+
+    ok, err = AuthService.change_password('mia', 'oldpass1', 'newpass1')
+    assert ok is True and err is None
+
+    assert AuthService.get_user_by_token(tokens[0]) is None
+    assert AuthService.login('mia', 'oldpass1')[0] is None
+    new_tokens, err = AuthService.login('mia', 'newpass1')
+    assert err is None and new_tokens is not None
