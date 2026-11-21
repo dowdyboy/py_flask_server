@@ -273,3 +273,41 @@ def test_concurrency_limit_drops_datagrams():
         release_slow.set()
         server.stop()
     assert records == [b'slow', b'after']
+
+
+# ---------------- 优雅关闭：等在途 handler ----------------
+
+def test_stop_waits_for_in_flight_datagram_handler():
+    """stop() 必须等在途 on_message 处理完（UDP 没有重投，丢一条就是永久丢）"""
+    import threading
+    server = UdpServer(host='127.0.0.1', port=0, shutdown_timeout=3)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    @server.on_message
+    def on_message(data, addr):
+        started.set()
+        release.wait(5)
+        finished.set()
+        return None
+
+    assert server.start() is True
+    port = server.bound_address[1]
+    sock = _udp_client(port)
+    try:
+        sock.sendto(b'x', ('127.0.0.1', port))
+        assert started.wait(3), 'handler 未启动'
+        stopper = threading.Thread(target=server.stop, daemon=True)
+        stopper.start()
+        stopper.join(0.3)
+        assert stopper.is_alive(), 'stop() 未等在途 handler 结束就返回了'
+        release.set()
+        stopper.join(3)
+        assert not stopper.is_alive()
+        assert finished.is_set()
+    finally:
+        release.set()
+        sock.close()
+        server.stop()
+

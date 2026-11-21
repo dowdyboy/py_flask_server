@@ -147,14 +147,26 @@ class FakeRedis:
     def eval(self, script, numkeys, *args):
         """EVAL 的最小实现（生产代码走 register_script；这里保留同一调用语义）"""
         self._maybe_fail()
-        return self._run_script(list(args[:numkeys]), list(args[numkeys:]))
+        return self._run_script(script, list(args[:numkeys]), list(args[numkeys:]))
 
-    def _run_script(self, keys, argv):
-        """伪 Lua：`ZREM` 返回 1 的调用者才 `XADD`（与 _PROMOTE_DELAYED_SCRIPT 一致）
+    def _run_script(self, script, keys, argv):
+        """伪 Lua：按脚本注释标记分派到等价的 Python 语义。
 
-        假客户端是单线程的，一次调用内不存在交错，因此"先 zrem 再 xadd"就等价于
-        生产脚本的原子语义——同一 member 第二次调用必然拿到 ZREM=0，不重复投递。
+        假客户端是单线程的，一次调用内不存在交错，因此"先 A 再 B"就等价于
+        生产脚本的原子语义。覆盖三种生产脚本：延迟回迁 / 重试 / 死信。
         """
+        if 'task retry (atomic)' in script:
+            self.zadd(keys[1], {argv[2]: float(argv[3])})
+            self.xack(keys[0], argv[0], argv[1])
+            self.xdel(keys[0], argv[1])
+            return 1
+        if 'task dead (atomic)' in script:
+            self.lpush(keys[1], argv[2])
+            self.ltrim(keys[1], 0, int(argv[3]) - 1)
+            self.xack(keys[0], argv[0], argv[1])
+            self.xdel(keys[0], argv[1])
+            return 1
+        # 延迟回迁脚本：ZREM 返回 1 才 XADD
         if self.zrem(keys[0], argv[0]) == 1:
             self.xadd(keys[1], {'data': argv[0]})
             return 1
@@ -249,7 +261,7 @@ class _FakeScript:
 
     def __call__(self, keys=None, args=None):
         self._client._maybe_fail()
-        return self._client._run_script(list(keys or []), list(args or []))
+        return self._client._run_script(self.script, list(keys or []), list(args or []))
 
 
 @pytest.fixture
@@ -409,8 +421,13 @@ def test_retry_pipeline_failure_keeps_message_pending(queue, fake, monkeypatch):
     assert queue.get_status(reserved.envelope.id)['status'] == STATUS_RUNNING
 
 
-def test_retry_pipeline_is_all_or_nothing(queue, fake, monkeypatch):
-    """P0 回归：retry 中 XACK 失败时已入队的 ZADD 也必须回滚（不能留半成品延迟任务）"""
+def test_retry_script_xack_failure_keeps_message_pending(queue, fake, monkeypatch):
+    """retry 的 Lua 脚本中途失败：ZADD 已执行但消息仍 pending（最多重复一次，不丢）
+
+    Redis 脚本不是回滚事务：运行期出错时已执行的命令保留。因此脚本把 ZADD 放在
+    XACK/XDEL **之前**——失败方向只能是"重复投递"（at-least-once 可接受），
+    绝不可能是"已 ACK 但延迟集合没写进去"的永久丢失。
+    """
     queue.enqueue('flaky')
     reserved = queue.reserve(timeout=0.01)
     token = reserved.token
@@ -419,10 +436,12 @@ def test_retry_pipeline_is_all_or_nothing(queue, fake, monkeypatch):
         raise ConnectionError('xack failed')
 
     monkeypatch.setattr(fake, 'xack', broken_xack)
-    queue.retry(reserved, delay=5, error='boom')
+    assert queue.retry(reserved, delay=5, error='boom') is False
 
-    assert fake.zsets.get(queue.delayed_key, {}) == {}
+    # 消息仍在 pending/stream 里 → 可见性超时后会重新投递（可能重复执行一次）
     assert token in fake.groups[(queue.stream, queue.group)]['pending']
+    assert token in fake.by_id
+    assert token not in fake.deleted
 
 
 def test_dead_pipeline_failure_keeps_message_for_retry(queue, fake, monkeypatch):
@@ -600,6 +619,68 @@ def test_reclaim_stale_takes_over_other_consumer(queue, fake, monkeypatch):
     again = queue.reserve(timeout=0.05)
     assert again is not None and again.envelope.name == 'orphan'
     assert again.envelope.attempts == 1
+
+
+def test_enqueue_status_write_failure_is_not_reported_as_enqueue_failure(queue, fake, monkeypatch):
+    """状态写入是旁路：它失败时任务已在 stream 里，不能报"入队失败"让调用方重试（会重复执行）"""
+    def broken_set(*args, **kwargs):
+        raise ConnectionError('status store down')
+
+    monkeypatch.setattr(fake, 'set', broken_set)
+    task_id = queue.enqueue('still.enqueued')
+
+    assert fake.xlen(queue.stream) == 1
+    assert task_id
+
+
+def test_enqueue_non_json_serializable_raises_value_error(queue):
+    """不可序列化是调用方参数错误，不是"Redis 不可用"（否则会误导降级/重试）"""
+    with pytest.raises(ValueError, match='JSON serializable'):
+        queue.enqueue('bad', kwargs={'obj': object()})
+
+
+def test_reserve_socket_timeout_follows_config(monkeypatch):
+    """XREADGROUP 的 block 时长不能超过 socket 读超时，否则空闲队列的 reserve 恒超时"""
+    from flask_server import config
+
+    monkeypatch.setattr(config, 'task_reserve_timeout', 30)
+    q = RedisTaskQueue('redis://fake:6379/0', client=FakeRedis())
+    assert q._socket_timeout >= config.task_reserve_timeout + 2
+
+
+def test_reclaim_dead_letters_when_retry_budget_exhausted(queue, fake):
+    """回收也是失败投递：重试预算耗尽必须进死信，不能无限重投"""
+    queue.enqueue('doomed', max_retries=0)
+    other = RedisTaskQueue('redis://fake:6379/0', client=fake)
+    assert other.reserve(timeout=0.01) is not None
+
+    assert queue.reclaim_stale(count=10) == 1
+    assert fake.groups[(queue.stream, queue.group)]['pending'] == {}
+    assert queue.dead_letters()[0]['name'] == 'doomed'
+
+
+def test_reclaim_failure_is_logged_not_silent(queue, fake, monkeypatch):
+    """XAUTOCLAIM 故障不能静默返回 0（崩溃恢复停摆必须可见）"""
+    import logging
+
+    records = []
+
+    class Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = Capture()
+    logging.getLogger('flask_server').addHandler(handler)
+
+    def broken_autoclaim(*args, **kwargs):
+        raise ConnectionError('redis down')
+
+    monkeypatch.setattr(fake, 'xautoclaim', broken_autoclaim)
+    try:
+        assert queue.reclaim_stale(count=10) == 0
+    finally:
+        logging.getLogger('flask_server').removeHandler(handler)
+    assert any('reclaim' in r.getMessage().lower() for r in records)
 
 
 def test_get_status_raises_unavailable_when_backend_down(queue, fake):

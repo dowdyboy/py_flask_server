@@ -358,8 +358,7 @@ def create_app(app_config=None, framework_config=None):
           需要多个数据库请用多进程/多容器部署。
         - SocketIO（eventlet 模式下必须全局唯一；eventlet monkey patch 是导入期决定的）
         - Prometheus 指标对象与默认 registry、日志 handler
-        - 内存缓存（有条目上限，超出淘汰最久未写入的键）
-        - 内存缓存 / 限流计数 / 认证 token 存储
+        - 内存缓存（有条目上限，超出淘汰最久未写入的键）/ 限流计数 / 认证 token 存储
     """
     from .config import CONFIG_EXT_KEY, default_config
     from .module import init_SQLAlchemy, init_Migrate

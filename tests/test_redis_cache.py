@@ -400,3 +400,25 @@ def test_expire_none_ttl_noop():
     c = _make_cache(client)
     c.expire('k', None)
     assert c._unavailable_until == 0.0   # 未被误判降级
+
+
+def test_delete_uses_short_timeout_revocation_client():
+    """delete 绕过冷却期但用独立短超时客户端：Redis 黑洞时登出最多等 ~1s，而不是 6s"""
+    from flask_server.module.redis_cache import RedisCache
+
+    c = RedisCache('redis://127.0.0.1:1/0')
+    try:
+        fast = c._revocation_client()
+        assert fast is not c.client
+        kwargs = fast.connection_pool.connection_kwargs
+        assert kwargs['socket_timeout'] == 0.5
+        assert kwargs['socket_connect_timeout'] == 0.5
+    finally:
+        c.close()
+
+
+def test_revocation_client_falls_back_to_injected_client():
+    """测试注入的实例没有 _url：吊销退回 self.client（保持既有单测可用）"""
+    client = _FakeClient()
+    c = _make_cache(client)
+    assert c._revocation_client() is client

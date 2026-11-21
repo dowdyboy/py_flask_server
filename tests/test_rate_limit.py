@@ -237,3 +237,33 @@ def test_non_429_has_no_retry_after(client):
     """非 429 响应不应带 Retry-After（避免误导客户端退避正常请求）"""
     assert client.get('/hello').headers.get('Retry-After') is None
     assert client.get('/api/v1/healthz').headers.get('Retry-After') is None
+
+
+def test_limit_warning_is_throttled(monkeypatch):
+    """429 告警必须限频：洪泛时逐条 WARN 会把日志/采集端打爆"""
+    import logging
+
+    from flask_server.component import rate_limit as rl
+
+    records = []
+
+    class Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = Capture()
+    logging.getLogger('flask_server').addHandler(handler)
+    monkeypatch.setattr(rl, '_LIMIT_WARN_COOLDOWN', 10.0)
+    monkeypatch.setattr(rl.time, 'time', lambda: 100.0)
+    rl._limit_warn_state.update({'ts': 0.0, 'suppressed': 0})
+    try:
+        rl._warn_limited('first')
+        rl._warn_limited('second')
+        assert len(records) == 1, '冷却窗口内第二条告警不应输出'
+
+        monkeypatch.setattr(rl.time, 'time', lambda: 200.0)
+        rl._warn_limited('third')
+        assert len(records) == 2
+        assert 'similar suppressed' in records[-1].getMessage()
+    finally:
+        logging.getLogger('flask_server').removeHandler(handler)

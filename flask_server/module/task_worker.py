@@ -61,10 +61,13 @@ class TaskWorker:
 
     def start(self):
         """启动消费线程（幂等：重复调用不应重复创建线程）"""
-        if self._threads:
+        alive = [t for t in self._threads if t.is_alive()]
+        if alive:
+            Logger.warn(f'TaskWorker already running ({len(alive)} thread(s)), start() ignored')
             return self
         # 支持 stop() 之后再次 start()：_stop 是 Event，stop() 会置位且不会自动复位，
         # 不复位的话重启出来的线程会立即退出（"静默重启失效"）。
+        self._threads = []
         self._stop.clear()
         for i in range(max(1, self.concurrency)):
             t = threading.Thread(target=self._loop, name=f'task-worker-{i}', daemon=True)
@@ -75,12 +78,21 @@ class TaskWorker:
         return self
 
     def stop(self, timeout=15):
-        """停止消费：不再取新任务，等待在途任务完成（超时后线程为 daemon，随进程退出）"""
+        """停止消费：不再取新任务，等待在途任务完成（超时后线程为 daemon，随进程退出）
+
+        超时后**保留**仍存活线程的引用（不能 clear）：否则后续 stop() 再也等不到它们，
+        而 start() 的 `_stop.clear()` 会让这些旧线程重新进入消费循环，造成 N+1 个
+        消费者且多出来的那个永远不受管理。
+        """
         self._stop.set()
         deadline = time.time() + timeout
-        for t in self._threads:
+        for t in list(self._threads):
             t.join(timeout=max(0.0, deadline - time.time()))
-        self._threads.clear()
+        alive = [t for t in self._threads if t.is_alive()]
+        self._threads = alive
+        if alive:
+            Logger.warn(f'TaskWorker stop timed out: {len(alive)} consumer thread(s) still '
+                        f'running after {timeout}s (they will exit with the process)')
         Logger.info(f'TaskWorker stopped: processed={self.processed}, failed={self.failed}')
 
     @property
@@ -158,13 +170,15 @@ class TaskWorker:
         now = time.time()
         if now - self._last_reclaim < RECLAIM_INTERVAL:
             return
-        self._last_reclaim = now
         try:
             count = reclaim()
-            if count:
-                Logger.warn(f'TaskWorker reclaimed {count} stale task(s)')
         except Exception as e:
+            # 失败不推进节流时间戳：下一轮 reserve 立即重试（否则要再等 30s）
             Logger.warn(f'TaskWorker reclaim failed: {e}')
+            return
+        self._last_reclaim = now
+        if count:
+            Logger.warn(f'TaskWorker reclaimed {count} stale task(s)')
 
     def _handle(self, reserved):
         env = reserved.envelope

@@ -47,6 +47,7 @@ e2e:                ## 真实环境端到端（仅手动运行；需 MySQL/Redis
 	@echo "    依赖: pip install -r requirements-e2e.txt"
 	@echo "    配置: 项目根 .env 里 SQLALCHEMY_URI(mysql) + REDIS_URL；e2e_misc 还需要 docker"
 	@echo "    说明: _e2e/README.md（退出码 0=通过 1=用例失败 2=环境没配好）"
+	python _e2e/probe_logging.py
 	python _e2e/e2e_protocols.py
 	python _e2e/e2e_misc.py
 	python _e2e/e2e_tasks.py

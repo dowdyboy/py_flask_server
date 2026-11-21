@@ -69,7 +69,8 @@ python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
 1. 写进部署环境的 `.env`（不要提交、不要打进镜像）；
-2. 重启服务进程（`/etc/init.d/pyflask restart`、`docker compose up -d` 或重新部署）；
+2. 重启服务进程。按部署方式选择：Docker `docker compose up -d`；systemd/进程管理器
+   `systemctl restart <服务名>`；ARMv7 离线包 `/etc/init.d/pyflask restart`；
 3. **影响**：`SECRET_KEY` 用于会话/CSRF 签名，轮换后**所有已签发会话立即失效**，
    用户需要重新登录；依赖该密钥签名的 token 一并失效。
 
@@ -77,7 +78,9 @@ python -c "import secrets; print(secrets.token_hex(32))"
 
 1. 先在数据库侧改口令（`ALTER USER ... IDENTIFIED BY '...'` 或云控制台），确认新口令可登录；
 2. 同步更新 `.env` 的 `SQLALCHEMY_URI`（口令含 `@`、`:`、`/` 等字符时要做 URL 编码）；
-3. 重启应用，看 `/api/v1/readyz` 与 `/var/log/pyflask.log` 确认连接恢复；
+3. 重启应用，看 `/api/v1/readyz` 确认连接恢复；查日志按部署方式：容器用
+   `docker compose logs -f app`，systemd/进程管理器用其日志（默认不写文件日志，
+   设置 `LOG_FILE_PATH` 后才写文件；ARMv7 离线包为 `/var/log/pyflask.log`）；
 4. 确认没有其它服务/脚本还在用旧口令。
 
 ### Redis 口令

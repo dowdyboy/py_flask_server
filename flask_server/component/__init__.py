@@ -25,7 +25,7 @@ def init_components(app, cfg=None):
         app (Flask): 目标应用
         cfg (Config, optional): 应用的框架配置（注册期需要判断的开关，如 AUTH_ENABLED）
     """
-    rate_limit.init_rate_limit(app)
+    rate_limit.init_rate_limit(app, cfg)
     auth.init_auth(app, cfg)
     metrics.init_metrics(app)
 

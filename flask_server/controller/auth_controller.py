@@ -50,8 +50,13 @@ class LoginView(MethodView):
             client_ip=CommonUtil.get_real_ip(request, config.trusted_proxies),
         )
         if err == 'locked':
-            # 锁定期间重试没有意义：告诉客户端多久后再试（set_retry_after_header 会写头）
-            g.retry_after = config.auth_login_lock_seconds
+            # 锁定期间重试没有意义：告诉客户端"还要等多久"（锁定剩余秒数），
+            # 而不是完整锁定窗口——否则锁定第 299 秒被拒的客户端会被告知再等 300s。
+            remaining = AuthService.login_lock_remaining(
+                data['username'],
+                client_ip=CommonUtil.get_real_ip(request, config.trusted_proxies),
+            )
+            g.retry_after = remaining or config.auth_login_lock_seconds
             return GraceResult.business_error(4003, '失败次数过多，请稍后再试'), 429
         if tokens is None:
             return GraceResult.business_error(4001, '用户名或密码错误'), 401

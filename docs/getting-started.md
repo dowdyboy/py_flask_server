@@ -56,7 +56,11 @@ SQLALCHEMY_URI=sqlite:///storage/app.db
 ### 第 2 步：声明 Model
 
 脚手架已内置示例模型 `flask_server/model/po/user.py`（认证模块 sqlalchemy 存储模式复用），
-已自动导出并纳入迁移检测。**无需新建**，可按需修改字段，或参照它新建其他模型：
+已自动导出并纳入迁移检测。**无需新建**，可按需修改字段，或参照它新建其他模型。
+
+> ⚠️ 下面的代码块只是**字段写法参考**：`UserPO` / 表名 `user` 已存在，
+> 不要再建一个同名模型（会与内置模型争用同一张表，迁移/反射时直接冲突）。
+> 要新增业务模型请换一个类名与 `__tablename__`，并放到新文件里。
 
 ```python
 from flask_server.module.sqlalchemy import sqlalchemy
@@ -65,7 +69,7 @@ from datetime import datetime
 db = sqlalchemy()
 
 
-class UserPO(db.Model):
+class UserPO(db.Model):          # 仅作字段写法参考，不要重复定义
     __tablename__ = 'user'
 
     uid = db.Column(db.String(64), primary_key=True)

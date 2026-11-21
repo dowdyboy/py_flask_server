@@ -15,7 +15,7 @@
   healthz/readyz 探针
 - 🗄️ **数据库**：SQLAlchemy + Flask-Migrate（MySQL/SQLite）、缓存（内存/Redis 自动降级；
   内存缓存有**条目上限**，超出淘汰最久未写入的键，不会无界增长）
-- 🧪 **质量门禁**：`ruff` + `mypy` 静态检查（只覆盖 `flask_server/`）、`pytest` 覆盖率门槛 85%、
+- 🧪 **质量门禁**：`ruff`（全仓库）+ `mypy`（仅 `flask_server/`）静态检查、`pytest` 覆盖率门槛 85%、
   单测 `--timeout=120` 防挂死
 - 🛡️ **安全基线**：路径穿越防护、URI 脱敏、限流、安全响应头（CSP/HSTS）、可信代理 XFF 最右解析
 - 🐳 **容器化**：多阶段 Dockerfile + dev/prod compose + CI（`.github/workflows/` 2 个 workflow：
@@ -62,7 +62,7 @@ py_flask_server/
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 任务消费者 / 冒烟与压测脚本
-├── tests/                     # 663 个用例（门槛 85%；实测 90.85%）
+├── tests/                     # 689 个用例（门槛 85%；实测 91.14%）
 ├── webui/                     # 静态前端（webui_controller 提供页面与静态资源）
 ├── storage/                   # 上传文件根目录（运行期生成，勿提交）
 ├── deployments/               # ARMv7 等离线部署资料
@@ -73,7 +73,7 @@ py_flask_server/
 └── server.py / wsgi.py / wsgi_gunicorn.py   # 三个启动入口
 ```
 
-> 覆盖率快照（2026-11-20）：`pytest tests/ --cov=flask_server --cov-report=term` 实测 **90.85%**（门槛 85%）。663 个用例中 6 个默认跳过——1 个依赖可选包 Flask-SocketIO，5 个是需真实 Redis 的 `redis_live` 用例（CI 的 `test-redis` job 会跑它们）。
+> 覆盖率快照（2026-11-21）：`pytest tests/ --cov=flask_server --cov-report=term` 实测 **91.14%**（门槛 85%）。689 个用例中 6 个默认跳过——1 个依赖可选包 Flask-SocketIO，5 个是需真实 Redis 的 `redis_live` 用例（CI 的 `test-redis` job 会跑它们）。
 
 ## 🔧 常用命令
 

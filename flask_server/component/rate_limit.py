@@ -1,3 +1,6 @@
+import threading
+import time
+
 from flask import request, abort, g
 from ..config import config
 from ..module import memory_cache, redis_cache
@@ -46,9 +49,32 @@ def _path_key(path):
     return hashlib.sha256(path.encode('utf-8')).hexdigest()
 
 
-def _get_store():
+# 429 告警冷却：攻击者可以每秒打上万次超限请求，逐条 WARN 会把日志/采集端打爆
+# （再加一条 http_exception_handler 的 4xx 日志就是每请求两行）。窗口内只告警一次，
+# 并汇总被抑制的条数。
+_LIMIT_WARN_COOLDOWN = 5.0
+_limit_warn_state = {'ts': 0.0, 'suppressed': 0}
+_limit_warn_lock = threading.Lock()
+
+
+def _warn_limited(msg):
+    now = time.time()
+    with _limit_warn_lock:
+        if now - _limit_warn_state['ts'] < _LIMIT_WARN_COOLDOWN:
+            _limit_warn_state['suppressed'] += 1
+            return
+        suppressed = _limit_warn_state['suppressed']
+        _limit_warn_state['ts'] = now
+        _limit_warn_state['suppressed'] = 0
+    if suppressed:
+        msg = f'{msg} (+{suppressed} similar suppressed in {_LIMIT_WARN_COOLDOWN:.0f}s)'
+    Logger.warn(msg)
+
+
+def _get_store(cfg=None):
     """限流计数存储：redis（多实例）或内存（单实例）"""
-    if config.rate_limit_store == 'redis' and redis_cache is not None:
+    cfg = cfg if cfg is not None else config
+    if cfg.rate_limit_store == 'redis' and redis_cache is not None:
         return redis_cache
     return memory_cache
 
@@ -82,24 +108,33 @@ def rate_limit_check():
         return None
     cache = _get_store()
     ip = CommonUtil.get_real_ip(request, config.trusted_proxies) or 'unknown'
+    path_key = _path_key(request.path)
 
     # 路径级配额（可被随机路径绕过，仅防单端点滥用；超长路径哈希截断防内存放大）
-    path_count = _incr(cache, f'rate:{ip}:{_path_key(request.path)}')
+    path_count = _incr(cache, f'rate:{ip}:{path_key}')
     if _over_limit(path_count):
-        Logger.warn(f'rate limit exceeded (path): rate:{ip}:{request.path}')
+        # 日志也用截断后的 key：原样记录 100KB 的 URL 会让一条 429 变成一行 100KB 日志
+        _warn_limited(f'rate limit exceeded (path): rate:{ip}:{path_key}')
         metrics._inc(metrics._RATE_LIMITED, scope='path')
         g.retry_after = RATE_LIMIT_WINDOW   # 供 set_retry_after_header 写 Retry-After
         abort(429)
     # IP 级总配额（兜底，防路径随机化绕过）
     ip_count = _incr(cache, f'rate:{ip}')
     if _over_limit(ip_count):
-        Logger.warn(f'rate limit exceeded (ip): rate:{ip}')
+        _warn_limited(f'rate limit exceeded (ip): rate:{ip}')
         metrics._inc(metrics._RATE_LIMITED, scope='ip')
         g.retry_after = RATE_LIMIT_WINDOW
         abort(429)
     return None
 
 
-def init_rate_limit(app):
+def init_rate_limit(app, cfg=None):
     """把限流拦截器注册到指定 app（由 create_app 调用）"""
+    cfg = cfg if cfg is not None else config
+    if cfg.rate_limit_store == 'redis' and cfg.redis_url is None:
+        # 与 AUTH_STORE=sqlalchemy 漏配 URI 的处理方式对齐：启动期明确告警。
+        # 这里不直接失败（限流是可选能力），但必须让"多实例准确"的配置承诺
+        # 不至于在无声无息中退化成"每个进程各限各的"。
+        Logger.warn('RATE_LIMIT_STORE=redis 但未配置 REDIS_URL：限流计数将退化为'
+                    '进程内内存，多实例/多 worker 下实际配额是单实例的 N 倍')
     app.before_request(rate_limit_check)

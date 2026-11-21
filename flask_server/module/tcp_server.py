@@ -110,10 +110,14 @@ class _ThreadingTcpServer(socketserver.ThreadingTCPServer):
             raise
 
     def process_request_thread(self, request, client_address):
+        # 在 handler 线程自己的入口登记/注销：stop() 依赖计数判断在途处理是否结束。
+        # 若放在 accept 线程登记，线程本地/配对关系会错位（曾因此漏减计数）。
+        self.protocol._begin_handler()
         try:
             super().process_request_thread(request, client_address)
         finally:
             self.protocol._release_slot()
+            self.protocol._end_handler()
 
 
 class TcpServer(ProtocolServer):
@@ -124,9 +128,10 @@ class TcpServer(ProtocolServer):
     def __init__(self, name='tcp', host=None, port=None, framing=None,
                  separator=None, max_message_length=None,
                  frame_length=None, frame_head=None, frame_tail=None,
-                 max_connections=None, idle_timeout=None):
+                 max_connections=None, idle_timeout=None, shutdown_timeout=None):
         super().__init__(name, max_concurrency=max_connections
-                         if max_connections is not None else config.tcp_max_connections)
+                         if max_connections is not None else config.tcp_max_connections,
+                         shutdown_timeout=shutdown_timeout)
         self.host = host if host is not None else config.tcp_host
         self.port = port if port is not None else config.tcp_port
         self.framing = framing if framing is not None else config.tcp_framing
@@ -211,10 +216,10 @@ class TcpServer(ProtocolServer):
             except OSError:
                 pass
 
-    def stop(self):
-        """停止服务器并关闭所有已建立的连接（幂等）"""
-        super().stop()
+    def _stop_handlers(self):
+        """先关闭已建立连接（解除 recv 阻塞），再等在途 handler 真正结束"""
         self._close_all_connections()
+        self._wait_handlers()
 
     # ---------------- 帧读取 ----------------
 

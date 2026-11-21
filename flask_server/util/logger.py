@@ -4,7 +4,7 @@
 （避免捕获 SQLAlchemy/redis/urllib3 等第三方库的日志）：
 
     - `Logger.debug(txt, exc_info=False)`：调试日志（仅当 logger 级别 ≤ DEBUG 时输出；
-      级别由 `LOG_LEVEL` / `DEBUG` 派生，见 config）
+      级别由 `DEBUG` 派生：`DEBUG=true` → DEBUG，否则 INFO，见 config）
     - `Logger.info(txt)`：普通运行信息
     - `Logger.warn(txt, exc_info=False)` / `Logger.warning(...)`：告警（两种拼写等价；
       `warn` 为历史写法，保留以兼容既有调用点）

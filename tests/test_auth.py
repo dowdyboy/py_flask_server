@@ -230,8 +230,34 @@ def test_login_locks_after_max_fails(client, fresh_store, monkeypatch):
     r = client.post('/api/v1/auth/login', json={'username': 'hank', 'password': 'secret123'})
     assert r.status_code == 429
     assert r.get_json()['code'] == 4003
-    # 锁定响应必须告诉客户端多久后再试（RFC 6585 的 Retry-After）
-    assert r.headers.get('Retry-After') == '60'
+    # 锁定响应必须告诉客户端"还要等多久"（RFC 6585 的 Retry-After）
+    retry_after = int(r.headers['Retry-After'])
+    assert 1 <= retry_after <= 60
+
+
+def test_retry_after_reflects_remaining_lock(client, fresh_store, monkeypatch, fake_clock):
+    """锁定第 N 秒被拒时，Retry-After 应是剩余秒数而不是完整锁定窗口"""
+    from flask_server import config
+    from flask_server.component import auth as auth_module
+
+    monkeypatch.setattr(config, 'auth_login_max_fails', 2)
+    monkeypatch.setattr(config, 'auth_login_lock_seconds', 60)
+    monkeypatch.setattr(auth_module, 'time', fake_clock)
+    client.post('/api/v1/auth/register', json={'username': 'jack', 'password': 'secret123'})
+
+    for _ in range(2):
+        client.post('/api/v1/auth/login', json={'username': 'jack', 'password': 'wrong-pass'})
+    first = client.post('/api/v1/auth/login',
+                        json={'username': 'jack', 'password': 'secret123'})
+    assert first.status_code == 429
+    assert int(first.headers['Retry-After']) >= 59
+
+    fake_clock.advance(30)
+    later = client.post('/api/v1/auth/login',
+                        json={'username': 'jack', 'password': 'secret123'})
+    assert later.status_code == 429
+    remaining = int(later.headers['Retry-After'])
+    assert 25 <= remaining <= 30, f'应返回剩余 ~30s，实际 {remaining}'
 
 
 def test_login_lock_expires(client, fresh_store, monkeypatch, fake_clock):
@@ -899,3 +925,13 @@ def test_sqlalchemy_po_placeholder_without_db_raises_clear_error(monkeypatch):
 
     with pytest.raises(RuntimeError, match='SQLAlchemy 未就绪'):
         SqlAlchemyAuthStore._get_po()
+
+
+def test_dummy_hash_follows_current_iterations(monkeypatch):
+    """时序均衡哈希必须按当前配置的迭代数生成（导入期算死会让注入配置的时序差反转）"""
+    from flask_server import config
+    from flask_server.component import auth as auth_mod
+
+    monkeypatch.setattr(config, 'auth_pbkdf2_iterations', 12345)
+    stored = auth_mod._dummy_password_hash()
+    assert stored.split('$')[1] == '12345'

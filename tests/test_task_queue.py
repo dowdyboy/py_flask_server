@@ -598,3 +598,61 @@ def test_worker_cli_once_processes_pending_task(fast_config, monkeypatch, capsys
     assert cli.main(['--once']) == 0
     assert ran == [7]
     assert '已注册任务' in capsys.readouterr().out
+
+
+# ------------------------- 内存后端契约 / worker 生命周期回归 -------------------------
+
+
+def test_memory_enqueue_rejects_non_json_serializable():
+    """内存后端也必须做 JSON 校验：否则 dev/test 能入队、生产切 Redis 才 503"""
+    q = MemoryTaskQueue()
+    with pytest.raises(ValueError, match='JSON serializable'):
+        q.enqueue('bad', kwargs={'obj': object()})
+
+
+def test_worker_stop_timeout_keeps_alive_threads_tracked(fast_config):
+    """stop() 超时后不能让存活线程“失联”，start() 也不能把它们复活成第二个消费者"""
+    from flask_server.module.task_worker import TaskWorker
+
+    class BlockingQueue(MemoryTaskQueue):
+        def __init__(self):
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def reserve(self, timeout=1.0):
+            self.entered.set()
+            self.release.wait(5)
+            return super().reserve(timeout=0.01)
+
+    q = BlockingQueue()
+    worker = TaskWorker(queue=q, concurrency=1).start()
+    try:
+        assert q.entered.wait(3), '消费线程未进入 reserve'
+        worker.stop(timeout=0.05)
+        assert worker._threads, '超时后仍存活的线程必须保留引用（否则后续 stop 再也等不到）'
+        assert worker._threads[0].is_alive()
+
+        # 第二个 start 不得清 _stop / 创建新线程把旧线程一起复活
+        worker.start()
+        assert len(worker._threads) == 1
+    finally:
+        q.release.set()
+        assert _wait_until(lambda: not worker._threads[0].is_alive(), timeout=5), \
+            '释放后旧线程应退出'
+        worker.stop(timeout=5)
+
+
+def test_worker_can_restart_after_clean_stop(fast_config):
+    """正常 stop 之后允许再次 start（显式支持的重启用法）"""
+    from flask_server.module.task_worker import TaskWorker
+
+    q = MemoryTaskQueue()
+    worker = TaskWorker(queue=q, concurrency=1).start()
+    worker.stop()
+    assert worker._threads == []
+    worker = worker.start()
+    try:
+        assert worker.running is True
+    finally:
+        worker.stop()

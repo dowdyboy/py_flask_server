@@ -114,7 +114,7 @@ TASK_WORKER_EMBEDDED=true python server.py
 | `TASK_STATUS_TTL` | `86400` | 状态保留时长（秒） |
 | `TASK_DEAD_LETTER_MAX` | `1000` | 死信列表上限 |
 | `TASK_STATUS_MAX` | `10000` | 内存后端状态表上限（防内存无界增长） |
-| `TASK_RESERVE_TIMEOUT` | `2` | 单次出队阻塞时长（秒） |
+| `TASK_RESERVE_TIMEOUT` | `2` | 单次出队阻塞时长（秒）；Redis socket 读超时自动按 `max(5, 值+2)` 放大 |
 | `TASK_WORKER_EMBEDDED` | `false` | 是否在 Web 进程内嵌 worker（仅开发/单进程） |
 
 ---

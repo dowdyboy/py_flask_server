@@ -185,10 +185,10 @@ class BaseTaskQueue:
     def ack(self, reserved: ReservedTask) -> None:
         raise NotImplementedError
 
-    def retry(self, reserved: ReservedTask, delay: float, error: str = '') -> None:
+    def retry(self, reserved: ReservedTask, delay: float, error: str = '') -> bool:
         raise NotImplementedError
 
-    def dead(self, reserved: ReservedTask, error: str = '') -> None:
+    def dead(self, reserved: ReservedTask, error: str = '') -> bool:
         raise NotImplementedError
 
     def get_status(self, task_id) -> Dict[str, Any]:
@@ -269,6 +269,12 @@ class MemoryTaskQueue(BaseTaskQueue):
             args=list(args or ()), kwargs=dict(kwargs or {}),
             attempts=attempts, max_retries=max_retries,
         )
+        # 与 Redis 后端保持同一契约：参数必须可 JSON 序列化（否则 dev/test 能跑、
+        # 生产切到 Redis 才 503）。内存后端也显式校验一次。
+        try:
+            env.to_json()
+        except (TypeError, ValueError) as e:
+            raise ValueError(f'task args/kwargs are not JSON serializable: {e}') from e
         with self._cv:
             if delay and delay > 0:
                 self._push_delayed(env, delay)
@@ -313,7 +319,7 @@ class MemoryTaskQueue(BaseTaskQueue):
         with self._cv:
             self._set_status(reserved.envelope, STATUS_SUCCEEDED)
 
-    def retry(self, reserved: ReservedTask, delay: float, error: str = '') -> None:
+    def retry(self, reserved: ReservedTask, delay: float, error: str = '') -> bool:
         env = reserved.envelope
         env.attempts += 1
         env.last_error = error or None
@@ -321,13 +327,15 @@ class MemoryTaskQueue(BaseTaskQueue):
             self._push_delayed(env, max(0.0, delay))
             self._set_status(env, STATUS_RETRYING)
             self._cv.notify()
+        return True
 
-    def dead(self, reserved: ReservedTask, error: str = '') -> None:
+    def dead(self, reserved: ReservedTask, error: str = '') -> bool:
         env = reserved.envelope
         env.last_error = error or None
         with self._cv:
             self._dead.append(self._dead_letter_record(env, error))
             self._set_status(env, STATUS_DEAD)
+        return True
 
     # -- 查询 --
     def get_status(self, task_id) -> Dict[str, Any]:
@@ -383,6 +391,39 @@ end
 return 0
 """
 
+# 重试：把消息从 pending 摘除 + 投递到延迟集合，必须在一次原子执行内完成。
+# MULTI/EXEC 不够：Redis 事务遇到运行期错误（键类型冲突/WRONGTYPE/OOM）不会回滚
+# 已执行的命令，ZADD 失败时 XACK/XDEL 仍会生效 → 任务永久丢失。
+#   KEYS[1]=stream  KEYS[2]=delayed  ARGV=[group, msg_id, payload, score]
+_RETRY_SCRIPT = """
+-- task retry (atomic): ZADD + XACK + XDEL
+redis.call('ZADD', KEYS[2], ARGV[4], ARGV[3])
+redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
+redis.call('XDEL', KEYS[1], ARGV[2])
+return 1
+"""
+
+# 死信：LPUSH + LTRIM + XACK + XDEL 同样必须原子（否则 LPUSH 失败时任务连线索都不剩）
+#   KEYS[1]=stream  KEYS[2]=dead  ARGV=[group, msg_id, payload, max_len]
+_DEAD_SCRIPT = """
+-- task dead (atomic): LPUSH + LTRIM + XACK + XDEL
+redis.call('LPUSH', KEYS[2], ARGV[3])
+redis.call('LTRIM', KEYS[2], 0, tonumber(ARGV[4]) - 1)
+redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
+redis.call('XDEL', KEYS[1], ARGV[2])
+return 1
+"""
+
+
+def _load_script(client, script):
+    """加载 Lua 脚本：优先 register_script（EVALSHA 缓存）；极简客户端退回 EVAL"""
+    register = getattr(client, 'register_script', None)
+    if register is not None:
+        return register(script)
+    return lambda keys=None, args=None: client.eval(
+        script, len(keys or []), *(keys or []), *(args or []),
+    )
+
 
 class RedisTaskQueue(BaseTaskQueue):
     """基于 Redis Streams 的任务队列。
@@ -409,11 +450,18 @@ class RedisTaskQueue(BaseTaskQueue):
         self.status_prefix = f'{self.stream}:task:'
         self.consumer = f'worker-{uuid.uuid4().hex[:8]}'
         self._last_promote = 0.0
+        # 阻塞式 XREADGROUP 的 socket 读超时必须大于 block 时长，否则空闲队列会先被
+        # socket_timeout 打断（redis-py 抛 TimeoutError）→ reserve 恒失败。默认配置是
+        # 2s，这里至少给 5s，并随 TASK_RESERVE_TIMEOUT 放大。
+        self._socket_timeout = max(5, int(config.task_reserve_timeout) + 2)
         self.client = client or redis.Redis.from_url(
-            url, decode_responses=True, socket_connect_timeout=3, socket_timeout=5,
+            url, decode_responses=True, socket_connect_timeout=3,
+            socket_timeout=self._socket_timeout,
         )
         try:
-            self._promote_script = self._load_promote_script()
+            self._promote_script = _load_script(self.client, _PROMOTE_DELAYED_SCRIPT)
+            self._retry_script = _load_script(self.client, _RETRY_SCRIPT)
+            self._dead_script = _load_script(self.client, _DEAD_SCRIPT)
             self._ensure_group()
         except Exception as e:
             # 暴露成统一异常：调用方（如 enqueue_task 的控制器）可以据此返回 503，
@@ -423,15 +471,10 @@ class RedisTaskQueue(BaseTaskQueue):
     def _load_promote_script(self):
         """加载延迟回迁脚本；优先 register_script（EVALSHA 缓存，避免每次传脚本体）。
 
-        极简客户端（测试替身）没有 register_script 时退回 EVAL，语义完全相同：
-        两条路径都只执行上面那段 Lua。
+        保留该方法名供旧测试/monkeypatch 使用；实现统一走 _load_script。
+        极简客户端（测试替身）没有 register_script 时退回 EVAL，语义完全相同。
         """
-        register = getattr(self.client, 'register_script', None)
-        if register is not None:
-            return register(_PROMOTE_DELAYED_SCRIPT)
-        return lambda keys=None, args=None: self.client.eval(
-            _PROMOTE_DELAYED_SCRIPT, len(keys or []), *(keys or []), *(args or []),
-        )
+        return _load_script(self.client, _PROMOTE_DELAYED_SCRIPT)
 
     # -- 初始化 --
     def _ensure_group(self):
@@ -449,14 +492,21 @@ class RedisTaskQueue(BaseTaskQueue):
             args=list(args or ()), kwargs=dict(kwargs or {}),
             attempts=attempts, max_retries=max_retries,
         )
+        # 先序列化：不可序列化是调用方参数错误（ValueError），不能包装成"Redis 不可用"
+        try:
+            payload = env.to_json()
+        except (TypeError, ValueError) as e:
+            raise ValueError(f'task args/kwargs are not JSON serializable: {e}') from e
         try:
             if delay and delay > 0:
-                self.client.zadd(self.delayed_key, {env.to_json(): time.time() + delay})
+                self.client.zadd(self.delayed_key, {payload: time.time() + delay})
             else:
-                self.client.xadd(self.stream, {'data': env.to_json()})
-            self._write_status(env, STATUS_RETRYING if attempts else STATUS_QUEUED)
+                self.client.xadd(self.stream, {'data': payload})
         except Exception as e:
             raise TaskQueueUnavailable(f'任务入队失败（Redis 不可用？）: {e}') from e
+        # 状态写入是旁路信息：入队已成功后它再失败，不能反过来告诉调用方"入队失败"
+        # （否则调用方重试会重复执行任务）。与 ack/retry/dead 的做法保持一致。
+        self._write_status_best_effort(env, STATUS_RETRYING if attempts else STATUS_QUEUED)
         return env.id
 
     def _write_status(self, env: TaskEnvelope, status: str):
@@ -542,30 +592,36 @@ class RedisTaskQueue(BaseTaskQueue):
             return
         self._write_status_best_effort(env, STATUS_SUCCEEDED)
 
-    def retry(self, reserved: ReservedTask, delay: float, error: str = '') -> None:
+    def retry(self, reserved: ReservedTask, delay: float, error: str = '') -> bool:
         env = reserved.envelope
         env.attempts += 1
         env.last_error = error or None
         try:
-            # ZADD（延迟集合）+ XACK + XDEL 必须原子：修复前先 ACK+DEL 再 ZADD，
-            # ZADD 失败/进程被杀时任务既不在 stream、也不在 delayed、更不在死信 → 永久丢失。
-            pipe = self.client.pipeline(transaction=True)
-            pipe.zadd(self.delayed_key, {env.to_json(): time.time() + max(0.0, delay)})
-            pipe.xack(self.stream, self.group, reserved.token)
-            pipe.xdel(self.stream, reserved.token)
-            pipe.execute()
+            payload = env.to_json()
+        except (TypeError, ValueError) as e:      # 信封本应可序列化；防御未来新增字段
+            Logger.error(f'task retry skipped (envelope not serializable) id={env.id}: {e}')
+            return False
+        try:
+            # ZADD + XACK + XDEL 由 Lua 一次原子完成。MULTI/EXEC 在运行期错误
+            # （WRONGTYPE/OOM）时不会回滚已执行命令，可能把任务从 stream/PEL 摘除后
+            # 又没写进 delayed —— 这正是"声明了原子性却仍丢任务"的残留窗口。
+            self._retry_script(
+                keys=[self.stream, self.delayed_key],
+                args=[self.group, reserved.token, payload, time.time() + max(0.0, delay)],
+            )
         except Exception as e:
-            # 事务失败：消息仍 pending，可见性超时后重新投递（at-least-once 兜底）
+            # 脚本没执行成功：消息仍在 pending，可见性超时后会重新投递（at-least-once）
             Logger.error(f'task retry failed id={env.id} name={env.name}: {e}')
-            return
+            return False
         self._write_status_best_effort(env, STATUS_RETRYING)
+        return True
 
-    def dead(self, reserved: ReservedTask, error: str = '') -> None:
+    def dead(self, reserved: ReservedTask, error: str = '') -> bool:
         env = reserved.envelope
         env.last_error = error or None
-        self._dead_letter_raw(reserved.token, reserved.raw, error, env=env)
+        return self._dead_letter_raw(reserved.token, reserved.raw, error, env=env)
 
-    def _dead_letter_raw(self, msg_id, raw, error, env=None):
+    def _dead_letter_raw(self, msg_id, raw, error, env=None) -> bool:
         try:
             if env is not None:
                 record = self._dead_letter_record(env, error)
@@ -576,33 +632,37 @@ class RedisTaskQueue(BaseTaskQueue):
                     'status': STATUS_DEAD, 'last_error': error, 'raw': raw,
                 }
             payload = json.dumps(record, ensure_ascii=False, default=str)
-            # LPUSH（死信）+ LTRIM（裁剪）+ XACK + XDEL 必须原子：修复前先 ACK+DEL 再 LPUSH，
-            # LPUSH 失败时任务没了、死信也没了——连人工排查的线索都不剩。
-            # EXEC 失败时消息仍 pending，可见性超时后会重新走一次死信流程。
-            pipe = self.client.pipeline(transaction=True)
-            pipe.lpush(self.dead_key, payload)
-            pipe.ltrim(self.dead_key, 0, config.task_dead_letter_max - 1)
-            pipe.xack(self.stream, self.group, msg_id)
-            pipe.xdel(self.stream, msg_id)
-            pipe.execute()
+        except Exception as e:
+            Logger.error(f'task dead-letter skipped (record not serializable): {e}')
+            return False
+        try:
+            # LPUSH + LTRIM + XACK + XDEL 原子完成：任何一步失败都不能让消息
+            # "已 ACK 但死信没写进去"（会连人工排查的线索都丢掉）。
+            self._dead_script(
+                keys=[self.stream, self.dead_key],
+                args=[self.group, msg_id, payload, config.task_dead_letter_max],
+            )
         except Exception as e:
             Logger.error(f'task dead-letter failed: {e}')
-            return
+            return False
         if env is not None:
             self._write_status_best_effort(env, STATUS_DEAD)
+        return True
 
     # -- 崩溃恢复 --
     def reclaim_stale(self, count=10):
         """接管因 worker 崩溃而滞留在 pending 列表的旧消息（≥ 可见性超时）
 
         Returns:
-            int: 本次接管的条数
+            int: 本次成功接管的条数
         """
         min_idle_ms = int(config.task_visibility_timeout * 1000)
         try:
             resp = self.client.xautoclaim(self.stream, self.group, self.consumer,
                                           min_idle_time=min_idle_ms, start_id='0-0', count=count)
-        except Exception:
+        except Exception as e:
+            # 不能静默：Redis 故障时崩溃恢复完全停摆，运维必须看得到
+            Logger.warn(f'task reclaim (XAUTOCLAIM) failed: {e}')
             return 0
         # redis-py 不同版本返回 (next_id, entries) 或 (next_id, entries, deleted)
         entries = resp[1] if isinstance(resp, (list, tuple)) and len(resp) >= 2 else []
@@ -611,16 +671,24 @@ class RedisTaskQueue(BaseTaskQueue):
             if not item or not item[0]:
                 continue
             msg_id, fields = item[0], item[1] if len(item) > 1 else {}
-            reclaimed += 1
+            raw = (fields or {}).get('data')
             try:
-                env = TaskEnvelope.from_json((fields or {}).get('data'))
+                env = TaskEnvelope.from_json(raw)
             except Exception as e:
-                self._dead_letter_raw(msg_id, (fields or {}).get('data'), f'反序列化失败: {e}')
+                self._dead_letter_raw(msg_id, raw, f'反序列化失败: {e}')
                 continue
-            delay = min(60.0, max(0.0, config.task_retry_backoff))
             env.attempts = int(env.attempts or 0)
-            self.retry(ReservedTask(token=msg_id, envelope=env, raw=(fields or {}).get('data')),
-                       delay=delay, error='reclaimed from stale consumer')
+            reserved = ReservedTask(token=msg_id, envelope=env, raw=raw)
+            max_retries = env.max_retries if env.max_retries is not None else config.task_max_retries
+            if env.attempts >= max_retries:
+                # 回收也是"一次失败投递"：重试预算已耗尽就直接进死信，不能无限重投
+                if self.dead(reserved, 'reclaimed from stale consumer (retry budget exhausted)'):
+                    reclaimed += 1
+                continue
+            # 退避随 attempts 指数增长（与 TaskWorker._handle 一致），上限 60s
+            delay = min(60.0, max(0.0, config.task_retry_backoff) * (2 ** env.attempts))
+            if self.retry(reserved, delay=delay, error='reclaimed from stale consumer'):
+                reclaimed += 1
         return reclaimed
 
     # -- 查询 --

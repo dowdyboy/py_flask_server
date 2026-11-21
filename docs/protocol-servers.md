@@ -164,9 +164,9 @@ head_tail 的定界契约（无转义帧协议，先读懂再定义自己的帧�
 
 ## 部署注意事项
 
-- **gunicorn 多 worker**：TCP/UDP 服务器是每进程独立实例，多 worker 会重复绑定同一
-  端口导致冲突。多 worker 部署时请设置 `WORKER_NUM=1`，或将协议服务器独立进程部署
-  （启动 banner 会告警）
+- **gunicorn 多 worker**：`workers > 1` 时框架**直接跳过协议服务器启动**（只打一条告警），
+  不会重复绑定端口；需要 TCP/UDP 时请设置 `WORKER_NUM=1`，或将协议服务器独立进程部署。
+  这与 [deployment.md](deployment.md#多进程部署注意事项gunicorn) 的描述一致
 - **防火墙**：需放行 TCP/UDP 监听端口（默认 9000 / 9001）
 - **暴露面**：`TCP_HOST`/`UDP_HOST` 默认 `0.0.0.0`（全网卡），与 HTTP 的
   `SERVER_HOST`（development 预设 127.0.0.1）不同——本地开发启用协议服务器时
@@ -176,11 +176,10 @@ head_tail 的定界契约（无转义帧协议，先读懂再定义自己的帧�
   **空闲连接会被自动回收**：`TCP_IDLE_TIMEOUT`（默认 300s）内没有任何数据到达的连接由
   服务端关闭并释放槽位，防"只连不发"占满 `TCP_MAX_CONNECTIONS`（慢连接耗尽 DoS）。
   长连接心跳场景请把该值设大于心跳间隔，或设为 `≤0` 关闭超时
-- **UDP 在途数据报**：`stop()` 时已进入处理线程的数据报仍会执行完处理器
-  （UDP 无连接可关闭）；stop 后立即 start 重启的极短窗口内，新旧处理器可能并发—— 
-  生产切换场景建议间隔几秒再重启
-- **stop() 不等在途消息**：`stop()` 立即返回，不等待处理中的 `on_message` 完成
-  （TCP/UDP 同理）——关闭/重启期间在途消息可能被中断，请在业务侧保证幂等
+- **优雅关闭**：`stop()` 会先停止 accept、关闭已建立的连接，再**等待在途 handler 结束**
+  （默认最多 5s；超时打 WARN 后强制返回）。这样入口随后 dispose DB/关闭 Redis 时，
+  正在执行的 `on_message` 不会用到已释放的依赖。UDP 没有连接可关，但同样会等在途
+  处理器跑完；需要更长窗口可调 `ProtocolServer.DEFAULT_SHUTDOWN_TIMEOUT`
 - **UDP 回发负载上限**：UDP 数据报最大约 65507 字节，返回负载超过此值时 `sendto`
   会失败（记 WARN，不回发）；请按协议约定控制回包大小
 - **开发模式 reloader**：`python server.py` + debug 时，协议服务器仅在 Werkzeug

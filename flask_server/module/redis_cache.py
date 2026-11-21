@@ -28,11 +28,16 @@ class RedisCache:
 
     def __init__(self, url: str) -> None:
         import redis
+        self._url = url
         # socket 超时：防止 Redis 网络黑洞时请求无限挂起
         self.client = redis.Redis.from_url(
             url, decode_responses=True,
             socket_connect_timeout=3, socket_timeout=3,
         )
+        # 吊销专用客户端（短超时）：delete() 对失败零容忍、必须绕过冷却期真实执行，
+        # 但正常客户端的 3s connect + 3s read 会让 Redis 黑洞时的登出阻塞 6s，
+        # 少量并发登出就能占满 waitress 线程池。这里单独用 0.5s 超时快速失败。
+        self._fast_client = None
         self._retry_cooldown = 30
         self._unavailable_until = 0.0
         self._need_recovery = False
@@ -126,6 +131,22 @@ class RedisCache:
                 Logger.warn(f'RedisCache get cleanup failed key={key}: {del_err}')
             return None
 
+    def _revocation_client(self):
+        """吊销专用客户端（惰性创建，0.5s 超时）；测试注入的实例退回 self.client"""
+        fast = getattr(self, '_fast_client', None)
+        if fast is not None:
+            return fast
+        url = getattr(self, '_url', None)
+        if url is None:
+            return self.client
+        import redis
+        fast = redis.Redis.from_url(
+            url, decode_responses=True,
+            socket_connect_timeout=0.5, socket_timeout=0.5,
+        )
+        self._fast_client = fast
+        return fast
+
     def delete(self, key: str) -> bool:
         """删除键（必须送达的一次性操作，绕过冷却期降级）
 
@@ -133,16 +154,30 @@ class RedisCache:
         Redis 恢复后旧令牌会重新生效（TTL 7/30 天）。因此这里不调用 `_check()`，
         始终尝试真实删除，并把结果返回给调用方决定是否告警/降级。
 
+        使用独立的短超时客户端：Redis 网络黑洞（SYN 丢包/不响应）时最多阻塞约 1s，
+        不会像普通客户端那样 3s+3s 地占住请求线程。
+
         Returns:
             bool: True 表示删除命令已成功执行；False 表示 Redis 异常（未真正删除）
         """
         try:
-            self.client.delete(key)
+            self._revocation_client().delete(key)
             return True
         except Exception as e:
             Logger.warn(f'RedisCache delete failed key={key}: {e}')
             self._mark_unavailable()
             return False
+
+    def close(self) -> None:
+        """关闭主客户端与吊销客户端（幂等；测试替身可能没有 close）"""
+        for client in (getattr(self, '_fast_client', None), self.client):
+            if client is None:
+                continue
+            try:
+                client.close()
+            except Exception:
+                pass
+        self._fast_client = None
 
     def getdel(self, key: str) -> Any:
         """原子读取并删除（GETDEL，供 refresh token 轮换等单次使用场景）"""

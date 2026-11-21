@@ -19,7 +19,7 @@ def build_banner():
         f'  REDIS      : {_status(config.redis_url is not None)}',
         f'  AUTH       : {_status(config.auth_enabled, f"store={config.auth_store}")}',
         f'  METRICS    : {_status(config.metrics_enabled, "/metrics")}',
-        f'  RATE LIMIT : {_status(config.rate_limit_enabled, f"{config.rate_limit_per_minute}/min per IP+path")}',
+        f'  RATE LIMIT : {_status(config.rate_limit_enabled, f"{config.rate_limit_per_minute}/min per IP+path store={config.rate_limit_store}")}',
         f'  SOCKETIO   : {_status(config.socketio_enabled, f"async={config.socketio_async_mode}")}',
         f'  TCP        : {_status(config.tcp_enabled, f"{config.tcp_host}:{config.tcp_port}")}',
         f'  UDP        : {_status(config.udp_enabled, f"{config.udp_host}:{config.udp_port}")}',
@@ -85,6 +85,12 @@ def check_production_config(worker_num=None):
         warnings.append('AUTH_ENABLED=true 但 RATE_LIMIT_ENABLED=false：登录接口没有全局限流'
                         '（防爆破锁定按 用户名+IP 隔离，单个 IP 仍可轮换用户名试探），'
                         '建议开启 RATE_LIMIT_ENABLED 或在前置网关做限流')
+    if config.auth_enabled and config.auth_store == 'sqlalchemy' and not config.sqlalchemy_uri:
+        warnings.append('AUTH_STORE=sqlalchemy 但未配置 SQLALCHEMY_URI：应用启动会直接失败'
+                        '（这是有意的 fail-fast；请配置数据库或改用 AUTH_STORE=memory）')
+    if config.rate_limit_enabled and config.rate_limit_store == 'redis' and not config.redis_url:
+        warnings.append('RATE_LIMIT_STORE=redis 但未配置 REDIS_URL：限流计数会退化为进程内内存，'
+                        '多实例/多 worker 下实际配额是单实例的 N 倍')
     if _multi_worker(worker_num) and (config.tcp_enabled or config.udp_enabled):
         warnings.append('TCP/UDP 协议服务器每进程绑定同一端口：多 worker 部署会端口冲突，'
                         '请设置 WORKER_NUM=1 或将协议服务器独立进程部署')

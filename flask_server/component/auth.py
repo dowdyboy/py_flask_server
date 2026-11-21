@@ -38,6 +38,9 @@ _LOGIN_LOCK_KEY_PREFIX = 'auth:login_lock:'
 _LOGIN_FAIL_GLOBAL_PREFIX = 'auth:login_fail_global:'
 # 每个 app 独立的用户存储（create_app 配置注入时 AUTH_STORE 可不同）
 _AUTH_STORE_EXT_KEY = 'flask_server.auth_store'
+# 惰性创建 store 的锁：避免并发首次请求各自 build 一个 MemoryAuthStore，
+# 后写覆盖先写，导致先注册的用户静默丢失（check-then-act 竞态）。
+_AUTH_STORE_CREATE_LOCK = threading.Lock()
 
 # 同一用户名跨 IP 的失败总数达到该值即告警（只观测不阻断）：
 # 按 (用户名, IP) 锁定可防止单点把账号锁死，但分布式撞库仍会绕过单 IP 阈值，
@@ -45,10 +48,30 @@ _AUTH_STORE_EXT_KEY = 'flask_server.auth_store'
 _GLOBAL_FAIL_WARN_THRESHOLD = 50
 
 # 时序均衡：用户不存在时也执行一次 PBKDF2 校验（虚拟哈希），
-# 消除"用户名是否存在"的可观测时序差（防用户名枚举）
-_DUMMY_PASSWORD_HASH = DataEncryptUtil.pbkdf2_hmac(
-    'dummy-timing-equalizer', salt='0' * 32,
-)
+# 消除"用户名是否存在"的可观测时序差（防用户名枚举）。
+#
+# 虚拟哈希必须与**当前配置**的迭代次数一致：若在导入期按默认配置算死，
+# 而请求期通过 create_app(framework_config=Config({'auth_pbkdf2_iterations': 10000}))
+# 注入了更小的迭代数，那么"用户不存在"会烧 600k 次 PBKDF2、比真实校验慢几十倍——
+# 时序差不但没消除，反而变成了可放大的 CPU 消耗点。这里按迭代数缓存、懒计算。
+_DUMMY_HASH_LOCK = threading.Lock()
+_DUMMY_HASH_CACHE: dict = {}
+
+
+def _dummy_password_hash():
+    """按当前 AUTH_PBKDF2_ITERATIONS 取（并缓存）虚拟哈希"""
+    iterations = int(config.auth_pbkdf2_iterations)
+    cached = _DUMMY_HASH_CACHE.get(iterations)
+    if cached is not None:
+        return cached
+    with _DUMMY_HASH_LOCK:
+        cached = _DUMMY_HASH_CACHE.get(iterations)
+        if cached is None:
+            cached = DataEncryptUtil.pbkdf2_hmac(
+                'dummy-timing-equalizer', salt='0' * 32, iterations=iterations,
+            )
+            _DUMMY_HASH_CACHE[iterations] = cached
+    return cached
 
 
 def _client_ip():
@@ -319,8 +342,11 @@ class AuthService:
                     return store
                 cfg = extensions.get(CONFIG_EXT_KEY)
                 if cfg is not None:
-                    store = cls._build_store(cfg)
-                    extensions[_AUTH_STORE_EXT_KEY] = store
+                    with _AUTH_STORE_CREATE_LOCK:
+                        store = extensions.get(_AUTH_STORE_EXT_KEY)
+                        if store is None:
+                            store = cls._build_store(cfg)
+                            extensions[_AUTH_STORE_EXT_KEY] = store
                     return store
         except ImportError:      # Flask 未安装的极端场景：回退进程默认
             pass
@@ -352,6 +378,16 @@ class AuthService:
         # 锁定已过期，清除
         _cache_delete(lock_key)
         return False
+
+    @classmethod
+    def login_lock_remaining(cls, username, client_ip=None):
+        """该 (用户名, IP) 的锁定剩余秒数；未锁定时返回 None（供 429 的 Retry-After 使用）"""
+        client_ip = client_ip or _client_ip()
+        lock_until = _cache_get(_login_lock_key(username, client_ip))
+        if lock_until is None:
+            return None
+        remaining = int(float(lock_until) - time.time())
+        return max(1, remaining)
 
     @classmethod
     def _record_login_fail(cls, username, client_ip):
@@ -407,7 +443,7 @@ class AuthService:
         user = store.get_by_username(username)
         if user is None:
             # 时序均衡：用户不存在也执行等价 PBKDF2 校验（防用户名枚举时序侧信道）
-            DataEncryptUtil.verify_pbkdf2(password, _DUMMY_PASSWORD_HASH)
+            DataEncryptUtil.verify_pbkdf2(password, _dummy_password_hash())
             cls._record_login_fail(username, client_ip)
             return None, 'invalid'
         if not DataEncryptUtil.verify_pbkdf2(password, user.passwd):
@@ -535,6 +571,10 @@ def auth_interceptor():
 def init_auth(app, cfg=None):
     """把全局认证拦截器注册到指定 app（AUTH_ENABLED=false 时不注册）
 
+    启动期会**立即构建用户存储**：AUTH_STORE=sqlalchemy 漏配 SQLALCHEMY_URI 时
+    直接让 create_app 失败，而不是等到第一个注册/登录请求才 500（并把错误推迟到
+    流量进来之后）。同时把 store 预置到 app.extensions，消除首次并发请求的建店竞态。
+
     Args:
         app (Flask): 目标应用
         cfg (Config, optional): 应用的框架配置；缺省用当前 config 代理解析
@@ -542,5 +582,10 @@ def init_auth(app, cfg=None):
     cfg = cfg if cfg is not None else config
     if not cfg.auth_enabled:
         return
+    try:
+        app.extensions[_AUTH_STORE_EXT_KEY] = AuthService._build_store(cfg)
+    except RuntimeError as e:
+        # 配置错误在启动期暴露：容器直接失败退出，比线上首个登录 500 容易定位得多
+        raise RuntimeError(f'认证模块初始化失败：{e}') from e
     app.before_request(auth_interceptor)
     Logger.info('Auth module: global auth interceptor enabled (AUTH_ENABLED=true)')

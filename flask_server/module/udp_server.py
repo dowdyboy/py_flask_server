@@ -73,19 +73,23 @@ class _ThreadingUdpServer(socketserver.ThreadingUDPServer):
             raise
 
     def process_request_thread(self, request, client_address):
+        # 与 TCP 一致：在 handler 线程自己的入口登记/注销，供 stop() 等待在途处理
+        self.protocol._begin_handler()
         try:
             super().process_request_thread(request, client_address)
         finally:
             self.protocol._release_slot()
+            self.protocol._end_handler()
 
 
 class UdpServer(ProtocolServer):
     """UDP 协议服务器（on_message 返回值 bytes 自动回发）"""
 
     def __init__(self, name='udp', host=None, port=None, max_message_length=None,
-                 max_concurrency=None):
+                 max_concurrency=None, shutdown_timeout=None):
         super().__init__(name, max_concurrency=max_concurrency
-                         if max_concurrency is not None else config.udp_max_concurrency)
+                         if max_concurrency is not None else config.udp_max_concurrency,
+                         shutdown_timeout=shutdown_timeout)
         self.host = host if host is not None else config.udp_host
         self.port = port if port is not None else config.udp_port
         self.max_message_length = max_message_length if max_message_length is not None \

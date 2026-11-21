@@ -2,15 +2,16 @@
 
 import importlib.util
 import signal
-import sys
 
 import pytest
 
 
 def _load_wsgi(monkeypatch):
     """以独立模块名加载 wsgi.py，避免与其它入口的同名模块冲突"""
-    monkeypatch.setattr(sys, 'platform', 'win32' if sys.platform == 'win32' else 'linux')
-    spec = importlib.util.spec_from_file_location('wsgi_entry_under_test', 'wsgi.py')
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        'wsgi_entry_under_test', os.path.join(root, 'wsgi.py'))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -187,3 +188,45 @@ def test_server_close_error_does_not_break_shutdown(wsgi_mod, monkeypatch):
     handlers[signal.SIGTERM](signal.SIGTERM, None)
     assert state['triggered'] is True
     assert _FakeTimer.instances[-1].started is True
+
+
+def _stub_main(wsgi_mod, monkeypatch, server, cleaned):
+    """把 main() 的启动依赖全部替换掉，只保留"serve loop → 退出码"的判定逻辑"""
+    monkeypatch.setattr(wsgi_mod, 'create_server', lambda app, **kwargs: server)
+    monkeypatch.setattr(wsgi_mod, 'print_startup_banner', lambda **kwargs: None)
+    monkeypatch.setattr(wsgi_mod, 'start_protocol_servers', lambda: [])
+    monkeypatch.setattr(wsgi_mod, 'start_embedded_task_worker', lambda app=None: None)
+    monkeypatch.setattr(wsgi_mod, '_install_signal_handlers',
+                        lambda server, graceful_timeout=15: {'triggered': False})
+    monkeypatch.setattr(wsgi_mod, '_cleanup_resources', lambda: cleaned.append(1))
+    exits = []
+    monkeypatch.setattr(wsgi_mod.os, '_exit', lambda code: exits.append(code))
+    return exits
+
+
+def test_main_exits_1_when_serve_loop_crashes(wsgi_mod, monkeypatch):
+    """P0-3 回归：serve loop 崩溃必须 exit(1) + 打 traceback，不能伪装成优雅关闭 exit(0)"""
+    class _CrashServer(_FakeServer):
+        def run(self):
+            raise RuntimeError('serve loop boom')
+
+    cleaned = []
+    exits = _stub_main(wsgi_mod, monkeypatch, _CrashServer(), cleaned)
+    wsgi_mod.main()
+
+    assert exits == [1], '崩溃必须以退出码 1 结束（systemd/K8s 才能按失败重启）'
+    assert cleaned == [1], '崩溃退出前仍应释放依赖'
+
+
+def test_main_exits_0_on_normal_shutdown(wsgi_mod, monkeypatch):
+    """正常返回（收到信号后 drain 完成）→ 优雅退出码 0"""
+    class _NormalServer(_FakeServer):
+        def run(self):
+            return None
+
+    cleaned = []
+    exits = _stub_main(wsgi_mod, monkeypatch, _NormalServer(), cleaned)
+    wsgi_mod.main()
+
+    assert exits == [0]
+    assert cleaned == [1]

@@ -695,6 +695,77 @@ def test_head_tail_non_bytes_marker_falls_back_line():
     assert server.framing == 'line'
 
 
+# ---------------- 优雅关闭：等在途 handler ----------------
+
+def test_stop_waits_for_in_flight_handler():
+    """stop() 必须等在途 on_message 处理完：否则 wsgi 会在 handler 仍用 DB/Redis 时
+    dispose 连接池（滚动更新丢消息）。daemon 线程不会被 socketserver join，必须自己等。"""
+    import threading
+    server = TcpServer(host='127.0.0.1', port=0, shutdown_timeout=3)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    @server.on_message
+    def on_message(conn, data, addr):
+        started.set()
+        release.wait(5)
+        finished.set()
+
+    assert server.start() is True
+    port = server.bound_address[1]
+    sock = _connect(port)
+    try:
+        sock.sendall(b'x\n')
+        assert started.wait(3), 'handler 未启动，无法验证关闭等待'
+        stopper = threading.Thread(target=server.stop, daemon=True)
+        stopper.start()
+        stopper.join(0.3)
+        assert stopper.is_alive(), 'stop() 未等在途 handler 结束就返回了'
+        assert not finished.is_set()
+        release.set()
+        stopper.join(3)
+        assert not stopper.is_alive(), 'handler 结束后 stop() 仍未返回'
+        assert finished.is_set()
+    finally:
+        release.set()
+        sock.close()
+        server.stop()
+
+
+def test_stop_timeout_does_not_hang_forever():
+    """handler 卡住时 stop() 到 shutdown_timeout 必须返回（并告警），不能挂死进程退出"""
+    import threading
+    server = TcpServer(host='127.0.0.1', port=0, shutdown_timeout=0.2)
+    started = threading.Event()
+    release = threading.Event()
+
+    @server.on_message
+    def on_message(conn, data, addr):
+        started.set()
+        release.wait(5)
+
+    assert server.start() is True
+    port = server.bound_address[1]
+    sock = _connect(port)
+    handler = _CaptureHandler()
+    logging.getLogger('flask_server').addHandler(handler)
+    try:
+        sock.sendall(b'x\n')
+        assert started.wait(3)
+        begin = time.monotonic()
+        server.stop()
+        elapsed = time.monotonic() - begin
+        assert elapsed < 3, f'stop() 超时后未返回: {elapsed:.2f}s'
+        assert any('still running after shutdown timeout' in r.getMessage()
+                   for r in handler.records), '超时应打出告警'
+    finally:
+        logging.getLogger('flask_server').removeHandler(handler)
+        release.set()
+        sock.close()
+        server.stop()
+
+
 def test_max_message_length_zero_falls_back():
     """直接构造时 max_message_length ≤0 → 回退默认（防 max=0 全部帧"超长"断开）"""
     server = TcpServer(host='127.0.0.1', port=0, max_message_length=0)

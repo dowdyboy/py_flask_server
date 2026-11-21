@@ -24,13 +24,23 @@ class ProtocolServer:
     # 窗口内累计拒绝次数，冷却结束输出一次摘要（与 Redis 冷却告警策略一致）
     _REJECT_WARN_COOLDOWN = 10
 
-    def __init__(self, name, max_concurrency=None):
+    # 关闭时等待在途 handler 的上限（秒）。与入口的优雅关闭窗口配合：
+    # wsgi.py 的 GRACEFUL_TIMEOUT=15s，协议服务器最多等 5s，剩余时间留给 HTTP drain。
+    DEFAULT_SHUTDOWN_TIMEOUT = 5.0
+
+    def __init__(self, name, max_concurrency=None, shutdown_timeout=None):
         self.name = name
         self._handlers = {}
         self._server = None
         self._thread = None
         self._lock = threading.Lock()
         self._atexit_registered = False
+        # 在途 handler 计数：stop() 必须等它们结束再返回，否则调用方（wsgi.py）
+        # 会在 handler 仍使用 DB/Redis 时就把连接池 dispose 掉（滚动更新丢消息）。
+        self._active_handlers = 0
+        self._handler_cv = threading.Condition(threading.Lock())
+        self.shutdown_timeout = (self.DEFAULT_SHUTDOWN_TIMEOUT
+                                 if shutdown_timeout is None else shutdown_timeout)
         # 并发槽位信号量：TCP 连接 / UDP 数据报的处理线程数上限（防线程耗尽 DoS）
         # None 或 ≤0 表示不限制
         self._semaphore = threading.Semaphore(max_concurrency) \
@@ -92,6 +102,48 @@ class ProtocolServer:
         """释放并发处理槽位（与 _acquire_slot 成对使用）"""
         if self._semaphore is not None:
             self._semaphore.release()
+
+    # ---------------- 在途 handler 跟踪（优雅关闭） ----------------
+
+    def _begin_handler(self):
+        """标记一个 handler 开始执行（由处理线程在自己的入口调用）"""
+        with self._handler_cv:
+            self._active_handlers += 1
+
+    def _end_handler(self):
+        """标记一个 handler 结束（幂等；计数不会减到负数）"""
+        with self._handler_cv:
+            if self._active_handlers > 0:
+                self._active_handlers -= 1
+            if self._active_handlers == 0:
+                self._handler_cv.notify_all()
+
+    def _wait_handlers(self, timeout=None):
+        """等待在途 handler 结束；超时返回 False 并告警（不阻塞进程退出）。
+
+        关闭顺序很关键：stop() 先停止 accept / 关闭监听 socket，子类再关闭已建立的
+        连接（让阻塞在 recv 的 handler 退出），最后在这里等业务处理真正跑完。
+        缺少这一步时，wsgi.py 会在 handler 仍访问 DB/Redis 时 dispose 连接池。
+        """
+        if timeout is None:
+            timeout = self.shutdown_timeout
+        deadline = time.time() + max(0.0, float(timeout))
+        with self._handler_cv:
+            while self._active_handlers > 0:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                self._handler_cv.wait(remaining)
+            pending = self._active_handlers
+        if pending:
+            Logger.warn(f'{self.name}: {pending} handler(s) still running after '
+                        f'shutdown timeout ({timeout}s); forcing exit')
+            return False
+        return True
+
+    def _stop_handlers(self):
+        """关闭在途 I/O 并等待 handler 退出（子类可先断开连接，再调用父类等待）"""
+        self._wait_handlers()
 
     def _dispatch(self, hook, args, ctx=''):
         """执行用户处理器并捕获异常：异常 → Logger.error(traceback) → on_error 钩子。
@@ -167,7 +219,13 @@ class ProtocolServer:
         return True
 
     def stop(self):
-        """停止服务器（幂等）：shutdown → server_close → join 后台线程"""
+        """停止服务器（幂等）：shutdown → server_close → 关连接 → 等 handler 退出
+
+        最后一步是必须的：处理线程是 daemon 线程，socketserver 的 ThreadingMixIn
+        不会 join 它们。只关 socket 只能让阻塞在 recv 的 handler 退出，已经在
+        on_message 里访问 DB/Redis 的 handler 会继续跑；若此时入口立即 dispose
+        连接池，就会出现在途消息处理到一半依赖已关闭的问题。
+        """
         with self._lock:
             server = self._server
             thread = self._thread
@@ -185,6 +243,11 @@ class ProtocolServer:
             Logger.error(f'{self.name} server_close error: {e}')
         if thread is not None and thread.is_alive():
             thread.join(timeout=5)
+        # 关闭已建立的连接 / 等在途 handler 结束（顺序由子类决定，见 _stop_handlers）
+        try:
+            self._stop_handlers()
+        except Exception as e:
+            Logger.error(f'{self.name} handler shutdown error: {e}')
         Logger.info(f'{self.name} stopped')
 
     def _create_server(self):

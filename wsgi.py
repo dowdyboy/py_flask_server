@@ -63,7 +63,7 @@ def _cleanup_resources():
     try:
         from flask_server.module import redis_cache
         if redis_cache is not None:
-            redis_cache.client.close()
+            redis_cache.close()
             Logger.info('Redis connection closed')
     except Exception as e:
         Logger.warn(f'Redis close error: {e}')

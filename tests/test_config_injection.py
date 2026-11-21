@@ -154,14 +154,18 @@ def test_auth_store_is_per_app():
         assert AuthService._get_store().get_by_username(username) is None
 
 
-def test_auth_store_sqlalchemy_without_uri_per_app():
-    """per-app store：AUTH_STORE=sqlalchemy 漏配 URI 时仍给出清晰报错，不被其它 app 的 memory store 掩盖"""
-    from flask_server.component.auth import AuthService
+def test_auth_store_sqlalchemy_without_uri_fails_at_startup():
+    """AUTH_STORE=sqlalchemy 漏配 URI 必须在 create_app 期间失败（而不是首个请求才 500）"""
+    with pytest.raises(RuntimeError, match='AUTH_STORE=sqlalchemy 需要配置 SQLALCHEMY_URI'):
+        _app(auth_enabled=True, auth_store='sqlalchemy', sqlalchemy_uri=None)
 
-    app = _app(auth_enabled=True, auth_store='sqlalchemy', sqlalchemy_uri=None)
-    with app.app_context():
-        with pytest.raises(RuntimeError, match='AUTH_STORE=sqlalchemy 需要配置 SQLALCHEMY_URI'):
-            AuthService._get_store()
+
+def test_auth_store_is_created_at_startup():
+    """AUTH_ENABLED=true 时启动期就预建 store：消除首次并发请求的 check-then-act 竞态"""
+    from flask_server.component.auth import _AUTH_STORE_EXT_KEY
+
+    app = _app(auth_enabled=True, auth_store='memory')
+    assert app.extensions.get(_AUTH_STORE_EXT_KEY) is not None
 
 
 def test_proxy_private_attribute_raises():

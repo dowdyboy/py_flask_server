@@ -95,8 +95,9 @@ def _make_post_worker_init(worker_num):
     注意：DB 连接池的清理对所有 worker 数都要做（包括单 worker），它是 fork 安全问题，
     与协议服务器无关。
     """
-    # "只打一次告警"用闭包标志而不是 worker.age：gunicorn 的 age 是递增的派生计数
-    # （首个 worker 已经是 1），用 `age == 0` 判断永不成立，告警永远不会打印。
+    # 用闭包标志避免每个 worker 都重复告警——注意闭包在 master 创建、fork 后
+    # 每个 worker 各持一份副本，所以实际效果是"每个 worker 首次进入时各告警一次"
+    # （不是全进程只一次）。真正的"只一次"需要写文件/环境标记，收益不大。
     warned = {'multi_worker_skip': False}
 
     def _post_worker_init(worker):

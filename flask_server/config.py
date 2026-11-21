@@ -169,8 +169,9 @@ class Config:
         self.udp_enabled = os.environ.get('UDP_ENABLED', 'false').lower() in ('1', 'true', 'yes')
         self.udp_host = os.environ.get('UDP_HOST', '0.0.0.0')
         self.udp_port = _parse_int('UDP_PORT', 9001)
-        # 单数据报大小上限（recvfrom 缓冲大小；数据报超过此大小会被操作系统截断；
-        # ≤0 非法回退默认，否则 recvfrom(0) 收到空数据报）
+        # 单数据报大小上限（recvfrom 缓冲大小）：超过此大小时 Linux 截断后仍交给 handler，
+        # Windows 因 WSAEMSGSIZE 整包丢弃（handler 收不到回调）；
+        # ≤0 非法回退默认，否则 recvfrom(0) 收到空数据报
         self.udp_max_message_length = _parse_int('UDP_MAX_MESSAGE_LENGTH', 64 * 1024)
         if self.udp_max_message_length <= 0:
             print(f'[Config WARNING] UDP_MAX_MESSAGE_LENGTH={self.udp_max_message_length!r} '

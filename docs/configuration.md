@@ -96,7 +96,7 @@
 | `TASK_STATUS_TTL` | `86400` | 任务状态保留时长（秒，Redis 后端为 key TTL） |
 | `TASK_DEAD_LETTER_MAX` | `1000` | 死信队列上限（超出丢弃最旧的） |
 | `TASK_STATUS_MAX` | `10000` | 内存后端状态表上限（防内存无界增长） |
-| `TASK_RESERVE_TIMEOUT` | `2` | 单次出队阻塞时长（秒）：越小空转越频繁，越大停止响应越慢 |
+| `TASK_RESERVE_TIMEOUT` | `2` | 单次出队阻塞时长（秒）：越小空转越频繁，越大停止响应越慢。Redis 后端的 socket 读超时会自动按此值放大（`max(5, 该值+2)`），不会因阻塞时长超过 socket 超时而误判后端不可用 |
 | `TASK_WORKER_EMBEDDED` | `false` | 是否在 Web 进程内嵌任务消费者（开发便利；生产用 `scripts/worker.py`） |
 
 ## 数据库

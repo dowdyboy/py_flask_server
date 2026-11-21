@@ -3,7 +3,51 @@
 本模板项目的变更记录。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.6.1] - 2026-11-21
+
+### 修复（第三轮审计）
+
+- **协议服务器优雅关闭不等待在途 handler**：`stop()` 之前只关连接、不 join 处理线程
+  （`ThreadingMixIn` 不跟踪 daemon 线程），`wsgi.py` 紧接着就 `db.engine.dispose()` /
+  关闭 Redis —— 滚动更新时正在执行的 `on_message` 会用到已释放的依赖，TCP 消息无重投。
+  现在 `ProtocolServer` 记录在途 handler 计数：先停止 accept、关闭连接，再有界等待
+  （默认 5s，超时打 WARN）；TCP/UDP 各有回归用例
+- **任务队列入队状态写失败被当成入队失败**：`RedisTaskQueue.enqueue` 在 `XADD/ZADD`
+  已成功后若状态写入失败会抛 `TaskQueueUnavailable`，调用方重试即**重复执行**。改为
+  `_write_status_best_effort`；同时把 `to_json()` 提前，不可序列化抛 `ValueError`
+  （不再伪装成"Redis 不可用"），内存后端也补了同样的 JSON 校验
+- **retry/dead 的 MULTI/EXEC 仍有丢任务窗口**：Redis 事务运行期错误（`WRONGTYPE`/OOM）
+  不回滚已执行命令。改为 Lua 原子脚本，且顺序固定为"先写目标结构、再 ACK/DEL"——
+  失败方向只能是重复投递（at-least-once），不会出现"已 ACK 但延迟/死信没写进去"
+- **`TASK_RESERVE_TIMEOUT` 与 Redis socket 超时耦合**：阻塞读超过 `socket_timeout=5s`
+  时，空闲队列的 `reserve()` 会被 socket 超时打断 → 误判后端不可用。socket 读超时改为
+  按 `max(5, TASK_RESERVE_TIMEOUT+2)` 自动放大
+- **崩溃回收不尊重重试预算**：`reclaim_stale` 之前每次回收都 `retry()`+1 attempts，
+  慢任务/崩溃 worker 会烧光重试预算或无限重投；现在预算耗尽直接进死信、退避按
+  `backoff * 2**attempts` 增长、异常打 WARN 且失败不推进节流时间戳
+- **`TaskWorker.stop()` 超时后丢线程引用**：join 超时后无条件 `clear()`，而 `start()`
+  会 `_stop.clear()` 让残留线程复活成 N+1 个消费者。现在只移除已退出线程、存活线程
+  保留引用并告警；`start()` 拒绝在有存活线程时重启
+- **时序均衡虚拟哈希与注入配置脱钩**：导入期按默认迭代数算死的 dummy 哈希，注入更小
+  `AUTH_PBKDF2_ITERATIONS` 后"用户不存在"反而慢几十倍。改为按当前配置懒计算并缓存
+- **`AUTH_STORE=sqlalchemy` 漏配 URI 推迟到首个请求才 500**：`create_app` 现在启动期
+  构建用户存储，配置错误直接失败（fail-fast），并预置到 `app.extensions` 消除首次
+  并发请求的 check-then-act 竞态；banner 增加对应自检
+- **`RATE_LIMIT_STORE=redis` 漏配 `REDIS_URL` 静默退化内存**：启动期告警 + banner 显示
+  `store=`，避免"多实例准确"的配置承诺无声落空
+- **429 告警可被用于日志放大**：限流日志原样拼接完整请求路径且逐条 WARN；现在路径与
+  缓存键一样做 SHA-256 截断，告警按 5s 窗口限频并汇总被抑制条数
+- **Redis 黑洞时登出阻塞**：`delete()` 为绕过冷却期会真连普通客户端（3s connect +
+  3s read），登出/吊销最多阻塞 ~6s。新增独立的 0.5s 超时吊销客户端，失败语义不变
+- **429 `Retry-After` 返回完整锁定窗口**：改为返回锁定剩余秒数（新增
+  `AuthService.login_lock_remaining()`）
+- 文档/注释同步：`logger.py` 的 `LOG_LEVEL`、`.env.example` 与 `config.py` 的 UDP
+  截断/丢弃平台差异、`protocol-servers.md` 的多 worker 端口冲突表述、README 的 ruff
+  覆盖范围、`SECURITY.md` 混用的 ARMv7 路径、`getting-started.md` 的 `UserPO` 重复
+  定义示例、`CHANGELOG` 的 `RATE_LIMIT_WINDOW` 说法；`pip-audit` 进入 dev 依赖，
+  `make e2e` 补跑 `probe_logging.py`
+- 回归补测：`wsgi.main()` 崩溃退出码（第一轮 P0-3）、`verify_real_env` 迁移/库名护栏
+  （第一轮 P0-5）、`start_protocol_servers` 半启动回滚、内嵌 worker 降级路径
 
 ### 修复（第二轮审计）
 
@@ -119,8 +163,8 @@
 - **OpenAPI 补充错误响应**：controller 用 `@blp.alt_response` 声明 400/401/429/503 并统一
   引用 `GraceResult` schema。此前 `/openapi.json` 只有 200/422/default，用这份 spec 生成的
   SDK 会把错误响应当成未知
-- **429 补 `Retry-After`**：限流按窗口长度（`RATE_LIMIT_WINDOW`）、登录锁定按锁定秒数写入
-  响应头（RFC 6585），客户端可据此退避而不是盲目重试
+- **429 补 `Retry-After`**：限流按窗口长度（`rate_limit.py` 的常量 `RATE_LIMIT_WINDOW=60s`，
+  不可用环境变量配置）、登录锁定按锁定秒数写入响应头（RFC 6585），客户端可据此退避而不是盲目重试
 - **生产环境日志黑洞**：`staging`/`production` 预设关闭控制台日志，而未设置
   `LOG_FILE_PATH` 时也不写文件，`Logger.init()` 曾一个 handler 都不加（`propagate=False`），
   INFO 全部被静默丢弃。现在文件与控制台都关闭时兜底启用控制台 handler 并打 WARNING；

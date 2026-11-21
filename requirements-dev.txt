@@ -7,3 +7,5 @@ ruff>=0.16.0,<1.0
 mypy>=2.0.0,<3.0
 # 压测脚本（scripts/benchmark.py）使用；不属于运行时依赖，避免生产镜像膨胀
 requests>=2.32.5,<3.0
+# 依赖安全审计（make audit / CI security job）
+pip-audit>=2.7,<3.0
