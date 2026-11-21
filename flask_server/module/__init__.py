@@ -36,11 +36,17 @@ def start_protocol_servers():
     """启动配置启用的协议服务器（TCP/UDP），返回已启动的服务器名称列表。
 
     由入口（server.py / wsgi.py / wsgi_gunicorn.py）调用；
-    处理器在 flask_server/handler/ 下注册（自动导入），无 on_message 处理器时告警不启动。
+    处理器在 flask_server/handler/ 下注册（此处显式自动导入，不再依赖包导入副作用），
+    无 on_message 处理器时告警不启动。
     """
     from ..util import Logger
-    started = []
+    started: list = []
     try:
+        if not (config.tcp_enabled or config.udp_enabled):
+            return started
+        # 0.8：`import flask_server` 不再加载 handler；协议服务器启动时显式扫描一次
+        from ..handler import auto_import_handlers
+        auto_import_handlers()
         if config.tcp_enabled and tcp_server.start():
             started.append('tcp')
         if config.udp_enabled and udp_server.start():

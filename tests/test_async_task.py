@@ -277,3 +277,178 @@ def test_watch_process_none_no_crash():
 
     assert task.watch_process(None, lambda *args: callbacks.append(args)) is None
     assert callbacks == []
+
+
+# ------------------------- 0.8：失败路径 / 回调契约 -------------------------
+
+
+def test_async_run_func_and_do_run_func_execute():
+    """do_run_func/async_run_func 都在独立线程执行普通可调用对象"""
+    import asyncio
+
+    from flask_server.util.async_task_util import async_run_func, do_run_func
+
+    out = []
+
+    def record(**kwargs):
+        out.append(kwargs['x'])
+
+    asyncio.run(async_run_func(record, x=1))
+    do_run_func(record, x=2)
+    assert out == [1, 2]
+
+
+def test_async_run_func_propagates_exception():
+    import asyncio
+
+    import pytest as _pytest
+
+    from flask_server.util.async_task_util import async_run_func
+
+    def boom(**kwargs):
+        raise ValueError('boom')
+
+    with _pytest.raises(ValueError):
+        asyncio.run(async_run_func(boom))
+
+
+def test_async_run_command_start_failure_calls_on_error():
+    """命令根本起不来（文件不存在）→ on_error 收到异常对象，不裸抛"""
+    import asyncio
+
+    from flask_server.util.async_task_util import async_run_command
+
+    errors = []
+    asyncio.run(async_run_command(
+        ['definitely-not-a-real-command-xyz'], 'p',
+        on_success=None, on_error=lambda param, result: errors.append((param, result)),
+    ))
+    assert errors and errors[0][0] == 'p'
+    assert isinstance(errors[0][1][0], FileNotFoundError)
+
+
+def test_async_run_command_none_callbacks_are_safe():
+    """on_success/on_error 为 None 时不抛异常"""
+    import asyncio
+    import sys
+
+    from flask_server.util.async_task_util import async_run_command
+
+    asyncio.run(async_run_command([sys.executable, '-c', 'print(1)'], None, None, None))
+
+
+def test_submit_cmd_task_and_func_task_forward_to_executor(monkeypatch):
+    """两个静态入口都走 AsyncTaskUtil.executor.submit（便于统一限流/替换）"""
+    captured = []
+
+    def fake_submit(fn, *args, **kwargs):
+        captured.append((fn.__name__, args, kwargs))
+        return 'future'
+
+    monkeypatch.setattr(AsyncTaskUtil.executor, 'submit', fake_submit)
+    assert AsyncTaskUtil.submit_cmd_task(['echo', 'x'], extra_param='p') == 'future'
+    assert AsyncTaskUtil.submit_func_task(lambda: None, a=1) == 'future'
+    assert captured[0][0] == 'do_run_cmd'
+    assert captured[1][0] == 'do_run_func'
+    assert captured[1][2] == {'a': 1}
+
+
+def test_bounded_executor_submit_failure_releases_semaphore():
+    """底层 executor.submit 抛异常时必须释放信号量（否则容量永久泄漏）"""
+    import pytest as _pytest
+
+    class _BoomExecutor:
+        def submit(self, *args, **kwargs):
+            raise RuntimeError('executor closed')
+
+    ex = BoundedExecutor(max_workers=1, max_pending=1)
+    ex._executor = _BoomExecutor()
+    with _pytest.raises(RuntimeError):
+        ex.submit(lambda: None)
+    assert ex._semaphore.acquire(blocking=False) is True
+    ex._semaphore.release()
+
+
+def test_subprocess_task_interface_error_handlers_stop_task():
+    """默认错误回调应记录日志并停止 task（避免线程/子进程继续跑）"""
+
+    class _Task:
+        def __init__(self):
+            self.stopped = 0
+
+        def stop(self):
+            self.stopped += 1
+
+    worker = SubprocessTaskInterface()
+    task = _Task()
+    worker.on_thread_func_error(RuntimeError('x'), None, task)
+    worker.on_subprocess_func_error(RuntimeError('y'), None, task)
+    assert task.stopped == 2
+
+
+def test_subprocess_task_start_failure_raises_with_hint(monkeypatch):
+    """start 失败（线程创建异常）应记录提示并上抛，而不是留下半个任务"""
+    import pytest as _pytest
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError('cannot start thread')
+
+    monkeypatch.setattr('flask_server.util.async_task_util.SafeThread', _boom)
+    task = SubprocessTask(_BlockingWorker())
+    with _pytest.raises(RuntimeError, match='cannot start thread'):
+        task.start()
+
+
+def test_subprocess_task_stop_survives_queue_and_handler_errors(monkeypatch):
+    """stop() 中 put/join/terminate 失败只记录日志，不能把关闭流程打断"""
+
+    class _BadQueue:
+        def put(self, item):
+            raise RuntimeError('queue closed')
+
+    class _BadThread:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            raise RuntimeError('join failed')
+
+    class _BadProcess:
+        def is_alive(self):
+            return True
+
+        def terminate(self):
+            raise RuntimeError('terminate failed')
+
+        def join(self, timeout=None):
+            raise RuntimeError('join failed')
+
+    task = SubprocessTask(_BlockingWorker())
+    task.thread_queue = _BadQueue()
+    task.subprocess_queue = _BadQueue()
+    task.thread_handler = _BadThread()
+    task.subprocess_handler = _BadProcess()
+    task.stop()   # 不应抛异常
+
+
+def test_watch_process_nonzero_exit_calls_callback(monkeypatch):
+    """子进程非 0 退出 → 触发 on_subprocess_func_error(exitcode, p, task)"""
+    import flask_server.util.async_task_util as mod
+
+    monkeypatch.setattr(mod.time, 'sleep', lambda _: None)
+
+    class _P:
+        exitcode = 2
+
+        def __init__(self):
+            self.calls = 0
+
+        def is_alive(self):
+            self.calls += 1
+            return self.calls == 1   # 第一次存活，第二次退出
+
+    task = SubprocessTask(_BlockingWorker())
+    seen = []
+    task.watch_process(_P(), lambda *args: seen.append(args))
+    assert seen and seen[0][0] == 2
+    assert seen[0][2] is task

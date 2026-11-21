@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flask-server"
-version = "0.7.0"
+version = "0.8.0"
 description = "A production-grade Flask web service scaffold with layered architecture"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -146,8 +146,9 @@ ignore = ["E501"]
 # 刻意设计豁免：
 # - flask_server/__init__.py：import * 聚合导出工具/模块（加载顺序机制）
 # - flask_server/model/__init__.py：同上
-# - flask_server/app.py：eventlet monkey_patch 必须先于 socket 相关导入（E402）
+# - flask_server/factory.py：eventlet monkey_patch 必须先于 socket 相关导入（E402）
+# - flask_server/factory.py：eventlet monkey_patch 必须先于 socket 相关导入（E402）
 [tool.ruff.lint.per-file-ignores]
 "flask_server/__init__.py" = ["F403"]
 "flask_server/model/__init__.py" = ["F403"]
-"flask_server/app.py" = ["E402"]
+"flask_server/factory.py" = ["E402"]

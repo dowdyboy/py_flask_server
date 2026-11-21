@@ -2,7 +2,7 @@
 #
 # 启用步骤：
 #   1. pip install APScheduler
-#   2. 将下方代码合并到 flask_server/app.py（或独立模块并在 __init__.py 导入）
+#   2. 将下方代码合并到 flask_server/factory.py（或独立模块并在 create_app 中调用）
 #   3. 注意事项：
 #      - gunicorn 多 worker 下每个进程都会运行调度器 → 任务会重复执行；
 #        生产环境建议单 worker 运行调度器，或用分布式锁（如 Redis SETNX）保证单次执行

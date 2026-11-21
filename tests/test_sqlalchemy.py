@@ -131,6 +131,8 @@ def test_reflect_with_existing_user_table_imports_ok(tmp_path):
         "os.environ['LOG_FILE_PATH'] = ''\n"
         f"sys.path.insert(0, {PROJECT_ROOT!r})\n"
         "import flask_server\n"
+        "from flask_server.factory import create_app\n"
+        "create_app()\n"
         "from flask_server.module import sqlalchemy\n"
         "tables = set(sqlalchemy().metadata.tables.keys())\n"
         "assert 'user' in tables, tables\n"

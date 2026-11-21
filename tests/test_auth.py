@@ -163,7 +163,7 @@ def test_auth_interceptor_blocks_unexempt_api(client, monkeypatch, fresh_store):
 
 def test_login_required_decorator(fresh_store):
     """login_required：无 token 时返回 401 响应"""
-    from flask_server.app import app
+    from flask_server import app
     from flask_server.component.auth import login_required
 
     @login_required

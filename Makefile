@@ -25,13 +25,13 @@ audit:              ## 依赖安全审计（pip-audit）
 	pip-audit -r requirements.txt
 
 migrate:            ## 生成数据库迁移脚本（需配置 SQLALCHEMY_URI）：make migrate m="create users table"
-	FLASK_APP=flask_server.app:app flask db migrate -m "$(m)"
+	FLASK_APP=flask_server.wsgi:app flask db migrate -m "$(m)"
 
 upgrade:            ## 执行数据库迁移
-	FLASK_APP=flask_server.app:app flask db upgrade
+	FLASK_APP=flask_server.wsgi:app flask db upgrade
 
 init:               ## 初始化迁移目录（首次）
-	FLASK_APP=flask_server.app:app flask db init
+	FLASK_APP=flask_server.wsgi:app flask db init
 
 scaffold:           ## 生成新项目脚手架：make scaffold p=my_project author="Your Name"
 	python scripts/scaffold.py $(p) --author "$(author)"

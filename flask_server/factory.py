@@ -20,25 +20,20 @@ from werkzeug.exceptions import HTTPException, UnprocessableEntity
 from flask_smorest import Api
 from .util import Logger, GraceResult, CommonUtil
 
-# Flask App 工厂
+# Flask 应用工厂
 #
-# 为什么要有 create_app()：
-#   历史上所有注册（CORS / 拦截器 / 指标 / 路由 / 蓝图）都写在模块导入副作用里，
-#   于是"import flask_server"就等于"建好唯一的那个 app"。这让测试无法替换配置、
-#   也无法同进程跑两个实例。
+# 0.8 起**导入本模块不会创建 app**（旧行为是模块底部 `app = create_app()`，
+# 任何 import 都会完整装配：连库、扫描 controller/handler、初始化日志 handler）。
 #
-#   现在：`create_app()` 显式创建并装配一个 app；模块底部的 `app = create_app()`
-#   保留原有用法（`from flask_server import app` / `flask_server.app:app`）不变。
-#
-# ⚠️ 遗留限制（别被"工厂化"误导）：`flask_server/__init__.py` 仍然 `from .app import ...`，
-#   而本模块底部会执行 `app = create_app()`。因此**任何** `import flask_server.xxx` 都会
-#   触发一次完整装配（含按配置连接 MySQL / Redis、初始化日志 handler）。
-#   也就是说 `from flask_server.util import Logger` 依然会把应用初始化一遍——工厂化解决的是
-#   "无法替换配置 / 无法多实例"，不是"导入零副作用"。要彻底消除，需要把模块级 app 从包的
-#   导入链里摘出（会破坏 `from flask_server import app` 兼容用法），暂不做。
+# 现在的入口：
+#   - WSGI/容器：`from flask_server.wsgi import app`（gunicorn/flask CLI 用
+#     `flask_server.wsgi:app`）；
+#   - 包的惰性兼容入口：`from flask_server import app` 仍可用，但只有**首次访问**才装配；
+#   - 后台 worker/CLI：`create_core_app()` 只装配配置 + DB，不加载 HTTP 栈；
+#   - 多实例/测试：直接调用 `create_app(...)`。
 #
 # 仍然是**进程级单例**的部分（有意为之，见 create_app 的文档字符串）：
-#   SQLAlchemy 的 db / Flask-Migrate、SocketIO、Prometheus 指标对象。
+#   SQLAlchemy 的 db / Flask-Migrate、SocketIO、Prometheus 指标对象、日志 handler。
 
 # X-Request-Id 清洗上限：控制字符会污染日志格式（log forging 面），
 # 超长值会撑大每条日志与响应头；截断 + 清洗后仅保留可打印字符
@@ -455,7 +450,29 @@ def create_app(app_config=None, framework_config=None):
     return app
 
 
-# 模块级默认实例（保留 `from flask_server import app` / `flask_server.app:app` 用法）
-app = create_app()
-api = app.api
-socketio = app.socketio
+def create_core_app(framework_config=None):
+    """创建"最小应用"：配置 + SQLAlchemy/Migrate，不含路由、组件与请求钩子。
+
+    供后台 worker、CLI、脚本使用：任务/服务代码仍可在 `with app.app_context()` 下
+    使用 `current_app` / `db.session`，但不需要装配 HTTP 栈（CORS/OpenAPI/限流/认证/
+    指标/控制器），也不会扫描 controller/handler 目录。
+
+    Args:
+        framework_config (Config, optional): 框架配置；不传则用进程默认配置。
+
+    Returns:
+        Flask: 只装配了配置与数据库的最小应用实例。
+    """
+    from .config import CONFIG_EXT_KEY, default_config
+    from .module import init_SQLAlchemy, init_Migrate
+
+    cfg = framework_config if framework_config is not None else default_config
+    app = Flask(__name__)
+    app.config['SECRET_KEY'] = cfg.secret_key
+    app.extensions[CONFIG_EXT_KEY] = cfg
+    # worker 不需要反射（反射会真实连库且拖慢启动）；DB 仍按 SQLALCHEMY_URI 初始化，
+    # 任务里第一次查询时才真正建立连接。
+    init_SQLAlchemy(app, cfg, reflect=False)
+    init_Migrate(app)
+    app.framework_config = cfg
+    return app

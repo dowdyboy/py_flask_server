@@ -29,7 +29,8 @@ def _check_platform():
 
 _check_platform()
 
-from flask_server import app, config   # noqa: E402
+from flask_server.wsgi import app   # noqa: E402
+from flask_server import config     # noqa: E402
 
 
 def _worker_class():

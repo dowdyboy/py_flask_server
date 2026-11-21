@@ -1,9 +1,12 @@
 from werkzeug.serving import is_running_from_reloader
-from flask_server import app, socketio, config
+from flask_server.wsgi import app
+from flask_server import config
 from flask_server.module import (
     start_embedded_task_worker, start_protocol_servers, stop_protocol_servers,
 )
 from flask_server.util.banner import print_startup_banner
+
+socketio = app.socketio
 
 
 def should_start_protocol_servers():

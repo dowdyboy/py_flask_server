@@ -2,13 +2,16 @@ import os
 import signal
 import threading
 
-from flask_server import app, config, socketio
+from flask_server.wsgi import app
+from flask_server import config
 from flask_server.module import (
     start_embedded_task_worker, start_protocol_servers, stop_protocol_servers,
 )
 from flask_server.util import Logger
 from flask_server.util.banner import print_startup_banner
 from waitress.server import create_server
+
+socketio = app.socketio
 
 
 # waitress 是纯 WSGI 服务器，不支持 WebSocket；启用 SocketIO 时给出明确警告

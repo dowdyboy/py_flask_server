@@ -15,8 +15,8 @@ pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term
 认证模块（Redis 存储降级与内存兜底、防爆破、refresh 轮换、登出吊销 refresh、入参限长）、
 Prometheus 指标、缓存降级恢复（含故障/脏数据自愈）、事务提交/回滚（CI 含真实 MySQL）、
 路径穿越防护、反射与声明式模型共存、雪花 ID 并发、SubprocessTask 哨兵停止等
-**716 个用例**。覆盖率快照（2026-11-21，`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term`）：
-**90.86%**，门槛 85%（快照仅供参考，随代码演进会变）。覆盖率包含 `flask_server/` 与生产入口
+**735 个用例**。覆盖率快照（2026-11-21，`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term`）：
+**91.76%**，门槛 85%（快照仅供参考，随代码演进会变）。覆盖率包含 `flask_server/` 与生产入口
 `wsgi.py`（`server.py`/`wsgi_gunicorn.py` 依赖 Windows 不支持的运行时，不计入）。
 
 真实环境自检（云服务器 MySQL/Redis 全链路验证）：
@@ -102,8 +102,9 @@ make e2e                     # 全部（先打印前置条件，任一脚本失�
 
 > 分层/生命周期/进程模型的完整说明见 [架构说明](architecture.md)。
 
-`flask_server/app.py` 提供 `create_app()`，模块底部的 `app = create_app()` 保留原有用法
-（`from flask_server import app` / `FLASK_APP=flask_server.app:app` 都不变）。
+`flask_server/factory.py` 提供 `create_app()`；模块级实例只在 `flask_server/wsgi.py` 创建
+（`from flask_server import app` 仍可用，但改为首次访问时才创建：
+`from flask_server.wsgi import app` / `FLASK_APP=flask_server.wsgi:app`）。
 
 ```python
 from flask_server import create_app
@@ -238,7 +239,7 @@ python scripts/benchmark.py --duration 10 --endpoints /api/v1/healthz,/hello
 
 ```python
 # 1. pip install opentelemetry-sdk opentelemetry-instrumentation-flask
-# 2. flask_server/app.py 中初始化：
+# 2. flask_server/factory.py 中初始化：
 from opentelemetry import trace
 from opentelemetry.instrumentation.flask import FlaskInstrumentor
 from opentelemetry.sdk.trace import TracerProvider

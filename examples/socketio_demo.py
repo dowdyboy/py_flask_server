@@ -9,7 +9,8 @@
 #      - 服务端回事件 'server_msg'
 #   5. 生产环境：waitress 不支持 WebSocket，需使用 wsgi_gunicorn.py（Linux + eventlet）
 #
-# 接入工程：将下方 handler 合并到 flask_server/app.py（socketio 初始化之后）。
+# 接入工程：将下方 handler 合并到 flask_server/factory.py（socketio 初始化之后），
+# 或在独立模块里暴露 init_socketio_handlers(app) 并在 create_app 中调用。
 
 from flask import request
 

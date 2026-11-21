@@ -55,7 +55,7 @@ examples/
    写入（并配置 `need_auth_path_list` / `need_user_key_path_list`）。未合并拦截器时这些
    接口会因 KeyError 返回 400。
 7. **`@app.route` 与 create_app 注入**：`examples/controller/` 下的样例用
-   `from flask_server.app import app` 把路由挂到**模块级单例**上，仅适用于默认单 app。
+   `from flask_server import app` 把路由挂到**模块级单例**上，仅适用于默认单 app。
    若要用 `create_app(framework_config=...)` 隔离配置，请改成模块级 `def register(app)` 钩子
    （见 `flask_server/controller/hello_controller.py`）或 flask-smorest 的 `Blueprint`。
 8. **协议示例的运行方式**：`examples/protocol/tcp_echo_handler.py` 等文件应放在

@@ -393,11 +393,14 @@ finally:
 
 ## 仍保留 / 下一轮候选
 
-- **导入期副作用**（`import flask_server` 即 `create_app()`）与进程级单例（db/metrics/logger）
-  仍是最大架构债；0.8 建议拆出 `flask_server/wsgi.py:app`，让 CLI/worker 不再装配整个应用。
+- **0.8 已完成的架构项**：`import flask_server` 不再创建 app；入口拆分到
+  `flask_server/wsgi.py`；worker 使用 `create_core_app()`；handler 扫描改为按需触发。
+- **0.9 候选**：`db` / Prometheus 指标对象 / 日志 handler 仍是进程级单例（当前通过多进程部署
+  隔离）；要支持同进程多套完全独立的 DB/指标/日志，需要继续把它们收进 app 容器。
 - `reclaim_stale` 没有 handler 心跳，长任务只能靠调大 `TASK_VISIBILITY_TIMEOUT`。
 - token 索引是"尽力而为"：跨 worker 的批量吊销依赖 `REDIS_URL`。
 - 测试仍未覆盖：`server.py`/`wsgi_gunicorn.py`、真实 Docker/ARMv7、`verify_real_env` 的
   `--force-migrations` 成功路径、`TASK_RESERVE_TIMEOUT` 实机 Redis 行为。
-- `sqlite.py`、`async_task_util.py` 覆盖率仍低于其它模块（75% / 77%），失败路径值得补测。
+- `sqlite.py`、`async_task_util.py` 的覆盖率已在 0.8 补到 92% / 95%；`module/__init__.py`
+  （84%）与 `service/__init__.py`（未被导入）仍有少量空白。
 

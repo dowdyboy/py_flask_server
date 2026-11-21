@@ -13,7 +13,7 @@ import os
 import subprocess
 import sys
 
-FLASK_APP = 'flask_server.app:app'
+FLASK_APP = 'flask_server.wsgi:app'
 
 MIGRATE_COMMANDS = {
     'init': 'init',

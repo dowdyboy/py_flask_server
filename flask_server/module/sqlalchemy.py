@@ -37,8 +37,14 @@ def _bound_database_uri():
 
 
 # 初始化SQLAlchemy对象，并根据配置决定是否反射数据库表结构
-def init_SQLAlchemy(app, cfg=None):
+def init_SQLAlchemy(app, cfg=None, reflect=None):
     """为进程绑定唯一的 SQLAlchemy 实例（**进程级单例**）。
+
+    Args:
+        app (Flask): 目标应用
+        cfg (Config, optional): 框架配置；缺省用进程默认配置
+        reflect (bool, optional): 是否反射表结构；None 用 cfg.db_reflect_on_start。
+            worker/CLI 的 create_core_app 会传 False：不需要反射，避免启动时真实连库
 
     已知约束（刻意，不是 bug）：Flask-SQLAlchemy 的扩展对象只能 `init_app` 一次绑定，
     因此同一进程内 create_app() 多次调用时：
@@ -92,7 +98,8 @@ def init_SQLAlchemy(app, cfg=None):
     db = SQLAlchemy(app)
     _bound_uri = cfg.sqlalchemy_uri
     setattr(db, _BOUND_URI_ATTR, _bound_uri)
-    if cfg.db_reflect_on_start:
+    should_reflect = cfg.db_reflect_on_start if reflect is None else reflect
+    if should_reflect:
         # 容错：反射失败（如 DB 短暂不可达）不应导致应用启动崩溃，
         # engine 本身为惰性连接，首个查询时才真正连库
         try:

@@ -13,7 +13,7 @@ def test_copy_template_excludes_git_and_caches(tmp_path):
     dst = str(tmp_path / 'proj')
     copy_template(PROJECT_ROOT, dst)
     assert os.path.exists(os.path.join(dst, 'README.md'))
-    assert os.path.exists(os.path.join(dst, 'flask_server', 'app.py'))
+    assert os.path.exists(os.path.join(dst, 'flask_server', 'factory.py'))
     # 排除项
     assert not os.path.exists(os.path.join(dst, '.git'))
     assert not os.path.exists(os.path.join(dst, '.pytest_cache'))

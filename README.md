@@ -51,7 +51,8 @@ python scripts/scaffold.py my_project --author "Your Name"
 ```
 py_flask_server/
 ├── flask_server/              # 主应用
-│   ├── app.py                 # Flask 核心：create_app() 工厂 + CORS/安全/异常处理/探针
+│   ├── factory.py             # Flask 核心：create_app()/create_core_app() + CORS/安全/异常处理
+│   ├── wsgi.py                # 唯一的模块级 app = create_app()（gunicorn: flask_server.wsgi:app）
 │   ├── config.py              # 配置（环境变量 + .env 自动加载）
 │   ├── component/             # 组件：认证 / 限流 / Prometheus / 拦截器
 │   ├── controller/            # 路由层（★ 新建文件即自动注册）
@@ -64,7 +65,7 @@ py_flask_server/
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 任务消费者 / 冒烟与压测脚本
-├── tests/                     # 716 个用例（门槛 85%；实测 90.86%）
+├── tests/                     # 735 个用例（门槛 85%；实测 91.76%）
 ├── webui/                     # 静态前端（webui_controller 提供页面与静态资源）
 ├── storage/                   # 上传文件根目录（运行期生成，勿提交）
 ├── deployments/               # ARMv7 等离线部署资料
@@ -75,7 +76,7 @@ py_flask_server/
 └── server.py / wsgi.py / wsgi_gunicorn.py   # 三个启动入口
 ```
 
-> 覆盖率快照（2026-11-21）：`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term` 实测 **90.86%**（门槛 85%）。716 个用例中 6 个默认跳过——1 个依赖可选包 Flask-SocketIO，5 个是需真实 Redis 的 `redis_live` 用例（CI 的 `test-redis` job 会跑它们）。
+> 覆盖率快照（2026-11-21）：`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term` 实测 **91.76%**（门槛 85%）。735 个用例中 6 个默认跳过——1 个依赖可选包 Flask-SocketIO，5 个是需真实 Redis 的 `redis_live` 用例（CI 的 `test-redis` job 会跑它们）。
 
 ## 🔧 常用命令
 

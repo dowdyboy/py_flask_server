@@ -9,7 +9,7 @@ import os
 import uuid
 
 from flask import request, send_file
-from flask_server.app import app, json_response
+from flask_server import app, json_response
 from flask_server.module import local_file_storage
 from flask_server.util import GraceResult, Logger
 

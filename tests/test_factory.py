@@ -4,7 +4,7 @@ import pytest
 
 
 def _new_app(**cfg):
-    from flask_server.app import create_app
+    from flask_server.factory import create_app
     return create_app({'TESTING': True, **cfg})
 
 

@@ -148,7 +148,7 @@ def test_memory_queue_semantics():
 
 
 def test_worker_memory():
-    from flask_server.app import create_app
+    from flask_server.factory import create_app
     from flask_server.config import config
     from flask_server.module.task_queue import (
         MemoryTaskQueue, registry, task,

@@ -43,6 +43,9 @@ def auto_import_handlers(package_name='flask_server.handler'):
 
     单个模块导入失败（语法错误/依赖缺失等）不影响其他模块与应用启动：
     记录 ERROR（含 traceback）后跳过，便于快速定位问题模块。
+
+    注意：**不再在包导入时自动执行**（0.8 起 `import flask_server` 不加载 handler）。
+    入口/协议服务器启动时会显式调用（见 `module.start_protocol_servers`）。
     """
     package = importlib.import_module(package_name)
     for module_info in sorted(pkgutil.iter_modules(package.__path__), key=lambda m: m.name):
@@ -53,6 +56,4 @@ def auto_import_handlers(package_name='flask_server.handler'):
                          exc_info=True)
 
 
-auto_import_handlers()
-
-__all__ = []
+__all__ = ['auto_import_handlers']

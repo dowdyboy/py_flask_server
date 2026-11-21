@@ -22,13 +22,18 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from flask_server import app, config                      # noqa: E402
-from flask_server.module.task_queue import (             # noqa: E402
+from flask_server import config                            # noqa: E402
+from flask_server.factory import create_core_app           # noqa: E402
+from flask_server.module.task_queue import (               # noqa: E402
     MemoryTaskQueue, RedisTaskQueue, TaskQueueUnavailable,
 )
-from flask_server.module.task_worker import TaskWorker   # noqa: E402
-from flask_server.task import auto_import_tasks          # noqa: E402
-from flask_server.util import Logger                     # noqa: E402
+from flask_server.module.task_worker import TaskWorker     # noqa: E402
+from flask_server.task import auto_import_tasks            # noqa: E402
+from flask_server.util import Logger                       # noqa: E402
+
+# 0.8：worker 只装配"配置 + DB"的最小 app，不加载 HTTP 路由/组件/协议服务器。
+# 任务 handler 里仍可用 current_app / db.session；需要完整应用语义的能力请显式自建。
+app = create_core_app()
 
 
 def _build_queue(stream):

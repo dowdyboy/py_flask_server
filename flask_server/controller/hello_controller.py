@@ -1,7 +1,7 @@
 from flask.views import MethodView
 from flask import current_app, has_app_context
 from flask_smorest import Blueprint
-from ..app import json_response
+from ..factory import json_response
 from ..util import Logger, GraceResult, ErrorCode
 from ..schema import GraceResultSchema, EchoSchema
 from ..config import config

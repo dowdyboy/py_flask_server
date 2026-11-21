@@ -1,4 +1,4 @@
-from flask_server.app import app, json_response
+from flask_server import app, json_response
 from flask_server.util import Logger, GraceResult
 from flask import request
 

@@ -217,7 +217,7 @@ curl -X POST http://127.0.0.1:5000/api/v1/users/ \
 
 ```python
 # @app.route 风格（最简示例）
-from flask_server.app import json_response
+from flask_server import json_response
 from flask_server.util import GraceResult
 
 @json_response

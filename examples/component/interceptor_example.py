@@ -7,11 +7,11 @@
 #      `init_interceptor_example(app)`——**不要**用模块级 `@app.before_request`，原因见下。
 #
 # 为什么必须写成 init_xxx(app) 形式：
-#   component/ 包是在 create_app() 内部被导入的，此时 `flask_server.app` 的模块级单例
-#   还没赋值（它在 create_app() 返回之后才创建）。在模块级写 `from flask_server import app`
-#   会得到"partially initialized module"的循环导入错误；写死在模块级单例上也无法支持
-#   create_app(framework_config=...) 的多实例隔离。auth / metrics / rate_limit 三个内置
-#   组件都是 init_xxx(app) 形式，本样例保持一致。
+#   component/ 包是在 create_app() 内部被导入的，此时不应依赖任何"模块级 app 单例"；
+#   0.8 起模块级实例只存在于 flask_server/wsgi.py，且包导入本身不再建 app。
+#   在模块级写 `from flask_server import app` 会触发默认实例装配（也可能循环导入），
+#   写死在模块级单例上也无法支持 create_app(framework_config=...) 的多实例隔离。
+#   auth / metrics / rate_limit 三个内置组件都是 init_xxx(app) 形式，本样例保持一致。
 #
 # before_request 的返回值语义（最容易踩的坑）：
 #   - 返回 None  → 请求继续，后续钩子与视图正常执行；

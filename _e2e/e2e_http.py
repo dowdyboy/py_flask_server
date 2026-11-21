@@ -586,7 +586,7 @@ def test_mysql_readonly():
 
 def test_in_process():
 
-    from flask_server.app import create_app
+    from flask_server.factory import create_app
     from flask_server.component.auth import _is_exempt_path
     from flask_server.config import Config
     from flask_server.module.local_file_storage import LocalFileStorage
@@ -706,7 +706,7 @@ def test_in_process():
     R.eq('内存缓存 incr', [mc.incr('n'), mc.incr('n')], [1, 2])
 
     # 请求 ID 清洗（控制字符/截断）
-    from flask_server.app import _sanitize_request_id
+    from flask_server.factory import _sanitize_request_id
     R.eq('request_id 去控制字符', _sanitize_request_id('a\x01b\x02c'), 'abc')
     R.eq('request_id 截断 64', len(_sanitize_request_id('z' * 100)), 64)
     R.eq('request_id 全非法回退 None', _sanitize_request_id('\x01\x02'), None)

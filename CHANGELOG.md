@@ -3,6 +3,40 @@
 本模板项目的变更记录。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.8.0] - 2026-11-21
+
+### 变更（架构）
+
+- **移除导入期应用装配**：`import flask_server` 现在只加载 `config`，不再执行
+  `create_app()`（不连 DB、不扫描 controller/handler、不初始化 HTTP 栈）。
+  `from flask_server import app` 仍兼容，但改为 PEP 562 惰性创建、首次访问才装配
+- **入口拆分**：`flask_server/app.py` 重命名为 `flask_server/factory.py`（只放
+  `create_app()` / `create_core_app()`）；新增 `flask_server/wsgi.py` 作为**唯一**的
+  模块级 `app = create_app()`；`FLASK_APP` / gunicorn 统一改为 `flask_server.wsgi:app`
+- **worker 最小应用**：新增 `create_core_app()`（配置 + SQLAlchemy/Migrate，无 CORS/
+  OpenAPI/限流/认证/指标/控制器）；`scripts/worker.py` 改用它，不再为了 app context
+  装配整个 HTTP 应用；`init_SQLAlchemy` 增加 `reflect=` 参数，worker 启动不反射表结构
+- **handler 自动发现不再依赖导入副作用**：`flask_server.handler` 包导入不再扫描文件；
+  由 `start_protocol_servers()` 在真正需要协议服务器时显式调用 `auto_import_handlers()`
+- `flask_server/__init__.py` 改为轻量惰性导出（config/app/api/socketio/create_app/
+  create_core_app/json_response + util 常用工具），其余名字仍按普通子模块导入
+
+### 测试（覆盖率补齐）
+
+- `flask_server/module/sqlite.py`：75% → **92%**（补 execute/fetch 的 locked 重试与
+  非 locked 回滚、未启用报错、DEBUG_SQL、工作线程独立连接与 PRAGMA 失败、init SQL 失败回滚）
+- `flask_server/util/async_task_util.py`：75% → **95%**（补 async_run_func/do_run_func、
+  命令启动失败、executor.submit 失败释放信号量、submit 透传、SubprocessTask 启动/停止
+  异常路径与 watch_process 非 0 退出回调）
+- 全量：**735 个用例**（729 passed / 6 skipped），覆盖率 **91.76%**
+
+### 文档
+
+- `docs/architecture.md` 更新启动流程、入口职责、导入语义与"0.9 候选"（db/metrics/logger
+  仍是进程级单例）；`docs/development.md` 更新 `flask_server.factory` / `flask_server.wsgi`
+  用法；README 目录结构、示例与审计报告同步；`examples/component` 注释改为
+  "不要依赖模块级 app 单例"
+
 ## [0.7.0] - 2026-11-21
 
 ### 新增

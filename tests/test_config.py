@@ -37,6 +37,7 @@ def test_empty_env_values_treated_as_unset():
         "os.environ['SQLITE_DB_PATH'] = ''\n"
         "os.environ['INIT_SQL_PATH'] = ''\n"
         "import flask_server\n"
+        "import flask_server.module\n"
         "from flask_server import config\n"
         "assert config.sqlalchemy_uri is None, config.sqlalchemy_uri\n"
         "assert config.redis_url is None, config.redis_url\n"
@@ -542,6 +543,7 @@ def test_bad_init_sql_does_not_crash_import(tmp_path):
         "os.environ['AUTH_ENABLED'] = 'false'\n"
         "os.environ['LOG_FILE_PATH'] = ''\n"
         "import flask_server\n"
+        "import flask_server.module\n"
         "print('OK')\n"
     )
     result = _run_in_subprocess(code)

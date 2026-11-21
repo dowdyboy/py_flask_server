@@ -52,11 +52,13 @@
 - `util/` 只依赖标准库与 `config`，不 import 任何其它业务层
 - `module/` 可依赖 `util/`，不依赖 `component/`、`controller/`
 - `component/` 可依赖 `module/`、`util/`，不依赖 `controller/`
-- `controller/` 可依赖 `service/`、`model/`、`util/`、`schema/`，以及 `app.json_response`
-  与 `config`（`hello_controller` 即 `from ..app import json_response`、`from ..config import config`）
-- `app.py` 是最上层装配者，可 import 所有层。其中 `config` / `flask` / `util` 是**模块级**导入；
+- `controller/` 可依赖 `service/`、`model/`、`util/`、`schema/`，以及 `factory.json_response`
+  与 `config`（`hello_controller` 即 `from ..factory import json_response`、`from ..config import config`）
+- `factory.py` 是最上层装配者，可 import 所有层。其中 `config` / `flask` / `util` 是**模块级**导入；
   只有 `module` / `component` / `controller` 在 `create_app()` 函数内部延迟 import
   （避免循环依赖与导入期副作用）
+- `flask_server/wsgi.py` 是唯一创建模块级 `app = create_app()` 的地方（entries/gunicorn 用
+  `flask_server.wsgi:app`）；`import flask_server` 本身不再建 app
 
 ---
 
@@ -64,7 +66,8 @@
 
 | 目录 | 职责 | 新文件是否自动生效 |
 |---|---|---|
-| `flask_server/app.py` | `create_app()` 工厂、请求钩子、异常处理、安全头 | —（需改装配逻辑） |
+| `flask_server/factory.py` | `create_app()` / `create_core_app()` 工厂、请求钩子、异常处理、安全头 | —（需改装配逻辑） |
+| `flask_server/wsgi.py` | 唯一的模块级 `app = create_app()`（entries/gunicorn/CLI 引用） | — |
 | `flask_server/config.py` | 配置解析、`Config`、`ConfigProxy` | 改配置项需新增字段 |
 | `flask_server/controller/` | 路由与入参校验 | ✅ 自动注册 Blueprint / `register(app)` |
 | `flask_server/handler/` | TCP/UDP 消息处理器 | ✅ 自动导入并注册装饰器 |
@@ -80,7 +83,8 @@
 
 ## 4. 启动流程
 
-三个入口都先 `import flask_server`，此时模块底部的 `app = create_app()` 完成装配。
+三个入口都从 `flask_server.wsgi` 取默认实例（`wsgi.py` 内 `app = create_app()`），
+`import flask_server` 本身**不再**建 app。
 
 ```
 server.py（开发）        wsgi.py（waitress 生产）        wsgi_gunicorn.py（多进程生产）
@@ -98,6 +102,7 @@ server.py（开发）        wsgi.py（waitress 生产）        wsgi_gunicorn.p
       └────────────────────────┴──────────────────────────────┘
 
 独立部署（推荐）：python scripts/worker.py --concurrency 4
+（worker 用 create_core_app()：只装配配置 + DB，不加载 HTTP 控制器/组件）
 ```
 
 \* `server.py` 在 debug + reloader 模式下只由**子进程**启动协议服务器，避免父子抢端口。
@@ -282,7 +287,7 @@ def on_message(conn, data, addr):
 | 加缓存/队列/对象存储 | `module/` + `module/__init__.py` |
 | 加配置项 | `config.py::Config` + `.env.example` + `docs/configuration.md` |
 | 加协议接入 | `handler/` + 配置 `TCP_*/UDP_*` |
-| 改统一响应/错误码 | `util/grace_result.py` + `app.py` 的异常处理 |
+| 改统一响应/错误码 | `util/grace_result.py` + `factory.py` 的异常处理 |
 | 改启动/关闭行为 | `server.py` / `wsgi.py` / `wsgi_gunicorn.py` |
 
 ---
@@ -302,3 +307,10 @@ def on_message(conn, data, addr):
 4. **DB 反射在首次绑定时执行**：大库建议 `DB_REFLECT_ON_START=false`
 5. **静态站点 catch-all 会拦截任意路径**：新增 `@app.route` 时不必担心顺序，
    Werkzeug 按规则权重匹配；但纯路径型规则（`/<x>`）与 catch-all 并存时要注意优先级
+6. **包导入无应用副作用（0.8 起）**：`import flask_server` 只加载 `config`；
+   `from flask_server import app` 才惰性创建（PEP 562），模块级实例只存在于
+   `flask_server/wsgi.py`；`from flask_server.factory import create_app/create_core_app`
+   可显式创建完整/最小应用
+7. **0.9 候选（尚未完成）**：`db` / Prometheus 指标对象 / 日志 handler 仍是进程级单例，
+   只是通过 `app.extensions` 暴露配置与 auth store；要支持"同进程两套完全独立的
+   DB/指标/日志"，需要继续把它们收进 app 容器（当前建议用多进程）

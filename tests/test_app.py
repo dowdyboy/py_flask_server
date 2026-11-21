@@ -222,7 +222,7 @@ def test_strict_csp_has_no_remote_origin(client, monkeypatch):
 
 def test_swagger_origin_parsing(monkeypatch):
     """_swagger_origin：只接受 http(s) 绝对地址，非法/相对路径返回空串"""
-    from flask_server.app import _swagger_origin
+    from flask_server.factory import _swagger_origin
 
     assert _swagger_origin('https://cdn.jsdelivr.net/npm/swagger-ui-dist/') == 'https://cdn.jsdelivr.net'
     assert _swagger_origin('http://127.0.0.1:8080/swagger/') == 'http://127.0.0.1:8080'
@@ -478,7 +478,7 @@ def test_non_dict_json_payload_normalized(client, monkeypatch):
 
 def test_json_response_decorator():
     """json_response 装饰器：None / tuple / 普通对象 三个分支"""
-    from flask_server.app import json_response
+    from flask_server.factory import json_response
     from flask_server.util import GraceResult
 
     @json_response
@@ -500,7 +500,7 @@ def test_json_response_decorator():
 
 def test_json_response_str_normalized_to_json():
     """视图返回 str/bytes 时归一为 GraceResult（修复前会被 Flask 渲染成 text/html）"""
-    from flask_server.app import json_response
+    from flask_server.factory import json_response
 
     @json_response
     def returns_str():
@@ -531,7 +531,7 @@ def test_json_response_str_normalized_to_json():
 def test_json_response_str_served_as_json(client):
     """HTTP 层：@json_response 返回 str 时响应为 application/json（dict 输出由 Flask 序列化）"""
     from flask_server import app
-    from flask_server.app import json_response
+    from flask_server.factory import json_response
 
     hook = json_response(lambda: 'plain-string')
     teardown = _probe(app, hook)
@@ -549,7 +549,7 @@ def test_json_response_str_served_as_json(client):
 def test_json_response_passes_through_response():
     """json_response 应原样透传 Response 对象（send_file/redirect 场景），不得序列化"""
     from flask import Response
-    from flask_server.app import json_response
+    from flask_server.factory import json_response
 
     @json_response
     def returns_response():
@@ -571,7 +571,7 @@ def test_json_response_passes_through_response():
 def test_json_response_three_tuple():
     """json_response 应支持 Flask 3 元组 (data, status, headers)"""
     from flask import Response
-    from flask_server.app import json_response
+    from flask_server.factory import json_response
 
     @json_response
     def returns_three_tuple():
@@ -790,7 +790,7 @@ def test_readyz_redis_ok(client, monkeypatch):
 def test_init_request_info_preserves_existing(client):
     """request.info 已存在时不覆盖（hasattr 分支）"""
     from flask import request
-    from flask_server.app import init_request_info
+    from flask_server.factory import init_request_info
 
     with client.application.test_request_context('/x'):
         request.info = {'existing': True}
@@ -801,7 +801,7 @@ def test_init_request_info_preserves_existing(client):
 
 def test_set_request_id_header_without_rid(client):
     """无 request_id 时不回写 X-Request-Id（else 分支）"""
-    from flask_server.app import set_request_id_header
+    from flask_server.factory import set_request_id_header
     from werkzeug.wrappers import Response
 
     with client.application.test_request_context('/x'):
@@ -811,7 +811,7 @@ def test_set_request_id_header_without_rid(client):
 
 def test_all_exception_handler_http_exception_fallback(client):
     """HTTPException 落入兜底 handler 时保留原状态码（209-210 分支）"""
-    from flask_server.app import all_exception_handler
+    from flask_server.factory import all_exception_handler
     from flask_server.util import GraceResult
     from werkzeug.exceptions import NotFound
 

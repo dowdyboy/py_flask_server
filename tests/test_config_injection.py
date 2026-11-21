@@ -6,7 +6,7 @@ import pytest
 
 
 def _app(**overrides):
-    from flask_server.app import create_app
+    from flask_server.factory import create_app
     from flask_server.config import Config
 
     return create_app({'TESTING': True}, framework_config=Config(overrides))
@@ -42,7 +42,7 @@ def test_config_to_dict_and_repr():
 
 def test_create_app_uses_injected_config_at_creation():
     """创建期装配（OpenAPI 版本、密钥、CORS）读注入的配置"""
-    from flask_server.app import create_app
+    from flask_server.factory import create_app
     from flask_server.config import Config
 
     cfg = Config({'api_version': 'v9', 'api_title': 'Injected API', 'secret_key': 'injected-key-123'})
