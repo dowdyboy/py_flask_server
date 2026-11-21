@@ -33,7 +33,8 @@ from .util import Logger, GraceResult, CommonUtil
 #   - 多实例/测试：直接调用 `create_app(...)`。
 #
 # 仍然是**进程级单例**的部分（有意为之，见 create_app 的文档字符串）：
-#   SQLAlchemy 的 db / Flask-Migrate、SocketIO、Prometheus 指标对象、日志 handler。
+#   SQLAlchemy 的 db 对象 / Flask-Migrate、SocketIO；
+#   logger / Prometheus 指标已按 app 隔离（app.extensions），见 module/container.py。
 
 # X-Request-Id 清洗上限：控制字符会污染日志格式（log forging 面），
 # 超长值会撑大每条日志与响应头；截断 + 清洗后仅保留可打印字符
@@ -381,8 +382,9 @@ def create_app(app_config=None, framework_config=None):
           （而不是静默复用第一个库——那会让"以为在写测试库、实际写生产库"成为可能）；
           需要多个数据库请用多进程/多容器部署。
         - SocketIO（eventlet 模式下必须全局唯一；eventlet monkey patch 是导入期决定的）
-        - Prometheus 指标对象与默认 registry、日志 handler
-        - 内存缓存（有条目上限，超出淘汰最久未写入的键）/ 限流计数 / 认证 token 存储
+        - logger / Prometheus 指标已按 app 隔离（`app.extensions`），但每个 app 的 handler/
+          registry 会持续存在；无 app 上下文时回退进程默认 logger/bundle
+        - 内存缓存（有条目上限，超出淘汰最久未写入的键）/ 限流计数 / 认证 token 缓存
     """
     from .config import CONFIG_EXT_KEY, default_config
     from .module import init_SQLAlchemy, init_Migrate

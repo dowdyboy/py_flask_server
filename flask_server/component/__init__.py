@@ -1,7 +1,7 @@
 # 组件装配入口
 #
 # 组件（限流 / 认证 / 指标 / 拦截器）不再在 import 时修改"那个全局 app"，
-# 而是暴露 `init_*(app)`，由 `flask_server.app.create_app()` 显式调用。
+# 而是暴露 `init_*(app)`，由 `flask_server.factory.create_app()` 显式调用。
 # 这样才可能在同一进程里创建多个应用实例，也让测试无需依赖导入顺序。
 #
 # 注册顺序即 before_request 执行顺序：限流 → 认证 → 指标计时。

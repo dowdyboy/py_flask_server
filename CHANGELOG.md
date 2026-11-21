@@ -28,7 +28,7 @@
 - SQLAlchemy 的 `db` **对象本身仍是进程级单例**（Flask-SQLAlchemy 限制）：同进程只能绑一个
   `SQLALCHEMY_URI`（换库会抛 `RuntimeError`），现在只是把该实例登记进每个 app 的容器。
   真正"同进程两套独立 DB"仍需多进程；Prometheus 多进程聚合仍用 `PROMETHEUS_MULTIPROC_DIR`
-- 全量：**740 个用例**（734 passed / 6 skipped），覆盖率 **91.48%**
+- 全量：**740 个用例**（734 passed / 6 skipped），覆盖率 **91.85%**
 
 ## [0.8.0] - 2026-11-21
 

@@ -40,7 +40,7 @@ _request_id_ctx = contextvars.ContextVar('request_id', default=None)
 
 # 日志工具类，用于输出日志
 # 支持 request_id 链路追踪：使用 contextvars 实现线程安全
-# app.py 的 before_request 会调用 Logger.set_request_id()，teardown_request 调用 clear_request_id()
+# factory.py 的 before_request 会调用 Logger.set_request_id()，teardown_request 调用 clear_request_id()
 # 使用命名 logger 'flask_server'，避免捕获第三方库（SQLAlchemy/redis/urllib3）的日志
 
 

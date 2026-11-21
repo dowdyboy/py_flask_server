@@ -46,7 +46,7 @@ def test_scaffold():
         cp = _run([PY, 'scripts/scaffold.py', str(target), '--author', 'E2E Author'])
         R.check('scaffold 生成退出码 0', cp.returncode == 0, cp.stdout + cp.stderr)
         R.check('scaffold 目标目录存在', target.is_dir())
-        R.check('scaffold 复制主应用', (target / 'flask_server' / 'app.py').is_file())
+        R.check('scaffold 复制主应用', (target / 'flask_server' / 'factory.py').is_file())
         R.check('scaffold 复制测试', (target / 'tests' / 'test_app.py').is_file())
         R.check('scaffold 复制文档', (target / 'docs' / 'architecture.md').is_file())
         R.check('scaffold 不含 .env', not (target / '.env').exists())

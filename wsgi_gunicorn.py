@@ -39,7 +39,7 @@ def _worker_class():
     修复前只看 SOCKETIO_ENABLED 就返回 eventlet：SOCKETIO_ENABLED=true +
     SOCKETIO_ASYNC_MODE=threading（.env.example 的默认组合）也会走 eventlet 分支，
     而 eventlet 是可选依赖（requirements.txt 中为注释）。未安装时 gunicorn 在解析
-    worker class 阶段直接失败，整个入口起不来——app.py 里的降级逻辑被完全绕过。
+    worker class 阶段直接失败，整个入口起不来——factory.py 里的降级逻辑被完全绕过。
     即使装了 eventlet，也会出现"SocketIO 实为 threading、worker 却是 eventlet"的错配。
     """
     if not config.socketio_enabled:

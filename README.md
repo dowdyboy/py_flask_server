@@ -65,7 +65,7 @@ py_flask_server/
 │   └── util/                  # 工具：日志 / 加密 / ID / 异步任务 / banner
 ├── examples/                  # 可运行的教学样例（含 api.http 测试集）
 ├── scripts/                   # 脚手架 / 迁移 / 任务消费者 / 冒烟与压测脚本
-├── tests/                     # 740 个用例（门槛 85%；实测 91.48%）
+├── tests/                     # 740 个用例（门槛 85%；实测 91.85%）
 ├── webui/                     # 静态前端（webui_controller 提供页面与静态资源）
 ├── storage/                   # 上传文件根目录（运行期生成，勿提交）
 ├── deployments/               # ARMv7 等离线部署资料
@@ -76,7 +76,7 @@ py_flask_server/
 └── server.py / wsgi.py / wsgi_gunicorn.py   # 三个启动入口
 ```
 
-> 覆盖率快照（2026-11-21）：`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term` 实测 **91.48%**（门槛 85%）。740 个用例中 6 个默认跳过——1 个依赖可选包 Flask-SocketIO，5 个是需真实 Redis 的 `redis_live` 用例（CI 的 `test-redis` job 会跑它们）。
+> 覆盖率快照（2026-11-21）：`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term` 实测 **91.85%**（门槛 85%）。740 个用例中 6 个默认跳过——1 个依赖可选包 Flask-SocketIO，5 个是需真实 Redis 的 `redis_live` 用例（CI 的 `test-redis` job 会跑它们）。
 
 ## 🔧 常用命令
 

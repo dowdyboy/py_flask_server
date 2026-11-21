@@ -16,7 +16,7 @@ pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term
 Prometheus 指标、缓存降级恢复（含故障/脏数据自愈）、事务提交/回滚（CI 含真实 MySQL）、
 路径穿越防护、反射与声明式模型共存、雪花 ID 并发、SubprocessTask 哨兵停止等
 **740 个用例**。覆盖率快照（2026-11-21，`pytest tests/ --cov=flask_server --cov=wsgi --cov-report=term`）：
-**91.48%**，门槛 85%（快照仅供参考，随代码演进会变）。覆盖率包含 `flask_server/` 与生产入口
+**91.85%**，门槛 85%（快照仅供参考，随代码演进会变）。覆盖率包含 `flask_server/` 与生产入口
 `wsgi.py`（`server.py`/`wsgi_gunicorn.py` 依赖 Windows 不支持的运行时，不计入）。
 
 真实环境自检（云服务器 MySQL/Redis 全链路验证）：
@@ -131,9 +131,10 @@ app = create_app(framework_config=cfg)                     # 该实例的装配�
 统一键与访问器在 `flask_server.module.container`（`get_db/get_logger/get_metrics`）；
 无 app 上下文时回退进程默认对象（脚本/测试直调）。`db` 对象本身仍是进程级单例。
 
-**仍是进程级单例**（有意为之）：SQLAlchemy 的 `db`、Flask-Migrate、SocketIO、
-Prometheus 指标对象、内存缓存/限流/认证存储。同进程创建多个 app 会共享这些；
-需要"多套完全独立配置"请用多进程部署。
+**仍是进程级单例**（有意为之）：SQLAlchemy 的 `db` 对象、Flask-Migrate、SocketIO、
+内存缓存/限流计数。logger / Prometheus metrics / 认证用户存储 / db 引用已经按 app
+登记在 `app.extensions`；同进程多个 app 仍共享上述单例，需要"多套完全独立配置"请用
+多进程部署。
 
 **配置解析优先级**（`flask_server/config.py::_resolve_config`）：
 

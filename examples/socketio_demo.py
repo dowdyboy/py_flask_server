@@ -43,7 +43,7 @@ else:
         message = (data or {}).get('message', '')
         socketio.emit('server_msg', {'echo': message})
 
-    # 若在 app.py 合并，还需：
+    # 若在 factory.py 合并，还需：
     # @socketio.on('message')
     # def handle_message(message):
     #     socketio.send(f'echo: {message}')
